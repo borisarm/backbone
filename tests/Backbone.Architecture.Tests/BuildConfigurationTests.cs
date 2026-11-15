@@ -16,7 +16,16 @@ public sealed class BuildConfigurationTests
         Directory.EnumerateFiles(SolutionLayout.RepositoryRoot.FullName, "*.*proj", SearchOption.AllDirectories)
             .Where(p => p.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)
                      || p.EndsWith(".wixproj", StringComparison.OrdinalIgnoreCase))
-            .Where(p => !p.Split(Path.DirectorySeparatorChar).Any(s => s is "bin" or "obj"));
+            .Where(p => !Path.GetRelativePath(SolutionLayout.RepositoryRoot.FullName, p)
+                .Split(Path.DirectorySeparatorChar)
+                .Any(IsIgnoredDirectory));
+
+    /// <summary>
+    /// Carpetas que no son parte del árbol de fuentes: salidas de compilación (<c>bin</c>, <c>obj</c>, <c>artifacts</c>) y
+    /// carpetas ocultas (<c>.git</c>, <c>.vs</c>, <c>.claude</c>, cuyos <i>worktrees</i> traen otra copia de los proyectos).
+    /// </summary>
+    private static bool IsIgnoredDirectory(string segment) =>
+        segment is "bin" or "obj" or "artifacts" || segment.StartsWith('.');
 
     private static string? Prop(XDocument doc, string name, string? conditionContains = null) =>
         doc.Descendants("PropertyGroup")
