@@ -232,6 +232,8 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 1. Botón derecho en el icono (y también: foco en el icono con Win+B y tecla Menú / Mayús+F10): aparece el menú con **Copiar todo ahora, Pausar (próximamente), Abrir Backbone, Salir**; "Pausar" aparece deshabilitado (F2).
 2. Clic fuera o Esc: el menú se cierra y no queda ningún elemento colgado; repetir 5 veces.
 3. "Copiar todo ahora" con dos trabajos activados: ambos pasan a ejecutarse/encolarse; con el servicio detenido está deshabilitado.
+3b. Con un trabajo ya en ejecución y otro en reposo, "Copiar todo ahora": solo se lanza el que estaba en reposo, sin mensajes de error por el que ya corría. Con el menú abierto mientras el servicio se detiene, elegir "Copiar todo ahora" no produce errores ni cuelgues.
+3c. Con el idioma en inglés y en español, pasar el ratón sobre el icono en estado de pausa/servicio detenido: el texto emergente no aparece cortado a mitad de palabra.
 4. Teclas de acceso: con el menú abierto, T, P, A, S activan Copiar todo ahora, (Pausar deshabilitado), Abrir, Salir (en inglés: A, P, O, X).
 5. Con Narrador, cada elemento se lee con su nombre y el estado "no disponible" cuando está deshabilitado.
 6. Comprobar el aspecto del menú en tema oscuro y alto contraste (es un menú nativo: puede seguir el tema del sistema o no; anotar el resultado).
