@@ -247,6 +247,14 @@ Prioridad: **MVP** = fase 1, **F2** = fase 2 (uso diario), **F3** = fase 3 (puli
 └── tmp\                           escritura temporal; puede vaciarse en cualquier momento sin bloqueos activos
 ```
 
+- Los nombres de carpeta son exactamente los de arriba, en minúsculas. `objects\ab\` toma los dos primeros caracteres del hash y se crea cuando se escribe el primer objeto con ese prefijo.
+- Estado de un destino al examinarlo (sin escribir nada):
+  - **Inexistente**: la carpeta no existe.
+  - **Vacío**: sin archivos, o solo con lo que deja una inicialización interrumpida (las carpetas de arriba, vacías salvo `tmp\`, que puede tener temporales). Se puede inicializar.
+  - **No es un repositorio**: hay otros archivos y no hay `repo.json`. No se inicializa encima.
+  - **Compatible**, **incompatible** o **corrupto**, según `repo.json` (§6.2).
+- Un destino con `repo.json` en el que falta cualquiera de las cuatro carpetas (`objects`, `snapshots`, `locks`, `tmp`) es **corrupto**. No se recrean automáticamente: puede indicar que se apunta a un recurso equivocado o que se han borrado datos.
+
 ### 6.2 `repo.json`
 
 ```json
@@ -261,9 +269,20 @@ Prioridad: **MVP** = fase 1, **F2** = fase 2 (uso diario), **F3** = fase 3 (puli
 }
 ```
 
+- JSON UTF-8 sin BOM, con sangría. Como mucho 64 KiB (igual que los bloqueos); si es mayor, el repositorio es corrupto.
+- `formatVersion` se comprueba **antes que ningún otro campo**: mayor que la versión que entiende Backbone → **incompatible** (RNF-14), aunque el resto del archivo no se entienda; ausente, no entera o menor que 1 → corrupto.
+- `hash` distinto de `sha256`, o `compression`/`encryption` distintos de `none` → incompatible (características de un formato posterior).
+- `repositoryId` es un GUID con guiones (formato `D`); `createdUtc` sigue las reglas de fechas de §6.3. Si falta algún campo o no es válido → corrupto.
+- `createdBy` es texto libre; el UTF-16 no válido se sustituye por U+FFFD.
+- **Inicialización**: se crean las carpetas de §6.1 y `repo.json` se publica **el último**, de forma atómica y sin sobrescribir (§6.4.1). Hasta que existe, el destino no es un repositorio y una inicialización interrumpida se puede repetir. Si otro proceso lo publicó antes, la inicialización falla como "ya inicializado".
+
 ### 6.3 Snapshot `snapshots/<id>.json`
 
-`id` = `yyyyMMddTHHmmssZ-<4 hex aleatorios>`, ordenable por fecha.
+`id` = `yyyyMMddTHHmmssZ-<4 hex aleatorios>`, ordenable por fecha con comparación ordinal.
+
+- La fecha del identificador es `startedUtc` truncada al segundo. Los 4 hexadecimales van en minúsculas. Solo se admite la forma canónica (fecha válida, 21 caracteres).
+- El identificador se elige **libre antes de empezar** (se comprueba que no existe `snapshots\<id>.json`; si existe, se genera otro sufijo). Si al publicar ya existe un manifiesto con ese nombre, no se sobrescribe y la copia falla con `SnapshotIdConflict`.
+- Los archivos de `snapshots\` cuyo nombre no es `<id>.json` con un identificador válido se ignoran al listar.
 
 ```json
 {
@@ -286,17 +305,59 @@ Prioridad: **MVP** = fase 1, **F2** = fase 2 (uso diario), **F3** = fase 3 (puli
 }
 ```
 
-- `p`: ruta relativa con `/` como separador, prefijada por el alias del origen. Única dentro del snapshot.
-- `h`: hash del contenido; `s`: tamaño en bytes; `m`: última modificación UTC (precisión de 100 ns); `a`: `FileAttributes` relevantes (ReadOnly, Hidden, System, Archive).
-- Las carpetas vacías se representan con una entrada `{ "p": "…/", "d": true }`.
+El ejemplo está sangrado para leerlo; el archivo real es compacto (ver "Serialización").
+
+**Cabecera**
+
+- **Orden (regla, no solo ejemplo)**: todos los campos de cabecera van **antes** de `entries`, y `entries` es el último campo que escribe Backbone. Así se lee la cabecera (listar snapshots) sin recorrer las entradas. El lector no busca cabecera después de `entries`: lo que haya detrás se descarta, y si falta un campo obligatorio antes de `entries` el manifiesto es corrupto.
+- `id` debe coincidir con el nombre del archivo.
+- `parentId` siempre está presente: `null` explícito en el primer snapshot del trabajo.
+- `status`: `completed` o `completedWithWarnings`; cualquier otro valor → corrupto.
+- `sources`: al menos uno; cada `alias` cumple las reglas de segmento (abajo) y los alias son únicos **sin distinguir mayúsculas**.
+- `stats.files` y `stats.bytes` los calcula el escritor a partir de las entradas; al terminar de leer las entradas se comprueba que coinciden (discrepancia → corrupto). Los demás contadores no pueden ser negativos.
+- `warnings`: los textos con UTF-16 no válido se guardan con U+FFFD en su lugar.
+- `formatVersion` mayor que la que entiende Backbone → incompatible. Los campos desconocidos (de la cabecera, de las entradas o de objetos anidados) se ignoran: dentro de v1 se pueden añadir campos opcionales sin romper lectores anteriores.
+
+**Entradas**
+
+- `p`: ruta relativa con `/` como separador, prefijada por el alias de un origen que figura en `sources`. Un archivo tiene al menos dos segmentos (`alias/nombre`).
+  - **Única** dentro del snapshot con comparación **ordinal** (distingue mayúsculas): `A.txt` y `a.txt` (posibles en carpetas con distinción de mayúsculas) son dos entradas. Si al restaurar dos entradas solo difieren en mayúsculas y el destino no las distingue, la segunda se trata como **conflicto** (RF-32).
+  - **Reglas de segmento**: cada segmento cumple `SnapshotPaths.IsValidSegment` (§7.5): no vacío; distinto de `.` y `..`; sin `\ / : * ? " < > |` ni caracteres de control; sin punto ni espacio final; sin nombres de dispositivo reservados, tampoco con extensión; como mucho 255 caracteres. Además, el texto debe ser **UTF-16 válido** (sin suplentes sueltas, que NTFS admite pero UTF-8 no puede representar).
+  - Un archivo o carpeta de origen cuyo nombre no cumple estas reglas **no se copia**: la copia lo omite con aviso `PathInvalid` (HU-13). Un manifiesto con una ruta que no las cumple es **corrupto**, porque restaurarla podría salir de la carpeta de destino.
+- `h`: hash del contenido (64 hexadecimales en minúsculas); `s`: tamaño en bytes (≥ 0); `m`: última modificación UTC (precisión de 100 ns); `a`: `FileAttributes` relevantes (ReadOnly = 1, Hidden = 2, System = 4, Archive = 32). Un bit fuera de esos cuatro → corrupto.
+- Las carpetas vacías se representan con una entrada `{ "p": "…/", "d": true }`, sin `h`, `s`, `m` ni `a`. `"<alias>/"` representa un origen vacío.
 - Los snapshots son **inmutables**: nunca se modifican después de escribirse.
+
+**Serialización**
+
+- UTF-8 sin BOM. Los caracteres no ASCII se escriben sin escapar (nombres legibles); comillas, `\` y caracteres de control se escapan siempre.
+- Manifiesto **compacto**: la cabecera ocupa la primera línea y cada entrada va en su propia línea (`…"entries":[⏎{…},⏎{…}⏎]}`). Orden de campos en una entrada: `p`, `h`, `s`, `m`, `a` (o `p`, `d`).
+- Fechas en ISO 8601 UTC con `Z`:
+  - `m`: **siempre con 7 decimales** (`2026-01-31T10:22:01.0000000Z`).
+  - Fechas de cabecera (`startedUtc`, `completedUtc`), `createdUtc` y `heartbeatUtc`: sin decimales si son un segundo exacto; si no, con 7 decimales.
+  - Al leer se acepta cualquier fecha ISO 8601 con desfase y se convierte a UTC.
+
+**Integridad**: el manifiesto no lleva suma de comprobación propia. El lector detecta los errores de estructura (JSON, rutas, hashes mal formados, estadísticas), pero no un `h` o un `s` alterados con un valor bien formado: eso solo lo detecta la verificación completa (HU-26), cuando el objeto no existe o no coincide en tamaño, y ni siquiera ella si `h` pasa a apuntar a otro objeto existente del mismo tamaño. Ver R6.
 
 ### 6.4 Reglas de escritura y concurrencia
 
-1. Todo archivo se escribe primero en `tmp\<guid>.tmp` y se renombra al nombre final (operación atómica dentro del mismo recurso SMB). Si el destino ya existe, se descarta el temporal.
-2. Un objeto se escribe calculando el SHA-256 **mientras se copia**. Si el hash final no coincide con el calculado al inspeccionar el archivo (el archivo cambió durante la copia sin VSS), se usa el hash real y se registra el cambio.
-3. El snapshot se escribe **solo después** de que todos sus objetos existen. Lo que no tiene snapshot no existe a efectos de restauración.
-4. Bloqueos: una ejecución de copia crea `locks\<host>-<pid>.lock` (JSON con host, pid, tipo `shared`, `heartbeatUtc` actualizado cada 60 s). La limpieza necesita un bloqueo `exclusive` y que no haya otros bloqueos vigentes. Un bloqueo sin latido en 15 minutos se considera abandonado y puede borrarse.
+1. Todo archivo (objetos, manifiestos, `repo.json` y bloqueos) se escribe primero en `tmp\<guid>.tmp`, se vacía al almacenamiento y se renombra al nombre final (operación atómica dentro del mismo recurso SMB). Objetos, manifiestos y `repo.json` se renombran **sin sobrescribir**: si el destino ya existe, se descarta el temporal. Los bloqueos sí se sobrescriben (latido). Si algo falla, el temporal se borra; si no se puede, lo recoge la limpieza (regla 6).
+2. Un objeto se escribe calculando el SHA-256 **mientras se copia**, sobre los mismos bytes que se escriben. Si el hash final no coincide con el calculado al inspeccionar el archivo (el archivo cambió durante la copia sin VSS), se usa el hash real y se registra el cambio. Si el objeto ya existe, el temporal se descarta (deduplicación).
+3. **Orden de publicación**:
+   - Inicialización: las carpetas primero y `repo.json` el último (§6.2).
+   - Copia: el snapshot se publica **solo después** de que todos sus objetos existen. Las entradas se van escribiendo en un temporal de `tmp\`; al terminar se compone el manifiesto definitivo en otro temporal (cabecera con las estadísticas ya conocidas y, detrás, las entradas), se **renueva el bloqueo** confirmando que sigue siendo propio y, justo después, se renombra a `snapshots\<id>.json`. Si el bloqueo se ha perdido, no se publica nada.
+   - Lo que no tiene snapshot no existe a efectos de restauración.
+4. **Bloqueos**:
+   - Archivo `locks\<host>-<pid>.lock`, donde `host` es el nombre del equipo (debe cumplir las reglas de segmento) y `pid` el identificador del proceso. Un proceso tiene como mucho un bloqueo por repositorio. Contenido (JSON con sangría):
+     ```json
+     { "host": "PC-SALON", "pid": 4242, "type": "shared", "heartbeatUtc": "2026-11-15T02:00:00Z" }
+     ```
+   - `type`: `shared` (copia; compatible con otras copias) o `exclusive` (limpieza; incompatible con cualquier otro bloqueo vigente).
+   - Un bloqueo es **vigente** si su `heartbeatUtc` tiene menos de **15 minutos** según el reloj del equipo que lo comprueba (riesgo de desfase entre equipos: Q1); si no, está **abandonado**. Un archivo de bloqueo ilegible se trata como `exclusive` vigente, con la fecha de modificación del archivo como latido.
+   - **Adquisición**: (a) se **publica el bloqueo propio** (sobrescribiendo: un archivo con el mismo nombre es de un proceso anterior que ya no existe); (b) después se **examinan los demás**; si hay alguno vigente incompatible, se borra el propio y se falla con "repositorio bloqueado"; (c) **solo la adquisición exclusiva borra los bloqueos abandonados**. Si dos procesos compiten, al menos uno ve al otro: en el peor caso fallan los dos, nunca entran los dos.
+   - **Latido** cada **60 s**, reescribiendo `heartbeatUtc`. Si el archivo propio ha desaparecido (otro proceso lo dio por abandonado), no se recrea: el bloqueo se da por perdido. Los errores transitorios se reintentan en el siguiente latido.
+   - El titular da su bloqueo por **perdido a los 13 minutos** sin un latido correcto (15 min − 2 latidos), antes de que otro pueda considerarlo abandonado, y deja de escribir en el repositorio.
+   - Al terminar, el titular borra su archivo. Si no puede, caduca solo a los 15 minutos.
 5. La limpieza borra primero los snapshots que expiran y después los objetos no referenciados **con más de 24 h de antigüedad** (protege objetos de una ejecución en curso en otro equipo).
 6. `tmp\` se vacía al empezar una limpieza.
 
@@ -684,4 +745,5 @@ Cada historia de usuario lista sus criterios de aceptación; cada criterio debe 
 | R3 | Manifiestos JSON grandes (500 000 archivos ≈ 80 MB). | Lectura/escritura en *streaming* con `Utf8JsonReader`/`Utf8JsonWriter`; comprimir manifiestos (gzip) a partir de v2. |
 | R4 | Archivos de OneDrive "solo en la nube". | Detectar `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` / `RECALL_ON_OPEN` y omitir sin desencadenar la descarga. |
 | R5 | Firma de código: sin certificado, SmartScreen avisará. | Documentar; obtener certificado antes de distribuir fuera del entorno propio. |
-| Q1 | ¿Varias máquinas en el mismo repositorio? | v1: no se soporta oficialmente (un repositorio por trabajo y equipo), aunque el formato ya lo tolera. |
+| R6 | El manifiesto no lleva suma de comprobación (§6.3): un `h` o un `s` alterados con un valor bien formado pasan la lectura y solo los detecta la verificación completa (HU-26); un `h` cambiado por el de otro objeto existente del mismo tamaño no lo detecta nadie. | v1: se acepta (los manifiestos son inmutables y se publican de forma atómica). v2: añadir una suma del manifiesto (p. ej. SHA-256 de las entradas en la cabecera o en un archivo aparte), comprobada al leer. |
+| Q1 | ¿Varias máquinas en el mismo repositorio? | v1: no se soporta oficialmente (un repositorio por trabajo y equipo), aunque el formato ya lo tolera. Riesgo si se usa: el abandono de un bloqueo (§6.4.4) se decide con el reloj del equipo que comprueba frente al `heartbeatUtc` que el titular escribió con el suyo; si el reloj del que comprueba va adelantado unos 14 minutos o más, una limpieza podría borrar un bloqueo vivo (el titular no se daría cuenta hasta su siguiente latido). Mitigación: equipos sincronizados por NTP; en v2, valorar comparar con la fecha de modificación que asigna el NAS. |
