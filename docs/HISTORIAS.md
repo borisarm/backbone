@@ -138,7 +138,7 @@ Como Ana, quiero escribir una vez el usuario y la contraseña del NAS, para que 
   3. Una búsqueda de la contraseña en `%ProgramData%\Backbone` (logs, config, historial) no encuentra coincidencias.
   4. El campo de contraseña de la app usa `PasswordBox` y se vacía tras guardar.
   5. Con la sesión cerrada, una ejecución programada se conecta con esas credenciales.
-- **Pendiente de HT-04**: si esta historia registra o reenvía textos no confiables (nombres de recurso o equipo, mensajes con valores leídos del NAS), decidir aquí el helper de saneado del servicio (reutilizar `Untrusted` de Core o uno compartido) con el comportamiento de §6.1. Si no, la decisión pasa a HU-05.
+- **Decidido (nota de HT-04)**: el helper de saneado de textos no confiables compartido por servicio y app es `UntrustedText.Describe` de `Backbone.Contracts` (§6.1, §7.5), con el mismo comportamiento que `Untrusted.Describe` de Core. Todo nombre de recurso o de equipo, usuario del NAS o mensaje con valores leídos del NAS que el servicio registre o reenvíe, o que la app muestre, pasa por él.
 
 ### HU-05 · Probar la conexión al NAS
 Como Luis, quiero comprobar la conexión antes de guardar un trabajo, para saber exactamente qué falla si algo no va.
@@ -150,7 +150,7 @@ Como Luis, quiero comprobar la conexión antes de guardar un trabajo, para saber
   3. Con servidor apagado veo "No se encuentra el NAS en la red" en menos de 15 s.
   4. Con recurso inexistente o sin permiso de escritura veo un mensaje específico para cada caso.
   5. La prueba no deja archivos en el recurso.
-- **Pendiente de HT-04**: si HU-04 no lo decidió, decidir aquí el helper de saneado de textos no confiables del servicio (§6.1).
+- **Nota de HT-04**: los textos no confiables (mensajes del sistema, nombre del recurso, dialecto SMB) se sanean con `UntrustedText.Describe` de `Backbone.Contracts` antes de registrarlos o mostrarlos (decidido en HU-04, §6.1).
 
 ### HU-06 · Inicializar o adoptar un repositorio
 Como Luis, quiero que si reinstalo Windows y apunto al mismo destino, Backbone reconozca las copias anteriores, para no perder el historial de versiones.
