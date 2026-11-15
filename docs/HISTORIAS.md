@@ -532,7 +532,7 @@ Las historias de una misma fila pueden desarrollarse en paralelo por agentes dis
 | HU-15 | MVP | 8 | backbone-service | Pendiente |
 | HU-16 | MVP | 5 | backbone-service | Pendiente |
 | HU-17 | MVP/F2 | 2 | backbone-service | Pendiente |
-| HU-18 | MVP | 5 | backbone-app | Pendiente |
+| HU-18 | MVP | 5 | backbone-app | Hecha |
 | HU-19 | MVP | 5 | backbone-app | Pendiente |
 | HU-20 | MVP/F2 | 3 | backbone-app | Pendiente |
 | HU-21 | MVP | 5 | backbone-service | Pendiente |
