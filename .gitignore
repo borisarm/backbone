@@ -485,3 +485,6 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Cobertura de código (de la plantilla de GitHub)
+CodeCoverage/
