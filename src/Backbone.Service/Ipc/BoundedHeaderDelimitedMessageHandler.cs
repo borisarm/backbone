@@ -82,6 +82,14 @@ internal sealed partial class BoundedHeaderDelimitedMessageHandler : PipeMessage
         _closeAfterNextError = true;
     }
 
+    /// <remarks>
+    /// Esta clase vuelve a implementar la interfaz, así que la implementación de <see cref="PipeMessageHandler"/> no se
+    /// ejecuta. En StreamJsonRpc 2.26 esa implementación solo actúa sobre lo que reserva su propio
+    /// <c>DeserializeMessageAsync</c> (que aquí no se usa): llama a <see cref="IJsonRpcMessageBufferManager.DeserializationComplete"/>
+    /// del <b>mensaje</b> (los mensajes de <see cref="SystemTextJsonFormatter"/> liberan así su <c>JsonDocument</c> y los
+    /// búferes alquilados) y avanza el lector. El avance ya lo hace <see cref="ReadBodyAsync"/>; la liberación del mensaje
+    /// se hace aquí, en <see cref="ReleasePendingBody"/>, antes de poner el cuerpo a cero.
+    /// </remarks>
     void IJsonRpcMessageBufferManager.DeserializationComplete(JsonRpcMessage message)
     {
         if (ReferenceEquals(Volatile.Read(ref _pendingMessage), message))
@@ -212,7 +220,13 @@ internal sealed partial class BoundedHeaderDelimitedMessageHandler : PipeMessage
 
     private void ReleasePendingBody()
     {
-        Volatile.Write(ref _pendingMessage, null);
+        // Primero el mensaje (una sola vez, aunque compitan la llamada de JsonRpc y la siguiente lectura o Dispose): suelta
+        // sus referencias al cuerpo; después se pone el cuerpo a cero.
+        if (Interlocked.Exchange(ref _pendingMessage, null) is IJsonRpcMessageBufferManager pooled and JsonRpcMessage message)
+        {
+            pooled.DeserializationComplete(message);
+        }
+
         if (Interlocked.Exchange(ref _pendingBody, null) is { } body)
         {
             CryptographicOperations.ZeroMemory(body);

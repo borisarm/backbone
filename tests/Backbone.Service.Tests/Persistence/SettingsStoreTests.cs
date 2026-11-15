@@ -16,6 +16,7 @@ public sealed class SettingsStoreTests : IDisposable
     public SettingsStoreTests()
     {
         _path = _temp.Combine("config", "settings.json");
+        Directory.CreateDirectory(_temp.Combine("config")); // la crea el servicio al arrancar (§8.3)
     }
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
@@ -179,6 +180,24 @@ public sealed class SettingsStoreTests : IDisposable
         var ex = await Assert.ThrowsAsync<UntrustedFileException>(() => store.LoadAsync(Ct));
 
         Assert.Equal(UntrustedFileReason.ReparsePoint, ex.Reason);
+    }
+
+    [Fact]
+    public async Task A_junction_in_place_of_the_config_folder_is_rejected_and_nothing_is_written_through_it()
+    {
+        // M-a: config\ creada de antemano como junction. Ni se lee ni se escribe en su destino.
+        var target = Directory.CreateDirectory(_temp.Combine("destino")).FullName;
+        File.WriteAllText(Path.Combine(target, "settings.json"), $$"""{ "authorizedUsers": ["{{TestSids.Ana}}"] }""");
+        var config = _temp.Combine("config-enlace");
+        TrustedFileTests.RunCmd("mklink", "/J", config, target);
+        using var store = new SettingsStore(Path.Combine(config, "settings.json"), TestFileTrust.CurrentUser, NullLogger<SettingsStore>.Instance);
+
+        Assert.Equal(UntrustedFileReason.ReparsePoint, (await Assert.ThrowsAsync<UntrustedFileException>(() => store.LoadAsync(Ct))).Reason);
+        await Assert.ThrowsAsync<UntrustedFileException>(() => store.AddAuthorizedUserAsync(new SecurityIdentifier(TestSids.Luis), Ct));
+
+        Assert.Empty(store.Sids);
+        Assert.Equal(["settings.json"], Directory.EnumerateFileSystemEntries(target).Select(Path.GetFileName));
+        Assert.DoesNotContain(TestSids.Luis, File.ReadAllText(Path.Combine(target, "settings.json")), StringComparison.Ordinal);
     }
 
     [Fact]

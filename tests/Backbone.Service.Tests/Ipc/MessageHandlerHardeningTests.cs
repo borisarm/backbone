@@ -52,6 +52,33 @@ public sealed class MessageHandlerHardeningTests
     }
 
     [Fact]
+    public async Task The_message_buffers_are_released_once_before_zeroing_the_body_as_the_base_handler_would()
+    {
+        // I-3: la implementación de PipeMessageHandler (que esta clase sustituye) llama a DeserializationComplete del
+        // mensaje; los de SystemTextJsonFormatter liberan así su JsonDocument. Aquí se hace una sola vez, en cualquier camino.
+        var (serverStream, clientStream) = FullDuplexStream.CreatePair();
+        using var formatter = new TrackingFormatter();
+        var handler = new BoundedHeaderDelimitedMessageHandler(serverStream, formatter, 4096);
+        await RawFraming.WriteAsync(clientStream, CredentialRequest, Ct);
+        await RawFraming.WriteAsync(clientStream, CredentialRequest.Replace("\"id\":1", "\"id\":2", StringComparison.Ordinal), Ct);
+        await RawFraming.WriteAsync(clientStream, CredentialRequest.Replace("\"id\":1", "\"id\":3", StringComparison.Ordinal), Ct);
+
+        var first = await handler.ReadAsync(Ct);
+        ((IJsonRpcMessageBufferManager)handler).DeserializationComplete(first!);
+        ((IJsonRpcMessageBufferManager)handler).DeserializationComplete(first!); // repetida: no se vuelve a liberar
+        Assert.Equal([1], formatter.Messages.Select(m => m.Releases));
+        Assert.True(formatter.Messages[0].BodyWasIntactWhenReleased);
+
+        await handler.ReadAsync(Ct); // sin DeserializationComplete: se libera al leer el siguiente
+        await handler.ReadAsync(Ct);
+        Assert.Equal([1, 1, 0], formatter.Messages.Select(m => m.Releases));
+
+        await handler.DisposeAsync(); // y al desechar
+        Assert.Equal([1, 1, 1], formatter.Messages.Select(m => m.Releases));
+        Assert.All(formatter.Messages, m => Assert.True(m.BodyWasIntactWhenReleased));
+    }
+
+    [Fact]
     public async Task The_previous_body_is_zeroed_before_reading_the_next_message_and_on_dispose()
     {
         var (serverStream, clientStream) = FullDuplexStream.CreatePair();
@@ -192,6 +219,44 @@ public sealed class MessageHandlerHardeningTests
     }
 
     /// <summary>Formateador real que guarda los cuerpos que recibe (para comprobar que se ponen a cero).</summary>
+    /// <summary>Devuelve mensajes que registran cuántas veces se liberan y si el cuerpo seguía intacto al liberarlos.</summary>
+    private sealed class TrackingFormatter : IJsonRpcMessageFormatter, IDisposable
+    {
+        private readonly SystemTextJsonFormatter _inner = new();
+
+        public List<TrackedRequest> Messages { get; } = [];
+
+        public JsonRpcMessage Deserialize(ReadOnlySequence<byte> contentBuffer)
+        {
+            Assert.True(MemoryMarshal.TryGetArray(contentBuffer.First, out var segment));
+            var parsed = (JsonRpcRequest)_inner.Deserialize(contentBuffer);
+            var message = new TrackedRequest(segment.Array!) { RequestId = parsed.RequestId, Method = parsed.Method };
+            ((IJsonRpcMessageBufferManager)parsed).DeserializationComplete(parsed);
+            Messages.Add(message);
+            return message;
+        }
+
+        public void Serialize(IBufferWriter<byte> bufferWriter, JsonRpcMessage message) => _inner.Serialize(bufferWriter, message);
+
+        public object GetJsonText(JsonRpcMessage message) => _inner.GetJsonText(message);
+
+        public void Dispose() => _inner.Dispose();
+    }
+
+    private sealed class TrackedRequest(byte[] body) : JsonRpcRequest, IJsonRpcMessageBufferManager
+    {
+        public int Releases { get; private set; }
+
+        public bool BodyWasIntactWhenReleased { get; private set; }
+
+        public void DeserializationComplete(JsonRpcMessage message)
+        {
+            Assert.Same(this, message);
+            Releases++;
+            BodyWasIntactWhenReleased = body.Any(b => b != 0);
+        }
+    }
+
     private sealed class RecordingFormatter : IJsonRpcMessageFormatter, IDisposable
     {
         private readonly SystemTextJsonFormatter _inner = new();

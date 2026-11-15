@@ -13,7 +13,7 @@ internal enum UntrustedFileReason
     /// <summary>Es un punto de reanálisis (enlace simbólico, <i>junction</i>, montaje…).</summary>
     ReparsePoint = 0,
 
-    /// <summary>No es un archivo normal (es una carpeta).</summary>
+    /// <summary>No es un archivo normal (es una carpeta), o la carpeta padre no es una carpeta.</summary>
     NotAFile = 1,
 
     /// <summary>Su propietario no es SYSTEM ni Administradores.</summary>
@@ -61,6 +61,13 @@ internal sealed class UntrustedFileException : Exception
 /// </summary>
 /// <remarks>
 /// <list type="bullet">
+/// <item><b>Carpeta padre</b>: no se crea nunca (las subcarpetas fijas las crea <see cref="DataDirectoryGuard"/> al
+/// arrancar, §8.3); si no existe, la operación falla. Se abre por handle con <c>FILE_FLAG_OPEN_REPARSE_POINT |
+/// FILE_FLAG_BACKUP_SEMANTICS</c>, con acceso a datos y <b>sin <c>FILE_SHARE_DELETE</c></b>; sobre ese handle se comprueba
+/// que es una carpeta, que no es un punto de reanálisis y que su propietario es de confianza (si no, se rechaza como un
+/// archivo, con la ruta de la carpeta). El handle se mantiene abierto durante toda la operación: nadie puede renombrar la
+/// carpeta ni sustituirla por un <i>junction</i> a mitad, y mientras esté abierta tampoco se puede renombrar ninguna
+/// carpeta por encima de ella (NTFS no renombra una carpeta con archivos abiertos debajo).</item>
 /// <item><b>Lectura</b>: <c>CreateFile</c> con <c>FILE_FLAG_OPEN_REPARSE_POINT</c> (nunca se sigue un enlace) y
 /// <c>FILE_FLAG_BACKUP_SEMANTICS</c> (para poder abrir, y rechazar, una carpeta o <i>junction</i> en lugar del archivo).
 /// Sobre ese mismo handle, antes de leer nada: no es punto de reanálisis ni carpeta (<c>FileAttributeTagInfo</c>), tiene un
@@ -83,9 +90,11 @@ internal sealed class TrustedFile(FileTrustPolicy policy)
     /// <summary>Lee el archivo completo, o <see langword="null"/> si no existe.</summary>
     /// <exception cref="UntrustedFileException">Se rechaza (no se lee nada).</exception>
     /// <exception cref="InvalidDataException">Mide más de <paramref name="maxBytes"/> (no se lee).</exception>
+    /// <exception cref="DirectoryNotFoundException">La carpeta padre no existe.</exception>
     public async Task<byte[]?> ReadAllBytesAsync(string path, int maxBytes, CancellationToken ct)
     {
         var fullPath = Path.GetFullPath(path);
+        using var parent = OpenParent(fullPath);
         using var handle = Open(fullPath, GenericRead, FileShareRead | FileShareDelete, out var error);
         if (handle is null)
         {
@@ -115,13 +124,13 @@ internal sealed class TrustedFile(FileTrustPolicy policy)
     }
 
     /// <summary>Escribe el archivo de forma atómica: un lector ve el contenido anterior completo o el nuevo completo.</summary>
-    /// <exception cref="UntrustedFileException">El destino existente se rechaza: no se reemplaza.</exception>
+    /// <exception cref="UntrustedFileException">El destino existente o su carpeta se rechazan: no se escribe nada.</exception>
+    /// <exception cref="DirectoryNotFoundException">La carpeta padre no existe (no se crea).</exception>
     public async Task WriteAllBytesAsync(string path, ReadOnlyMemory<byte> content, CancellationToken ct)
     {
         var fullPath = Path.GetFullPath(path);
-        var directory = Path.GetDirectoryName(fullPath)
-            ?? throw new ArgumentException("The path has no parent directory.", nameof(path));
-        Directory.CreateDirectory(directory);
+        using var parent = OpenParent(fullPath);
+        var directory = ParentOf(fullPath);
 
         var temp = Path.Combine(directory, $".{Path.GetFileName(fullPath)}.{Guid.NewGuid():N}.tmp");
         using var handle = CreateTemporary(temp);
@@ -153,10 +162,18 @@ internal sealed class TrustedFile(FileTrustPolicy policy)
     /// los dos como en la lectura. Sirve para apartar un archivo dañado (p. ej. <c>settings.json.bad</c>).
     /// </summary>
     /// <returns><see langword="false"/> si el origen no existe.</returns>
+    /// <exception cref="ArgumentException">Origen y destino no están en la misma carpeta.</exception>
+    /// <exception cref="DirectoryNotFoundException">La carpeta no existe.</exception>
     public bool MoveReplacing(string sourcePath, string destinationPath)
     {
         var source = Path.GetFullPath(sourcePath);
         var destination = Path.GetFullPath(destinationPath);
+        if (!string.Equals(ParentOf(source), ParentOf(destination), StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("The source and the destination must be in the same directory.", nameof(destinationPath));
+        }
+
+        using var parent = OpenParent(source);
         using var handle = Open(source, Delete | ReadControl | FileReadAttributes | Synchronize, FileShareRead | FileShareWrite | FileShareDelete, out var error);
         if (handle is null)
         {
@@ -167,6 +184,57 @@ internal sealed class TrustedFile(FileTrustPolicy policy)
         EnsureReplaceable(destination);
         Rename(handle, destination);
         return true;
+    }
+
+    private static string ParentOf(string fullPath) =>
+        Path.GetDirectoryName(fullPath) is { Length: > 0 } directory
+            ? directory
+            : throw new ArgumentException("The path has no parent directory.", nameof(fullPath));
+
+    /// <summary>
+    /// Abre y valida la carpeta padre de <paramref name="fullPath"/>. El handle (acceso a datos, sin
+    /// <c>FILE_SHARE_DELETE</c>) debe mantenerse abierto hasta terminar la operación.
+    /// </summary>
+    private SafeFileHandle OpenParent(string fullPath)
+    {
+        var directory = ParentOf(fullPath);
+        var handle = Open(directory, FileListDirectory | ReadControl | FileReadAttributes | Synchronize, FileShareRead | FileShareWrite, out var error);
+        if (handle is null)
+        {
+            throw error is ErrorFileNotFound or ErrorPathNotFound
+                ? new DirectoryNotFoundException($"The directory '{directory}' does not exist.", new Win32Exception(error))
+                : ToException(error, directory, "opened");
+        }
+
+        try
+        {
+            if (!GetFileInformationByHandleEx(handle, FileAttributeTagInfo, out FileAttributeTagInformation tag, (uint)Marshal.SizeOf<FileAttributeTagInformation>()))
+            {
+                throw ToException(Marshal.GetLastPInvokeError(), directory, "inspected");
+            }
+
+            if ((tag.FileAttributes & FileAttributeReparsePoint) != 0)
+            {
+                throw new UntrustedFileException(directory, UntrustedFileReason.ReparsePoint);
+            }
+
+            if ((tag.FileAttributes & FileAttributeDirectory) == 0)
+            {
+                throw new UntrustedFileException(directory, UntrustedFileReason.NotAFile);
+            }
+
+            if (!Policy.IsTrustedOwner(ReadOwner(handle, directory)))
+            {
+                throw new UntrustedFileException(directory, UntrustedFileReason.UntrustedOwner);
+            }
+
+            return handle;
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
     }
 
     /// <summary>Comprueba el objeto abierto y devuelve su longitud.</summary>

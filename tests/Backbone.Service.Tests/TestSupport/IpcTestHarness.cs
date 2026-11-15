@@ -20,6 +20,7 @@ internal sealed class IpcTestHarness : IAsyncDisposable
     {
         Options = options ?? new IpcOptions();
         LoggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(b => b.AddProvider(Logs).SetMinimumLevel(LogLevel.Trace));
+        Directory.CreateDirectory(_temp.Combine("config")); // la crea el servicio al arrancar (§8.3); los almacenes no crean carpetas
         Settings = new SettingsStore(_temp.Combine("config", "settings.json"), TestFileTrust.CurrentUser, LoggerFactory.CreateLogger<SettingsStore>());
         Authorizer = new CallerAuthorizer(Settings, Accounts);
         Runtime = new ServiceRuntimeInfo(Time);

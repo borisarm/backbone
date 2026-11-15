@@ -55,11 +55,13 @@ internal sealed partial class StartupService(
         catch (UntrustedFileException ex)
         {
             // §8.2 / ADR-14: settings.json rechazado (no se ha leído nada): el servicio no arranca.
-            LogSettingsRejected(logger, ex, settings.SettingsPath);
+            // El rechazo puede ser del propio archivo o de su carpeta padre (config\): se registra la ruta rechazada.
+            var rejected = ex.FilePath ?? settings.SettingsPath;
+            LogSettingsRejected(logger, ex, rejected);
             eventLog.Write(
                 EventLogLevel.Error,
                 BackboneEventIds.ServiceStartFailed,
-                $"Backbone does not start: '{settings.SettingsPath}' was rejected ({ex.Reason}); it must be a regular file owned by SYSTEM or Administrators. Repair the installation.");
+                $"Backbone does not start: '{rejected}' was rejected ({ex.Reason}) while reading '{settings.SettingsPath}'; the file and its folder must be owned by SYSTEM or Administrators and must not be links. Repair the installation.");
             throw new ServiceStartupException("settings.json was rejected.", ex);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

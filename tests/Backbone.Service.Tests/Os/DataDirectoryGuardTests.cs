@@ -111,6 +111,151 @@ public sealed class DataDirectoryGuardTests : IDisposable
     }
 
     [Fact]
+    public void Inheritance_with_only_inherited_SYSTEM_and_Administrators_allow_entries_is_compliant()
+    {
+        var inherited = InheritedOnly(
+            new CommonAce(AceFlags.Inherited | AceFlags.ContainerInherit | AceFlags.ObjectInherit, AceQualifier.AccessAllowed, FullControlMask, System, false, null),
+            new CommonAce(AceFlags.Inherited | AceFlags.ContainerInherit | AceFlags.ObjectInherit, AceQualifier.AccessAllowed, FullControlMask, Administrators, false, null));
+
+        Assert.True(DataDirectoryGuard.IsChildCompliant(inherited));
+        Assert.True(DataDirectoryGuard.IsChildCompliant(inherited, isDirectory: true));
+    }
+
+    [Fact]
+    public void An_entry_forged_as_inherited_for_another_SID_or_a_deny_is_not_compliant()
+    {
+        // B-a: INHERITED_ACE lo puede poner cualquiera que escriba la DACL; "Users: FullControl" marcada como heredada.
+        var forgedUsers = InheritedOnly(
+            new CommonAce(AceFlags.Inherited | AceFlags.ContainerInherit | AceFlags.ObjectInherit, AceQualifier.AccessAllowed, FullControlMask, System, false, null),
+            new CommonAce(AceFlags.Inherited | AceFlags.ContainerInherit | AceFlags.ObjectInherit, AceQualifier.AccessAllowed, FullControlMask, Users, false, null));
+        var forgedDeny = InheritedOnly(
+            new CommonAce(AceFlags.Inherited, AceQualifier.AccessDenied, (int)FileSystemRights.Delete, Administrators, false, null),
+            new CommonAce(AceFlags.Inherited, AceQualifier.AccessAllowed, FullControlMask, System, false, null));
+        var forgedInheritOnly = InheritedOnly(
+            new CommonAce(AceFlags.Inherited, AceQualifier.AccessAllowed, FullControlMask, System, false, null),
+            new CommonAce(AceFlags.Inherited | AceFlags.InheritOnly | AceFlags.ContainerInherit | AceFlags.ObjectInherit, AceQualifier.AccessAllowed, FullControlMask, Users, false, null));
+
+        // Lo que se comprueba es la ACE falsificada, no la forma: la regla anterior (sin ACE explícitas) sí la aceptaba.
+        Assert.Empty(forgedUsers.GetAccessRules(includeExplicit: true, includeInherited: false, typeof(SecurityIdentifier)));
+        Assert.Contains(forgedUsers.GetAccessRules(false, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>(),
+            r => r.IsInherited && (SecurityIdentifier)r.IdentityReference == Users && r.FileSystemRights == FileSystemRights.FullControl);
+
+        Assert.False(DataDirectoryGuard.IsChildCompliant(forgedUsers));
+        Assert.False(DataDirectoryGuard.IsChildCompliant(forgedUsers, isDirectory: true));
+        Assert.False(DataDirectoryGuard.IsChildCompliant(forgedDeny));
+        Assert.False(DataDirectoryGuard.IsChildCompliant(forgedInheritOnly, isDirectory: true));
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public void The_check_creates_the_missing_fixed_subdirectories_inheriting_from_the_root_when_elevated()
+    {
+        Assert.SkipUnless(WindowsTestEnvironment.IsElevated, "Requires an elevated process (Administrators as owner).");
+        var root = _temp.Combine("Backbone");
+        Assert.Equal(DataDirectoryCheckResult.Corrected, _guard.EnsureSecure(root).Result);
+        Directory.Delete(Path.Combine(root, "logs"));
+
+        Assert.Equal(DataDirectoryCheckResult.Secure, _guard.EnsureSecure(root).Result);
+
+        Assert.Equal(["config", "credentials", "data", "logs"], Directory.GetDirectories(root).Select(Path.GetFileName).Order(StringComparer.Ordinal));
+        Assert.Equal(["config", "credentials", "data", "logs"], DataDirectoryGuard.FixedSubdirectories);
+        foreach (var name in DataDirectoryGuard.FixedSubdirectories)
+        {
+            var security = new DirectoryInfo(Path.Combine(root, name)).GetAccessControl();
+            Assert.False(security.AreAccessRulesProtected);
+            Assert.Empty(security.GetAccessRules(includeExplicit: true, includeInherited: false, typeof(SecurityIdentifier)));
+            Assert.True(DataDirectoryGuard.IsChildCompliant(security, isDirectory: true));
+            Assert.Contains(security.GetOwner(typeof(SecurityIdentifier)), new IdentityReference[] { System, Administrators });
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public void A_junction_with_a_fixed_subdirectory_name_is_refused_when_elevated()
+    {
+        // Sin elevar la raíz es del usuario y se aparta antes de llegar al contenido: solo tiene sentido elevado.
+        Assert.SkipUnless(WindowsTestEnvironment.IsElevated, "Requires an elevated process (Administrators as owner).");
+        foreach (var name in DataDirectoryGuard.FixedSubdirectories)
+        {
+            using var temp = new TempDirectory();
+            var root = Directory.CreateDirectory(temp.Combine("Backbone")).FullName;
+            var outside = Directory.CreateDirectory(temp.Combine("fuera")).FullName;
+            CreateJunction(Path.Combine(root, name), outside);
+            TrySecureRoot(root);
+
+            var ex = Assert.Throws<DataDirectoryInsecureException>(() => _guard.EnsureSecure(root));
+
+            Assert.Contains("reparse point", ex.Message, StringComparison.Ordinal);
+            Assert.True(Directory.Exists(root)); // no se ha apartado: se rechaza
+            Assert.Empty(Directory.EnumerateFileSystemEntries(outside)); // nada creado a través del enlace
+            Assert.True(new DirectoryInfo(Path.Combine(root, name)).Attributes.HasFlag(FileAttributes.ReparsePoint));
+        }
+    }
+
+    [Fact]
+    public void Acl_propagation_with_SetSecurityInfo_does_not_follow_a_junction_into_its_target()
+    {
+        // B-b (comprobación sin elevar del supuesto en que se basa el orden de EnsureSecure): la corrección de la raíz con
+        // SetSecurityInfo propaga las ACE heredables a los hijos, pero no entra en el destino de un junction hijo, así que no
+        // hace falta validar el contenido antes de corregir la raíz. La prueba elevada con el guardián completo está en
+        // Backbone.IntegrationTests (DataDirectoryGuardElevatedTests).
+        var root = Directory.CreateDirectory(_temp.Combine("raiz")).FullName;
+        Directory.CreateDirectory(Path.Combine(root, "sub"));
+        var outside = Directory.CreateDirectory(_temp.Combine("fuera")).FullName;
+        Directory.CreateDirectory(Path.Combine(outside, "dentro"));
+        CreateJunction(Path.Combine(root, "enlace"), outside);
+        var outsideBefore = new DirectoryInfo(outside).GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+        var insideBefore = new DirectoryInfo(Path.Combine(outside, "dentro")).GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+
+        var security = new DirectorySecurity();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        foreach (var sid in new[] { WindowsTestEnvironment.CurrentUserSid, Users })
+        {
+            security.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
+        }
+
+        var raw = new RawSecurityDescriptor(security.GetSecurityDescriptorBinaryForm(), 0);
+        var dacl = new byte[raw.DiscretionaryAcl!.BinaryLength];
+        raw.DiscretionaryAcl.GetBinaryForm(dacl, 0);
+        using (var handle = NativeMethods.CreateFile(
+            root, NativeMethods.WriteDac | NativeMethods.ReadControl | NativeMethods.FileReadAttributes | NativeMethods.Synchronize,
+            NativeMethods.FileShareRead | NativeMethods.FileShareWrite | NativeMethods.FileShareDelete, 0, NativeMethods.OpenExisting,
+            NativeMethods.FileFlagBackupSemantics | NativeMethods.FileFlagOpenReparsePoint, 0))
+        {
+            Assert.False(handle.IsInvalid);
+            Assert.Equal(0, NativeMethods.SetSecurityInfo(handle, NativeMethods.SeFileObject,
+                NativeMethods.DaclSecurityInformation | NativeMethods.ProtectedDaclSecurityInformation, 0, 0, dacl, 0));
+        }
+
+        // Se propaga a los hijos normales…
+        Assert.Contains(new DirectoryInfo(Path.Combine(root, "sub")).GetAccessControl().GetAccessRules(false, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>(),
+            r => (SecurityIdentifier)r.IdentityReference == Users);
+        // …pero no al destino del junction ni a lo que hay dentro.
+        Assert.Equal(outsideBefore, new DirectoryInfo(outside).GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access));
+        Assert.Equal(insideBefore, new DirectoryInfo(Path.Combine(outside, "dentro")).GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access));
+    }
+
+    private const int FullControlMask = (int)FileSystemRights.FullControl;
+
+    /// <summary>Descriptor sin protección, propietario Administradores, cuya DACL solo tiene las ACE indicadas (marcadas a mano).</summary>
+    private static DirectorySecurity InheritedOnly(params CommonAce[] aces)
+    {
+        var dacl = new RawAcl(GenericAcl.AclRevision, aces.Length);
+        for (var i = 0; i < aces.Length; i++)
+        {
+            dacl.InsertAce(i, aces[i]);
+        }
+
+        var raw = new RawSecurityDescriptor(
+            ControlFlags.DiscretionaryAclPresent | ControlFlags.SelfRelative, Administrators, null, null, dacl);
+        var bytes = new byte[raw.BinaryLength];
+        raw.GetBinaryForm(bytes, 0);
+        var security = new DirectorySecurity();
+        security.SetSecurityDescriptorBinaryForm(bytes);
+        return security;
+    }
+
+    [Fact]
     public void A_file_with_the_canonical_TrustedFile_DACL_is_compliant_but_a_directory_with_it_is_not()
     {
         var canonical = CanonicalTrustedFileSecurity();
@@ -152,7 +297,7 @@ public sealed class DataDirectoryGuardTests : IDisposable
         Assert.SkipUnless(WindowsTestEnvironment.IsElevated, "Requires an elevated process (Administrators as owner).");
         var root = _temp.Combine("Backbone");
         Assert.Equal(DataDirectoryCheckResult.Corrected, _guard.EnsureSecure(root).Result);
-        var file = Path.Combine(root, "config", "settings.json");
+        var file = Path.Combine(root, "config", "settings.json"); // config\ la ha creado la comprobación (§8.3)
 
         await new TrustedFile(FileTrustPolicy.Default).WriteAllBytesAsync(file, "{}"u8.ToArray(), TestContext.Current.CancellationToken);
 
@@ -263,7 +408,8 @@ public sealed class DataDirectoryGuardTests : IDisposable
             check = _guard.EnsureSecure(root);
             Assert.Equal(DataDirectoryCheckResult.Replaced, check.Result);
             Assert.True(DataDirectoryGuard.IsRootCompliant(new DirectoryInfo(root).GetAccessControl()));
-            Assert.Empty(Directory.EnumerateFileSystemEntries(root));
+            // Nueva y vacía salvo las subcarpetas fijas que crea la comprobación (§8.3).
+            Assert.Equal(DataDirectoryGuard.FixedSubdirectories, Directory.EnumerateFileSystemEntries(root).Select(Path.GetFileName).Order(StringComparer.Ordinal));
         }
         else
         {

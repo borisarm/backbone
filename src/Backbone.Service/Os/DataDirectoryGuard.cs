@@ -30,7 +30,15 @@ namespace Backbone.Service.Os;
 /// <item>Contenido: ningún punto de reanálisis; todo propiedad de SYSTEM o Administradores (si no, se rechaza); o bien
 /// herencia sin ACE explícitas, o bien (solo archivos) exactamente la DACL protegida canónica con que
 /// <see cref="Persistence.TrustedFile"/> crea los archivos (<see cref="FileTrustPolicy.Default"/>: solo SYSTEM y
-/// Administradores con control total, §8.3). Cualquier otra DACL se corrige restableciendo la herencia.</item>
+/// Administradores con control total, §8.3). La herencia solo cuenta si además todas las ACE son de permiso y solo para
+/// SYSTEM o Administradores (una ACE marcada a mano como heredada no basta). Cualquier otra DACL se corrige restableciendo
+/// la herencia.</item>
+/// <item>Subcarpetas fijas (<see cref="FixedSubdirectories"/>): con la raíz todavía abierta se crean las que falten, por
+/// handle (<c>NtCreateFile</c> relativo al handle de la raíz, <c>FILE_CREATE</c> y <c>FILE_DIRECTORY_FILE</c>: falla si ya
+/// existe cualquier entrada con ese nombre, sin seguirla) y sin descriptor explícito (heredan la DACL ya corregida de la
+/// raíz). Sobre el handle de creación se comprueba que es una carpeta, que no es un punto de reanálisis, que su
+/// propietario es fiable y que su DACL es la heredada. Es el único sitio donde se crean carpetas: los almacenes no las
+/// crean (§8.2).</item>
 /// </list>
 /// Crear la raíz con Administradores como propietario exige que el proceso pueda asignarlo (SYSTEM o un administrador
 /// elevado). Si una corrección falla, se rechaza.
@@ -40,11 +48,11 @@ internal sealed class DataDirectoryGuard : IDataDirectoryGuard
     /// <summary>Sufijo del nombre con que se aparta una raíz de propietario no fiable.</summary>
     internal const string QuarantineSuffix = ".untrusted-";
 
+    /// <summary>Subcarpetas fijas de la carpeta de datos (§8.3).</summary>
+    internal static readonly IReadOnlyList<string> FixedSubdirectories = ["config", "credentials", "data", "logs"];
+
     private const int MaxEntries = 100_000;
     private const int MaxAttempts = 3;
-
-    /// <summary><c>FILE_LIST_DIRECTORY</c> / <c>FILE_READ_DATA</c>: acceso a datos para que el modo de compartición cuente.</summary>
-    private const uint FileListDirectory = 0x0001;
 
     private static readonly SecurityIdentifier LocalSystem = new(WellKnownSidType.LocalSystemSid, null);
     private static readonly SecurityIdentifier Administrators = new(WellKnownSidType.BuiltinAdministratorsSid, null);
@@ -125,6 +133,10 @@ internal sealed class DataDirectoryGuard : IDataDirectoryGuard
                     result = Max(result, DataDirectoryCheckResult.Corrected);
                 }
 
+                // Con la raíz todavía abierta (no se puede renombrar ni sustituir): las subcarpetas fijas que falten.
+                EnsureDirectoryNotReparse(handle, "The data directory");
+                CreateFixedSubdirectories(handle, root);
+
                 return new DataDirectoryCheck(result, movedAside);
             }
         }
@@ -180,6 +192,111 @@ internal sealed class DataDirectoryGuard : IDataDirectoryGuard
         return corrected;
     }
 
+    /// <summary>
+    /// Crea, relativas al handle de la raíz, las subcarpetas fijas que falten (§8.3). Un nombre ya ocupado se ha comprobado
+    /// como contenido; si lo ocupa algo creado entre medias, se comprueba igual.
+    /// </summary>
+    private static void CreateFixedSubdirectories(SafeFileHandle root, string rootPath)
+    {
+        foreach (var name in FixedSubdirectories)
+        {
+            var status = CreateChildDirectory(root, name, out var created);
+            if (status == StatusObjectNameCollision)
+            {
+                // Ya existía (tratada como contenido) o alguien la ha creado después del recorrido: se vuelve a comprobar.
+                var path = Path.Combine(rootPath, name);
+                using var existing = TryOpen(path, FileListDirectory | ReadControl | FileReadAttributes | Synchronize, FileShareRead | FileShareWrite, out var error)
+                    ?? throw new DataDirectoryInsecureException($"The data subdirectory '{name}' could not be opened.", new Win32Exception(error));
+                EnsureFixedSubdirectory(existing, name);
+                continue;
+            }
+
+            if (status < 0)
+            {
+                throw new DataDirectoryInsecureException(
+                    $"The data subdirectory '{name}' could not be created.", new Win32Exception(RtlNtStatusToDosError(status)));
+            }
+
+            using (created)
+            {
+                EnsureFixedSubdirectory(created, name);
+            }
+        }
+    }
+
+    /// <summary>Carpeta (no punto de reanálisis), de propietario fiable y con la DACL heredada de la raíz.</summary>
+    private static void EnsureFixedSubdirectory(SafeFileHandle handle, string name)
+    {
+        EnsureDirectoryNotReparse(handle, $"The data subdirectory '{name}'");
+        var security = ReadSecurity(handle);
+        if (!IsTrustedOwner(security))
+        {
+            throw new DataDirectoryInsecureException($"The data subdirectory '{name}' is owned by an untrusted account.");
+        }
+
+        if (!IsChildCompliant(security, isDirectory: true))
+        {
+            throw new DataDirectoryInsecureException($"The data subdirectory '{name}' does not inherit the security of the data directory.");
+        }
+    }
+
+    /// <summary>
+    /// <c>NtCreateFile</c> relativo a <paramref name="parent"/>: carpeta nueva (<c>FILE_CREATE</c>, nunca abre ni sigue lo
+    /// que exista), sin descriptor explícito (hereda), abierta sin <c>FILE_SHARE_DELETE</c>.
+    /// </summary>
+    /// <returns>El <c>NTSTATUS</c>; <paramref name="handle"/> solo es válido si es de éxito.</returns>
+    private static unsafe int CreateChildDirectory(SafeFileHandle parent, string name, out SafeFileHandle handle)
+    {
+        var addedRef = false;
+        try
+        {
+            parent.DangerousAddRef(ref addedRef);
+            fixed (char* buffer = name)
+            {
+                var objectName = new UnicodeString
+                {
+                    Length = checked((ushort)(name.Length * sizeof(char))),
+                    MaximumLength = checked((ushort)(name.Length * sizeof(char))),
+                    Buffer = (nint)buffer,
+                };
+                var attributes = new ObjectAttributes
+                {
+                    Length = (uint)sizeof(ObjectAttributes),
+                    RootDirectory = parent.DangerousGetHandle(),
+                    ObjectName = (nint)(&objectName),
+                    Attributes = ObjCaseInsensitive,
+                    SecurityDescriptor = 0,
+                    SecurityQualityOfService = 0,
+                };
+                var status = NtCreateFile(
+                    out handle,
+                    FileListDirectory | ReadControl | FileReadAttributes | Synchronize,
+                    in attributes,
+                    out _,
+                    0,
+                    0,
+                    FileShareRead | FileShareWrite,
+                    NtFileCreate,
+                    NtFileDirectoryFile | NtFileSynchronousIoNonAlert | NtFileOpenReparsePoint,
+                    0,
+                    0);
+                if (status < 0)
+                {
+                    handle.Dispose();
+                }
+
+                return status;
+            }
+        }
+        finally
+        {
+            if (addedRef)
+            {
+                parent.DangerousRelease();
+            }
+        }
+    }
+
     internal static DirectorySecurity BuildRootSecurity()
     {
         var security = new DirectorySecurity();
@@ -227,9 +344,20 @@ internal sealed class DataDirectoryGuard : IDataDirectoryGuard
         IsTrustedOwner(security)
         && (IsInheritedOnly(security) || (!isDirectory && IsCanonicalTrustedFileDacl(security, FileTrustPolicy.Default)));
 
+    /// <summary>
+    /// Herencia sin ACE explícitas y, además, todas las ACE (marcadas como heredadas) de permiso y solo para SYSTEM o
+    /// Administradores: el indicador <c>INHERITED_ACE</c> lo puede poner cualquiera que escriba la DACL, así que no basta
+    /// (B-a). Se comprueban todas, también las solo heredables: en el contenido legítimo, heredado de la raíz canónica, no hay
+    /// ninguna otra.
+    /// </summary>
     private static bool IsInheritedOnly(FileSystemSecurity security) =>
         !security.AreAccessRulesProtected
-        && security.GetAccessRules(includeExplicit: true, includeInherited: false, typeof(SecurityIdentifier)).Count == 0;
+        && security.GetAccessRules(includeExplicit: true, includeInherited: false, typeof(SecurityIdentifier)).Count == 0
+        && security.GetAccessRules(includeExplicit: true, includeInherited: true, typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>()
+            .All(r => r.AccessControlType == AccessControlType.Allow
+                      && r.IdentityReference is SecurityIdentifier sid
+                      && (sid == LocalSystem || sid == Administrators));
 
     /// <summary>
     /// DACL protegida con exactamente una ACE explícita de permiso por cada SID de <see cref="FileTrustPolicy.FullControlSids"/>,

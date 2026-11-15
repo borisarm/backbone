@@ -142,7 +142,7 @@ internal sealed partial class SettingsStore(
         }
         catch (UntrustedFileException ex)
         {
-            LogRejected(logger, SettingsPath, ex.Reason);
+            LogRejected(logger, ex.FilePath ?? SettingsPath, ex.Reason);
             throw;
         }
         catch (InvalidDataException ex)

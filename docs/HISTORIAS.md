@@ -99,6 +99,7 @@ Como Ana, quiero instalar Backbone con un instalador normal de Windows, para emp
   - I-3: decidir de forma explícita si x64 y ARM64 comparten `UpgradeCode`; la versión es única y se pasa al `.wixproj` como `$(Version)` (la de `Directory.Build.props`).
   - I-4: la entrada `HKCU\…\Run` la crea la app en la sesión del usuario (casilla del primer arranque o Ajustes), no el MSI per-machine.
   - B-6: los artefactos de CI no son distribuibles; la publicación de MSI firmados va por un flujo aparte.
+  - Nota (revisión de HT-03, I-6): las bibliotecas nativas de terceros que carga el servicio (p. ej. `e_sqlite3.dll` de `Microsoft.Data.Sqlite`) se cargan desde la carpeta de instalación; su integridad depende de que `INSTALLFOLDER` (bajo `ProgramFiles64Folder`) **no sea escribible por usuarios**. El MSI no debe añadir ACL que lo permitan y la prueba de aceptación lo comprueba.
 
 ### HU-02 · Actualizar y desinstalar
 Como Luis, quiero actualizar a una versión nueva sin perder la configuración y poder desinstalar limpiamente, para mantener el sistema ordenado.

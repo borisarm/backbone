@@ -131,6 +131,9 @@ internal static partial class NativeMethods
     internal const uint Synchronize = 0x0010_0000;
     internal const uint FileReadAttributes = 0x0080;
 
+    /// <summary><c>FILE_LIST_DIRECTORY</c> / <c>FILE_READ_DATA</c>: acceso a datos, para que el modo de compartición cuente.</summary>
+    internal const uint FileListDirectory = 0x0001;
+
     internal const uint FileShareRead = 0x1;
     internal const uint FileShareWrite = 0x2;
     internal const uint FileShareDelete = 0x4;
@@ -272,4 +275,65 @@ internal static partial class NativeMethods
 
     [LibraryImport("kernel32.dll")]
     internal static partial nint LocalFree(nint memory);
+
+    // ---- Creación de carpetas relativa a un handle (winternl.h, ntifs.h, ntdef.h) ----
+
+    /// <summary><c>FILE_CREATE</c>: falla si ya existe una entrada con ese nombre (no se abre ni se sigue).</summary>
+    internal const uint NtFileCreate = 2;
+
+    internal const uint NtFileDirectoryFile = 0x0000_0001;
+    internal const uint NtFileSynchronousIoNonAlert = 0x0000_0020;
+    internal const uint NtFileOpenReparsePoint = 0x0020_0000;
+
+    internal const uint ObjCaseInsensitive = 0x40;
+
+    /// <summary><c>STATUS_OBJECT_NAME_COLLISION</c>.</summary>
+    internal const int StatusObjectNameCollision = unchecked((int)0xC000_0035);
+
+    /// <summary><c>UNICODE_STRING</c> (longitudes en bytes, sin NUL final obligatorio).</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct UnicodeString
+    {
+        public ushort Length;
+        public ushort MaximumLength;
+        public nint Buffer;
+    }
+
+    /// <summary><c>OBJECT_ATTRIBUTES</c>.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ObjectAttributes
+    {
+        public uint Length;
+        public nint RootDirectory;
+        public nint ObjectName;
+        public uint Attributes;
+        public nint SecurityDescriptor;
+        public nint SecurityQualityOfService;
+    }
+
+    /// <summary><c>IO_STATUS_BLOCK</c>: union { NTSTATUS Status; PVOID Pointer; } + <c>ULONG_PTR Information</c>.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct IoStatusBlock
+    {
+        public nint Status;
+        public nint Information;
+    }
+
+    /// <summary>Devuelve un <c>NTSTATUS</c> (no usa <c>SetLastError</c>); se traduce con <see cref="RtlNtStatusToDosError"/>.</summary>
+    [LibraryImport("ntdll.dll")]
+    internal static partial int NtCreateFile(
+        out Microsoft.Win32.SafeHandles.SafeFileHandle fileHandle,
+        uint desiredAccess,
+        in ObjectAttributes objectAttributes,
+        out IoStatusBlock ioStatusBlock,
+        nint allocationSize,
+        uint fileAttributes,
+        uint shareAccess,
+        uint createDisposition,
+        uint createOptions,
+        nint eaBuffer,
+        uint eaLength);
+
+    [LibraryImport("ntdll.dll")]
+    internal static partial int RtlNtStatusToDosError(int status);
 }

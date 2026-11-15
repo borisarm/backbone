@@ -18,6 +18,12 @@ public sealed class StartupServiceTests : IDisposable
     private readonly TempDirectory _temp = new();
     private readonly FakeEventLogWriter _eventLog = new();
 
+    public StartupServiceTests()
+    {
+        // Con el guardián real la crea el arranque (§8.3); aquí el guardián es un doble.
+        Directory.CreateDirectory(_temp.Combine("config"));
+    }
+
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     public void Dispose() => _temp.Dispose();
@@ -100,6 +106,41 @@ public sealed class StartupServiceTests : IDisposable
         var entry = Assert.Single(_eventLog.Entries);
         Assert.Equal(EventLogLevel.Error, entry.Level);
         Assert.Equal(BackboneEventIds.ServiceStartFailed, entry.EventId);
+    }
+
+    [Fact]
+    public async Task A_junction_in_place_of_the_config_folder_stops_the_start_with_error_1002_without_reading_the_target()
+    {
+        // §8.2 "Carpeta padre": config\ rechazada = settings.json rechazado.
+        Directory.Delete(_temp.Combine("config"));
+        var target = Directory.CreateDirectory(_temp.Combine("destino")).FullName;
+        File.WriteAllText(Path.Combine(target, "settings.json"), $$"""{ "authorizedUsers": ["{{TestSids.Ana}}"] }""");
+        var config = _temp.Combine("config");
+        TrustedFileTests.RunCmd("mklink", "/J", config, target);
+        using var settings = new SettingsStore(Path.Combine(config, "settings.json"), TestFileTrust.CurrentUser, NullLogger<SettingsStore>.Instance);
+
+        var ex = await Assert.ThrowsAsync<ServiceStartupException>(() => NewStartup(new FakeGuard(DataDirectoryCheck.Secure), settings).StartingAsync(Ct));
+
+        var rejected = Assert.IsType<UntrustedFileException>(ex.InnerException);
+        Assert.Equal(UntrustedFileReason.ReparsePoint, rejected.Reason);
+        Assert.Equal(config, rejected.FilePath);
+        Assert.Empty(settings.Sids);
+        var entry = Assert.Single(_eventLog.Entries);
+        Assert.Equal(BackboneEventIds.ServiceStartFailed, entry.EventId);
+        Assert.Contains(config, entry.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_missing_config_folder_stops_the_start_with_error_1002()
+    {
+        Directory.Delete(_temp.Combine("config"));
+        using var settings = new SettingsStore(_temp.Combine("config", "settings.json"), TestFileTrust.CurrentUser, NullLogger<SettingsStore>.Instance);
+
+        var ex = await Assert.ThrowsAsync<ServiceStartupException>(() => NewStartup(new FakeGuard(DataDirectoryCheck.Secure), settings).StartingAsync(Ct));
+
+        Assert.IsType<DirectoryNotFoundException>(ex.InnerException);
+        Assert.Equal(BackboneEventIds.ServiceStartFailed, Assert.Single(_eventLog.Entries).EventId);
+        Assert.False(Directory.Exists(_temp.Combine("config"))); // los almacenes no crean carpetas
     }
 
     [Fact]

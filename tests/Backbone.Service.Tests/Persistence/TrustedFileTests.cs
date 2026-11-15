@@ -55,8 +55,21 @@ public sealed class TrustedFileTests : IDisposable
     [Fact]
     public async Task A_missing_file_reads_as_null()
     {
-        Assert.Null(await _productionFiles.ReadAllBytesAsync(_temp.Combine("no-existe.json"), 1024, Ct));
-        Assert.Null(await _productionFiles.ReadAllBytesAsync(_temp.Combine("no-existe", "settings.json"), 1024, Ct));
+        Assert.Null(await _testFiles.ReadAllBytesAsync(_temp.Combine("no-existe.json"), 1024, Ct));
+    }
+
+    [Fact]
+    public async Task A_missing_parent_folder_fails_every_operation_and_is_not_created()
+    {
+        var missing = _temp.Combine("config");
+        var path = Path.Combine(missing, "settings.json");
+
+        await Assert.ThrowsAsync<DirectoryNotFoundException>(() => _testFiles.ReadAllBytesAsync(path, 1024, Ct));
+        await Assert.ThrowsAsync<DirectoryNotFoundException>(() => _testFiles.WriteAllBytesAsync(path, "{}"u8.ToArray(), Ct));
+        Assert.Throws<DirectoryNotFoundException>(() => _testFiles.MoveReplacing(path, path + ".bad"));
+
+        Assert.False(Directory.Exists(missing)); // los almacenes no crean carpetas (§8.2)
+        Assert.Empty(Directory.EnumerateFileSystemEntries(_temp.Path));
     }
 
     [Fact]
@@ -67,7 +80,78 @@ public sealed class TrustedFileTests : IDisposable
         var ex = await Assert.ThrowsAsync<UntrustedFileException>(() => _productionFiles.ReadAllBytesAsync(path, 1024, Ct));
 
         Assert.Equal(UntrustedFileReason.UntrustedOwner, ex.Reason);
-        Assert.Equal(path, ex.FilePath);
+        // Sin elevar, la carpeta temporal también es del usuario y se rechaza antes (como carpeta padre); elevado, la carpeta
+        // es de Administradores y se rechaza el archivo.
+        Assert.Equal(WindowsTestEnvironment.IsElevated ? path : Path.GetDirectoryName(path), ex.FilePath);
+    }
+
+    [Fact]
+    public async Task A_parent_folder_owned_by_a_user_is_rejected_as_a_file()
+    {
+        Assert.SkipWhen(WindowsTestEnvironment.IsElevated, "Elevated, the temporary folder is owned by Administrators.");
+        var path = CreateCurrentUserFile("settings.json", "{}");
+
+        var read = await Assert.ThrowsAsync<UntrustedFileException>(() => _productionFiles.ReadAllBytesAsync(path, 1024, Ct));
+        var write = await Assert.ThrowsAsync<UntrustedFileException>(() => _productionFiles.WriteAllBytesAsync(path, "{\"v\":2}"u8.ToArray(), Ct));
+        var move = Assert.Throws<UntrustedFileException>(() => _productionFiles.MoveReplacing(path, path + ".bad"));
+
+        Assert.All([read, write, move], ex =>
+        {
+            Assert.Equal(UntrustedFileReason.UntrustedOwner, ex.Reason);
+            Assert.Equal(_temp.Path, ex.FilePath);
+        });
+        Assert.Equal("{}", await File.ReadAllTextAsync(path, Ct));
+        Assert.Equal(["settings.json"], Directory.GetFiles(_temp.Path).Select(Path.GetFileName));
+    }
+
+    [Fact]
+    public async Task A_junction_as_the_parent_folder_is_rejected_and_nothing_is_written_or_read_in_its_target()
+    {
+        // Revisión final de HT-03 (M-a): config\ creada de antemano como junction hacia otra carpeta.
+        var target = Directory.CreateDirectory(_temp.Combine("destino")).FullName;
+        File.WriteAllText(Path.Combine(target, "settings.json"), "original");
+        var config = _temp.Combine("config");
+        RunCmd("mklink", "/J", config, target);
+        var path = Path.Combine(config, "settings.json");
+
+        var write = await Assert.ThrowsAsync<UntrustedFileException>(() => _testFiles.WriteAllBytesAsync(path, "{\"v\":2}"u8.ToArray(), Ct));
+        var read = await Assert.ThrowsAsync<UntrustedFileException>(() => _testFiles.ReadAllBytesAsync(path, 1024, Ct));
+        var move = Assert.Throws<UntrustedFileException>(() => _testFiles.MoveReplacing(path, path + ".bad"));
+
+        Assert.All([write, read, move], ex =>
+        {
+            Assert.Equal(UntrustedFileReason.ReparsePoint, ex.Reason);
+            Assert.Equal(config, ex.FilePath);
+        });
+        Assert.Equal(["settings.json"], Directory.EnumerateFileSystemEntries(target).Select(Path.GetFileName));
+        Assert.Equal("original", await File.ReadAllTextAsync(Path.Combine(target, "settings.json"), Ct));
+        Assert.True(new DirectoryInfo(config).Attributes.HasFlag(FileAttributes.ReparsePoint));
+    }
+
+    [Fact]
+    public void A_file_in_place_of_the_parent_folder_is_rejected()
+    {
+        var notAFolder = CreateCurrentUserFile("config", "x");
+
+        var ex = Assert.Throws<UntrustedFileException>(() => _testFiles.MoveReplacing(Path.Combine(notAFolder, "a.json"), Path.Combine(notAFolder, "a.json.bad")));
+
+        Assert.Equal(UntrustedFileReason.NotAFile, ex.Reason);
+    }
+
+    [Fact]
+    public void While_the_parent_folder_is_held_open_neither_it_nor_any_folder_above_can_be_renamed()
+    {
+        // Lo que garantiza mantener abierta la carpeta padre (acceso a datos, sin FILE_SHARE_DELETE) durante la operación:
+        // nadie puede renombrarla ni renombrar una carpeta superior para sustituirla por un junction a mitad.
+        var config = Directory.CreateDirectory(_temp.Combine("config")).FullName;
+
+        using (OpenParentLikeTrustedFile(config))
+        {
+            Assert.ThrowsAny<IOException>(() => Directory.Move(config, config + "-renombrada"));
+            Assert.ThrowsAny<IOException>(() => Directory.Move(_temp.Path, _temp.Path + "-renombrada"));
+        }
+
+        Directory.Move(config, config + "-renombrada");
     }
 
     [Fact]
@@ -149,6 +233,7 @@ public sealed class TrustedFileTests : IDisposable
     [Fact]
     public async Task The_atomic_write_creates_the_file_with_the_explicit_owner_and_protected_DACL_and_leaves_no_temporary()
     {
+        Directory.CreateDirectory(_temp.Combine("config"));
         var path = _temp.Combine("config", "settings.json");
         var policy = _testFiles.Policy;
 
@@ -199,8 +284,11 @@ public sealed class TrustedFileTests : IDisposable
     {
         Assert.SkipWhen(WindowsTestEnvironment.IsElevated, "Elevated, Administrators can be assigned as owner (see the integration tests).");
         var path = _temp.Combine("settings.json");
+        // Se confía en la carpeta temporal (del usuario) para llegar a la creación del temporal con Administradores como
+        // propietario, que es lo que falla sin elevar.
+        var policy = new FileTrustPolicy(Administrators, [LocalSystem, Administrators, WindowsTestEnvironment.CurrentUserSid], [LocalSystem, Administrators]);
 
-        await Assert.ThrowsAnyAsync<IOException>(() => _productionFiles.WriteAllBytesAsync(path, "{}"u8.ToArray(), Ct));
+        await Assert.ThrowsAnyAsync<IOException>(() => new TrustedFile(policy).WriteAllBytesAsync(path, "{}"u8.ToArray(), Ct));
 
         Assert.Empty(Directory.EnumerateFileSystemEntries(_temp.Path));
     }
@@ -220,6 +308,28 @@ public sealed class TrustedFileTests : IDisposable
         RunCmd("mklink", "/J", link, target);
         Assert.Equal(UntrustedFileReason.ReparsePoint, Assert.Throws<UntrustedFileException>(() => _testFiles.MoveReplacing(link, link + ".bad")).Reason);
         Assert.True(Directory.Exists(link));
+    }
+
+    [Fact]
+    public void MoveReplacing_only_renames_within_the_same_folder()
+    {
+        var path = CreateCurrentUserFile("settings.json", "dañado");
+        var other = Directory.CreateDirectory(_temp.Combine("otra")).FullName;
+
+        Assert.Throws<ArgumentException>(() => _testFiles.MoveReplacing(path, Path.Combine(other, "settings.json.bad")));
+
+        Assert.True(File.Exists(path));
+    }
+
+    /// <summary>Abre una carpeta como <see cref="TrustedFile"/> abre la carpeta padre (acceso a datos, sin FILE_SHARE_DELETE).</summary>
+    private static Microsoft.Win32.SafeHandles.SafeFileHandle OpenParentLikeTrustedFile(string path)
+    {
+        var handle = NativeMethods.CreateFile(
+            path, NativeMethods.FileListDirectory | NativeMethods.ReadControl | NativeMethods.FileReadAttributes | NativeMethods.Synchronize,
+            NativeMethods.FileShareRead | NativeMethods.FileShareWrite, 0, NativeMethods.OpenExisting,
+            NativeMethods.FileFlagBackupSemantics | NativeMethods.FileFlagOpenReparsePoint, 0);
+        Assert.False(handle.IsInvalid);
+        return handle;
     }
 
     /// <summary>Archivo cuyo propietario es el usuario de las pruebas (lo creado elevado sería de Administradores).</summary>

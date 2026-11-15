@@ -55,6 +55,7 @@ public sealed class TrustedFileElevatedTests : IDisposable
     [Fact(Skip = NeedsElevation, SkipUnless = nameof(IsElevated))]
     public async Task The_atomic_write_creates_an_Administrators_owned_file_with_the_protected_RNF07_DACL_and_reads_it_back()
     {
+        Directory.CreateDirectory(_temp.Combine("config")); // los almacenes no crean carpetas (§8.2)
         var path = _temp.Combine("config", "settings.json");
 
         await _files.WriteAllBytesAsync(path, "{\"v\":1}"u8.ToArray(), Ct);
@@ -89,7 +90,7 @@ public sealed class TrustedFileElevatedTests : IDisposable
         var guard = new DataDirectoryGuard();
         Assert.Equal(DataDirectoryCheckResult.Corrected, guard.EnsureSecure(root).Result);
         var paths = new ServicePaths(root);
-        Directory.CreateDirectory(paths.ConfigDirectory);
+        Assert.True(Directory.Exists(paths.ConfigDirectory)); // la crea la comprobación de la carpeta (§8.3)
 
         // Archivo plantado después de la comprobación de la carpeta (ventana de R9): propietario usuario.
         File.WriteAllText(paths.SettingsFile, "{ \"authorizedUsers\": [] }");
