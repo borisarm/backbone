@@ -16,6 +16,7 @@
     <Project Path="tests/Backbone.Service.Tests/Backbone.Service.Tests.csproj" />
     <Project Path="tests/Backbone.App.Tests/Backbone.App.Tests.csproj" />
     <Project Path="tests/Backbone.Architecture.Tests/Backbone.Architecture.Tests.csproj" />
+    <Project Path="tests/Backbone.Contracts.Tests/Backbone.Contracts.Tests.csproj" />
     <Project Path="tests/Backbone.IntegrationTests/Backbone.IntegrationTests.csproj" />
   </Folder>
   <Folder Name="/Solution Items/">

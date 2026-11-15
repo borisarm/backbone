@@ -1,9 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Contrato IPC compartido entre servicio y app (§7). net10.0 puro: sin dependencias de Windows ni de Core. -->
+  <!--
+    Contrato IPC compartido entre servicio y app (§7). net10.0 puro: sin dependencias de Windows ni de Core,
+    y sin paquetes NuGet (los DTO solo usan tipos de la biblioteca base; StreamJsonRpc no hace falta aquí).
+    La documentación XML es obligatoria: es la referencia del contrato para los equipos de servicio y app.
+  -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>Backbone.Contracts</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
 
 </Project>

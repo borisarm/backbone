@@ -18,6 +18,10 @@
     <PackageVersion Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.9169" />
   </ItemGroup>
 
+  <ItemGroup Label="IPC (ADR-03)">
+    <PackageVersion Include="StreamJsonRpc" Version="2.26.150" />
+  </ItemGroup>
+
   <ItemGroup Label="Pruebas">
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
     <PackageVersion Include="xunit.v3" Version="3.2.2" />

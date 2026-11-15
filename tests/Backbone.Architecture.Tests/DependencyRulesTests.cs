@@ -100,6 +100,14 @@ public sealed class DependencyRulesTests
         Assert.All(packages, p => Assert.Equal("StreamJsonRpc", p));
     }
 
+    [Fact]
+    [Trait("Story", "HT-02")]
+    public void Contracts_tests_only_reference_contracts()
+    {
+        // Las pruebas del contrato no deben depender del motor, del servicio ni de la app (§3.1).
+        Assert.Equal([Contracts], SolutionLayout.TestProjectReferences("Backbone.Contracts.Tests"));
+    }
+
     [Theory]
     [InlineData(Contracts, new[] { Core, Service, App })]
     [InlineData(Core, new[] { Service, App })]

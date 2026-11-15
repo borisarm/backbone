@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Pruebas del contrato IPC (HT-02): serialización de ida y vuelta de todos los DTO con las opciones
+    de SystemTextJsonFormatter, convenciones de los DTO y transporte de errores por JSON-RPC.
+    Referencia StreamJsonRpc solo aquí, para usar las mismas opciones y el mismo transporte que servicio y app.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Backbone.Contracts.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="StreamJsonRpc" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Backbone.Contracts\Backbone.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>
