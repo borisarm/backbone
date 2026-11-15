@@ -60,7 +60,7 @@ Como equipo, quiero un canal named pipe con StreamJsonRpc y control de acceso, p
   5. Cliente con reconexión automática según §9.1.
   6. Prueba de integración con servidor y cliente reales sobre un pipe de nombre aleatorio.
 - **Requisitos de seguridad (revisión HT-01)**
-  - I-1: al arrancar, el servicio comprueba `%ProgramData%\Backbone` (no es punto de reanálisis, propietario Administradores/SYSTEM, DACL protegida según RNF-07) y la corrige o se niega a usarla antes de leer `authorizedUsers` o la configuración.
+  - I-1: al arrancar, el servicio comprueba `%ProgramData%\Backbone` (no es punto de reanálisis, propietario Administradores/SYSTEM, DACL protegida según RNF-07) antes de leer `authorizedUsers` o la configuración, con la regla de §8.3 (ADR-13): todo sobre handles; una raíz de propietario no fiable o que no se puede abrir nunca se corrige en el sitio, se aparta a `Backbone.untrusted-<guid>` y se crea otra con el descriptor en la creación (evento 1003); si no se puede apartar o el contenido no es fiable, el servicio no arranca (evento 1002).
   - I-5: al añadir `AddWindowsService`, `ContentRootPath = AppContext.BaseDirectory` y `Environment = Production` fijos; no se carga configuración (appsettings, variables de entorno, rutas) desde ubicaciones escribibles por usuarios.
 
 ### HT-04 · Motor: formato del repositorio
@@ -90,7 +90,11 @@ Como Ana, quiero instalar Backbone con un instalador normal de Windows, para emp
   5. La app arranca minimizada en la bandeja al iniciar sesión (si dejé marcada la casilla).
   6. Hay MSI para x64 y ARM64.
 - **Requisitos de seguridad (revisión HT-01)**
-  - I-1: `%ProgramData%\Backbone` puede existir antes de instalar, creado por un usuario o como *junction*. El MSI comprueba que no es un punto de reanálisis, toma la propiedad (Administradores/SYSTEM) y aplica una DACL protegida (sin herencia) según RNF-07.
+  - I-1: `%ProgramData%\Backbone` puede existir antes de instalar, creado por un usuario o como *junction*. El MSI aplica la misma regla que el servicio (§8.3, ADR-13), sobre handles y sin seguir enlaces:
+    - Si es un punto de reanálisis (o no es una carpeta), lo rechaza y no toca el destino.
+    - Si no existe, la crea con `CreateDirectoryW` y el descriptor de RNF-07 en la propia creación (nunca crear y después cambiar la ACL).
+    - Si existe con propietario que no es SYSTEM ni Administradores, o no se puede abrir, **nunca toma la propiedad ni cambia la DACL en el sitio**: la aparta renombrándola a `Backbone.untrusted-<guid>` (sin borrar nada) y crea otra como en el caso anterior. Si no se puede apartar, la instalación falla con un mensaje claro y deshace los cambios.
+    - Si existe con propietario fiable y DACL distinta, aplica la DACL protegida (sin herencia) de RNF-07 por handle (riesgo aceptado R9, §13).
   - I-2: ninguna acción personalizada se ejecuta en reparación si puede alterar ACL o datos; las elevadas son `deferred` sin suplantación. `INSTALLFOLDER` cuelga de `ProgramFiles64Folder`.
   - I-3: decidir de forma explícita si x64 y ARM64 comparten `UpgradeCode`; la versión es única y se pasa al `.wixproj` como `$(Version)` (la de `Directory.Build.props`).
   - I-4: la entrada `HKCU\…\Run` la crea la app en la sesión del usuario (casilla del primer arranque o Ajustes), no el MSI per-machine.
@@ -508,7 +512,7 @@ Las historias de una misma fila pueden desarrollarse en paralelo por agentes dis
 |---|---|---|---|---|
 | HT-01 | MVP | 3 | backbone-architect | Hecha |
 | HT-02 | MVP | 3 | backbone-architect | Hecha |
-| HT-03 | MVP | 5 | backbone-service | Pendiente |
+| HT-03 | MVP | 5 | backbone-service | Hecha |
 | HT-04 | MVP | 8 | backbone-core | Hecha |
 | HU-01 | MVP | 8 | backbone-installer | Pendiente |
 | HU-02 | MVP | 3 | backbone-installer | Pendiente |

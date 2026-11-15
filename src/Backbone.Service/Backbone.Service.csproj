@@ -6,6 +6,8 @@
     <OutputType>Exe</OutputType>
     <RootNamespace>Backbone.Service</RootNamespace>
     <AssemblyName>Backbone.Service</AssemblyName>
+    <!-- LibraryImport genera código no seguro para las llamadas P/Invoke (NativeMethods). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
@@ -15,6 +17,8 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" />
+    <PackageReference Include="StreamJsonRpc" />
   </ItemGroup>
 
   <ItemGroup>

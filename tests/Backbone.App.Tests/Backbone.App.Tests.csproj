@@ -3,13 +3,26 @@
   <!--
     View models y cliente IPC de la app, sin UI real (§11). De momento solo referencia Contracts:
     Backbone.App es un ejecutable autocontenido y no se puede referenciar desde un ejecutable de
-    pruebas que no lo sea (NETSDK1151). backbone-app decidirá cómo exponer el código probable.
+    pruebas que no lo sea (NETSDK1151). Por eso el código de la app que no depende de WinUI (carpeta
+    src/Backbone.App/Ipc: cliente IPC y reconexión) se compila también dentro de este proyecto mediante
+    enlaces. Los view models, cuando existan, seguirán el mismo criterio (carpeta sin tipos de WinUI).
   -->
 
   <PropertyGroup>
     <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
     <RootNamespace>Backbone.App.Tests</RootNamespace>
+    <!-- LibraryImport de Ipc/NativeMethods. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\Backbone.App\Ipc\**\*.cs" LinkBase="App\Ipc" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="StreamJsonRpc" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Backbone.Contracts\Backbone.Contracts.csproj" />

@@ -1,11 +1,32 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Pruebas que requieren admin o un recurso SMB local. Todas llevan [Trait("Category", "Integration")]. -->
+  <!--
+    Pruebas que requieren admin o un recurso SMB local: llevan [Trait("Category", "Integration")].
+    Excepción: Ipc/AppClientAgainstRealServerTests (HT-03 criterio 6) no necesita elevación y corre en la batería normal.
+  -->
 
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
     <RootNamespace>Backbone.IntegrationTests</RootNamespace>
+    <!-- LibraryImport de Ipc/NativeMethods (cliente de la app) y de TestNativeMethods. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+
+  <!--
+    Cliente IPC de la app contra el servidor real (HT-03 criterio 6). Backbone.App no se puede referenciar (NETSDK1151), así
+    que se compila su carpeta Ipc, que no depende de WinUI. El servidor de pruebas es el de Backbone.Service.Tests.
+  -->
+  <ItemGroup>
+    <Compile Include="..\..\src\Backbone.App\Ipc\**\*.cs" LinkBase="App\Ipc" />
+    <Compile Include="..\Backbone.Service.Tests\TestSupport\PipeServerHarness.cs" LinkBase="ServiceTestSupport" />
+    <Compile Include="..\Backbone.Service.Tests\TestSupport\TempDirectory.cs" LinkBase="ServiceTestSupport" />
+    <Compile Include="..\Backbone.Service.Tests\TestSupport\TestRpcClient.cs" LinkBase="ServiceTestSupport" />
+    <Compile Include="..\Backbone.Service.Tests\TestSupport\FakeAccountDirectory.cs" LinkBase="ServiceTestSupport" />
+    <Compile Include="..\Backbone.Service.Tests\TestSupport\FakeEventLogWriter.cs" LinkBase="ServiceTestSupport" />
+    <Compile Include="..\Backbone.Service.Tests\TestSupport\CapturingLoggerProvider.cs" LinkBase="ServiceTestSupport" />
+    <Compile Include="..\Backbone.Service.Tests\TestSupport\WindowsTestEnvironment.cs" LinkBase="ServiceTestSupport" />
+    <Compile Include="..\Backbone.Service.Tests\TestSupport\TestFileTrust.cs" LinkBase="ServiceTestSupport" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Backbone.Contracts\Backbone.Contracts.csproj" />

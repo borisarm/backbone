@@ -1,0 +1,275 @@
+using System.Runtime.InteropServices;
+
+namespace Backbone.Service.Os;
+
+/// <summary>
+/// Llamadas a la API de Windows del servicio (P/Invoke generado en compilación con <see cref="LibraryImportAttribute"/>).
+/// Firmas y códigos de error comprobados en Microsoft Learn (processthreadsapi.h, winbase.h, authz.h).
+/// </summary>
+internal static partial class NativeMethods
+{
+    // ---- Códigos de error Win32 ----
+    internal const int ErrorInsufficientBuffer = 122;
+    internal const int ErrorNoneMapped = 1332;
+    internal const int ErrorCantOpenAnonymous = 1347;
+
+    // ---- Derechos sobre tokens (Access Rights for Access-Token Objects) ----
+    internal const uint TokenDuplicate = 0x0002;
+    internal const uint TokenQuery = 0x0008;
+
+    // ---- Authz ----
+    internal const uint AuthzRmFlagNoAudit = 0x1;
+
+    /// <summary><c>AuthzContextInfoGroupsSids</c> de <c>AUTHZ_CONTEXT_INFORMATION_CLASS</c>: devuelve un <c>TOKEN_GROUPS</c>.</summary>
+    internal const int AuthzContextInfoGroupsSids = 2;
+
+    /// <summary>Valores de <c>SID_NAME_USE</c>.</summary>
+    internal const int SidTypeUser = 1;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct Luid
+    {
+        public uint LowPart;
+        public int HighPart;
+    }
+
+    [LibraryImport("kernel32.dll")]
+    internal static partial nint GetCurrentThread();
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool CloseHandle(nint handle);
+
+    /// <summary>
+    /// Abre el token del hilo. Con <paramref name="openAsSelf"/> = <see langword="true"/> la comprobación de acceso se hace con
+    /// el contexto del proceso, lo que permite abrir un token de nivel <c>SecurityIdentification</c>. Un token anónimo no se
+    /// puede abrir: falla con <see cref="ErrorCantOpenAnonymous"/>.
+    /// </summary>
+    [LibraryImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool OpenThreadToken(
+        nint threadHandle,
+        uint desiredAccess,
+        [MarshalAs(UnmanagedType.Bool)] bool openAsSelf,
+        out nint tokenHandle);
+
+    [LibraryImport("advapi32.dll", EntryPoint = "LookupAccountNameW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool LookupAccountName(
+        string? systemName,
+        string accountName,
+        [Out] byte[]? sid,
+        ref uint cbSid,
+        [Out] char[]? referencedDomainName,
+        ref uint cchReferencedDomainName,
+        out int use);
+
+    [LibraryImport("advapi32.dll", EntryPoint = "LookupAccountSidW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool LookupAccountSid(
+        string? systemName,
+        byte[] sid,
+        [Out] char[]? name,
+        ref uint cchName,
+        [Out] char[]? referencedDomainName,
+        ref uint cchReferencedDomainName,
+        out int use);
+
+    [LibraryImport("authz.dll", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool AuthzInitializeResourceManager(
+        uint flags,
+        nint pfnDynamicAccessCheck,
+        nint pfnComputeDynamicGroups,
+        nint pfnFreeDynamicGroups,
+        string? resourceManagerName,
+        out nint resourceManager);
+
+    [LibraryImport("authz.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool AuthzInitializeContextFromSid(
+        uint flags,
+        byte[] userSid,
+        nint resourceManager,
+        nint expirationTime,
+        Luid identifier,
+        nint dynamicGroupArgs,
+        out nint clientContext);
+
+    [LibraryImport("authz.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool AuthzGetInformationFromContext(
+        nint clientContext,
+        int infoClass,
+        uint bufferSize,
+        out uint sizeRequired,
+        nint buffer);
+
+    [LibraryImport("authz.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool AuthzFreeContext(nint clientContext);
+
+    [LibraryImport("authz.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool AuthzFreeResourceManager(nint resourceManager);
+
+    // ---- Archivos y seguridad de objetos (fileapi.h, winbase.h, aclapi.h, securitybaseapi.h) ----
+    internal const int ErrorSuccess = 0;
+    internal const int ErrorFileNotFound = 2;
+    internal const int ErrorPathNotFound = 3;
+    internal const int ErrorAccessDenied = 5;
+    internal const int ErrorSharingViolation = 32;
+    internal const int ErrorNotSupported = 50;
+    internal const int ErrorInvalidParameter = 87;
+    internal const int ErrorAlreadyExists = 183;
+
+    internal const uint GenericRead = 0x8000_0000;
+    internal const uint GenericWrite = 0x4000_0000;
+    internal const uint Delete = 0x0001_0000;
+    internal const uint ReadControl = 0x0002_0000;
+    internal const uint WriteDac = 0x0004_0000;
+    internal const uint Synchronize = 0x0010_0000;
+    internal const uint FileReadAttributes = 0x0080;
+
+    internal const uint FileShareRead = 0x1;
+    internal const uint FileShareWrite = 0x2;
+    internal const uint FileShareDelete = 0x4;
+
+    internal const uint CreateNew = 1;
+    internal const uint OpenExisting = 3;
+    internal const uint FileFlagBackupSemantics = 0x0200_0000;
+    internal const uint FileFlagOpenReparsePoint = 0x0020_0000;
+
+    internal const uint FileAttributeDirectory = 0x10;
+    internal const uint FileAttributeReparsePoint = 0x400;
+    internal const uint FileAttributeNormal = 0x80;
+
+    /// <summary>Valores de <c>FILE_INFO_BY_HANDLE_CLASS</c>.</summary>
+    internal const int FileStandardInfo = 1;
+    internal const int FileRenameInfo = 3;
+    internal const int FileDispositionInfo = 4;
+    internal const int FileAttributeTagInfo = 9;
+    internal const int FileRenameInfoEx = 22;
+
+    /// <summary>Indicadores de <c>FILE_RENAME_INFO.Flags</c> con <see cref="FileRenameInfoEx"/> (ntifs.h, <c>FILE_RENAME_FLAG_*</c>).</summary>
+    internal const uint FileRenameFlagReplaceIfExists = 0x1;
+    internal const uint FileRenameFlagPosixSemantics = 0x2;
+
+    /// <summary><c>SE_FILE_OBJECT</c> de <c>SE_OBJECT_TYPE</c>.</summary>
+    internal const int SeFileObject = 1;
+
+    /// <summary>Bits de <c>SECURITY_INFORMATION</c>.</summary>
+    internal const uint OwnerSecurityInformation = 0x1;
+    internal const uint DaclSecurityInformation = 0x4;
+    internal const uint UnprotectedDaclSecurityInformation = 0x2000_0000;
+    internal const uint ProtectedDaclSecurityInformation = 0x8000_0000;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct SecurityAttributes
+    {
+        public uint Length;
+        public nint SecurityDescriptor;
+        public int InheritHandle;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct FileAttributeTagInformation
+    {
+        public uint FileAttributes;
+        public uint ReparseTag;
+    }
+
+    /// <summary><c>FILE_STANDARD_INFO</c> (winbase.h).</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct FileStandardInformation
+    {
+        public long AllocationSize;
+        public long EndOfFile;
+        public uint NumberOfLinks;
+        public byte DeletePending;
+        public byte Directory;
+    }
+
+    /// <summary><c>CreateFileW</c> con descriptor de seguridad explícito para el objeto que se crea.</summary>
+    [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileWithSecurity(
+        string fileName,
+        uint desiredAccess,
+        uint shareMode,
+        in SecurityAttributes securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        nint templateFile);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool FlushFileBuffers(SafeHandle file);
+
+    [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(
+        string fileName,
+        uint desiredAccess,
+        uint shareMode,
+        nint securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        nint templateFile);
+
+    /// <summary>Crea una carpeta con el descriptor de seguridad indicado (atómico: nunca existe con otra ACL).</summary>
+    [LibraryImport("kernel32.dll", EntryPoint = "CreateDirectoryW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool CreateDirectory(string pathName, in SecurityAttributes securityAttributes);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetFileInformationByHandleEx(
+        SafeHandle file,
+        int fileInformationClass,
+        out FileAttributeTagInformation fileInformation,
+        uint bufferSize);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetFileInformationByHandleEx(
+        SafeHandle file,
+        int fileInformationClass,
+        out FileStandardInformation fileInformation,
+        uint bufferSize);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool SetFileInformationByHandle(
+        SafeHandle file,
+        int fileInformationClass,
+        byte[] fileInformation,
+        uint bufferSize);
+
+    /// <summary>Devuelve un código Win32 (no usa <c>SetLastError</c>). El descriptor se libera con <see cref="LocalFree"/>.</summary>
+    [LibraryImport("advapi32.dll")]
+    internal static partial int GetSecurityInfo(
+        SafeHandle handle,
+        int objectType,
+        uint securityInfo,
+        out nint owner,
+        out nint group,
+        out nint dacl,
+        out nint sacl,
+        out nint securityDescriptor);
+
+    /// <summary>Devuelve un código Win32 (no usa <c>SetLastError</c>).</summary>
+    [LibraryImport("advapi32.dll")]
+    internal static partial int SetSecurityInfo(
+        SafeHandle handle,
+        int objectType,
+        uint securityInfo,
+        nint owner,
+        nint group,
+        byte[]? dacl,
+        nint sacl);
+
+    [LibraryImport("advapi32.dll")]
+    internal static partial uint GetSecurityDescriptorLength(nint securityDescriptor);
+
+    [LibraryImport("kernel32.dll")]
+    internal static partial nint LocalFree(nint memory);
+}

@@ -149,6 +149,17 @@ public sealed partial class SpecConsistencyTests
         Assert.Contains($"`BackboneIpc.MaxMessageBytes` ({BackboneIpc.MaxMessageBytes / (1024 * 1024)} MiB)", section, StringComparison.Ordinal);
         Assert.Contains("FirstPipeInstance", section, StringComparison.Ordinal);
         Assert.Contains("GetNamedPipeServerProcessId", section, StringComparison.Ordinal);
+
+        // A-1 (ADR-12): la cuenta del servidor se comprueba en el SCM, no en el token del proceso SYSTEM.
+        Assert.Contains("QueryServiceStatusEx", section, StringComparison.Ordinal);
+        Assert.Contains("QueryServiceConfig", section, StringComparison.Ordinal);
+        Assert.DoesNotContain("su token es `S-1-5-18`", section, StringComparison.Ordinal);
+
+        // A-1: defensa en profundidad tal como la implementa la app (propietario del pipe, sesión 0, tipo de servicio, PID estable).
+        Assert.Contains("`S-1-5-32-544`", section, StringComparison.Ordinal);
+        Assert.Contains("GetNamedPipeServerSessionId", section, StringComparison.Ordinal);
+        Assert.Contains("SERVICE_WIN32_OWN_PROCESS", section, StringComparison.Ordinal);
+        Assert.Contains("**PID estable**", section, StringComparison.Ordinal);
     }
 
     [Fact]
