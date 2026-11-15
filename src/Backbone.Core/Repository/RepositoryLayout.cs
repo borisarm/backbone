@@ -8,6 +8,15 @@ public static class RepositoryLayout
     /// <summary>Versión de formato que esta versión de Backbone lee y escribe (RNF-14).</summary>
     public const int FormatVersion = 1;
 
+    /// <summary>
+    /// Máximo de entradas (archivos y carpetas vacías) de un snapshot (§6.3, 10 × RNF-05). Al leer, más se considera
+    /// corrupción (protege al lector de manifiestos hostiles, M-2); al escribir, la copia falla sin publicar.
+    /// </summary>
+    public const long MaxSnapshotEntries = 5_000_000;
+
+    /// <summary>Tamaño máximo de un manifiesto completo (16 GiB, §6.3).</summary>
+    public const long MaxSnapshotManifestBytes = 16L * 1024 * 1024 * 1024;
+
     /// <summary>Archivo de configuración.</summary>
     public const string ConfigFile = "repo.json";
 

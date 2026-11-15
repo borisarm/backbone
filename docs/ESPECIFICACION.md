@@ -113,6 +113,7 @@ Compilación: SDK fijado en `global.json` (10.0.x); propiedades comunes en `Dire
 | ADR-08 | `TimeProvider` inyectado en todo el código que dependa del reloj. | Pruebas deterministas del scheduler y la retención. |
 | ADR-09 | Instalador WiX v5 (MSI). | Registra el servicio, su recuperación, el origen del Visor de eventos y las ACL. |
 | ADR-10 | Serialización IPC con las opciones **por defecto** de `SystemTextJsonFormatter` (nombres de propiedad tal cual, enumerados como número con valores explícitos y estables); DTO como `record` sellados con propiedades `init` opcionales y valores por defecto, sin `required` ni herencia (§7.5). `Backbone.Contracts` no depende de ningún paquete. | Nada que configurar igual en ambos extremos; añadir campos o valores de enumerado no rompe a un extremo más antiguo (versión menor). |
+| ADR-11 | El contenido del repositorio es **no confiable**: límites explícitos de tamaño, número y profundidad en los manifiestos (§6.3), ningún punto de reanálisis dentro del repositorio (→ corrupto), almacenamiento solo sobre destinos UNC que no sean el propio equipo (§6.1) y textos saneados antes de registrarlos o mostrarlos (también toda la categoría Unicode `Cf`, y también en el servicio). Los nombres no direccionables de `locks\` cuentan como bloqueo exclusivo ilegible (latido = fecha de modificación; dejan de bloquear al quedar abandonados) y los de `tmp\` se ignoran; Backbone no los borra (R8). Un latido en el futuro más allá de la tolerancia de reloj es anómalo y no alarga el bloqueo (§6.4.4). El escritor recorta los avisos (`WarningsTruncated`) para no publicar nunca un manifiesto que el lector rechace. | Otro equipo o cualquiera con escritura en el recurso del NAS puede manipularlo; un manifiesto hostil no debe agotar memoria ni registros, ni un *junction* llevar escrituras o borrados fuera del repositorio. Límites holgados (5 000 000 de entradas = 10 × RNF-05) para no rechazar copias legítimas. |
 
 ---
 
@@ -254,6 +255,13 @@ Prioridad: **MVP** = fase 1, **F2** = fase 2 (uso diario), **F3** = fase 3 (puli
   - **No es un repositorio**: hay otros archivos y no hay `repo.json`. No se inicializa encima.
   - **Compatible**, **incompatible** o **corrupto**, según `repo.json` (§6.2).
 - Un destino con `repo.json` en el que falta cualquiera de las cuatro carpetas (`objects`, `snapshots`, `locks`, `tmp`) es **corrupto**. No se recrean automáticamente: puede indicar que se apunta a un recurso equivocado o que se han borrado datos.
+- **Solo destinos UNC**: el almacenamiento del repositorio (`FileSystemRepositoryStorage`) solo se crea sobre un destino que cumple `UncPaths.TryParse` (§7.5): nada de rutas locales, `\\?\`, `\\.\` o `\??\`, *loopback* ni recursos administrativos (`C$`, `ADMIN$`, `IPC$`). El servicio comprueba además, antes de crearlo, que el destino no apunta al propio equipo (sus nombres, sus direcciones y la resolución del nombre, §7.5). Las pruebas usan una variante explícita para carpetas locales (`ForLocalTesting`) que el servicio no usa nunca.
+- **Puntos de reanálisis**: Backbone no sigue ninguno dentro del repositorio. Antes de cada operación se comprueba la raíz, cada carpeta intermedia (`objects\`, `objects\ab\`, `snapshots\`, `locks\`, `tmp\`) y el propio elemento si existe; al enumerar una carpeta, también cada elemento que contiene. Un punto de reanálisis (*junction*, enlace simbólico u otro) en cualquiera de ellos hace que el repositorio se trate como **corrupto** (`Corrupt`) y la operación falle sin tocar nada: un repositorio manipulado no puede hacer que una copia escriba, ni que una limpieza borre, fuera de él. Queda una ventana entre la comprobación y la operación (R7).
+- **Contenido no confiable**: lo que se lee del repositorio lo puede haber escrito otro equipo o cualquiera con acceso de escritura al recurso. Además de los límites de §6.2–§6.4, los textos de `repo.json`, de la cabecera de los snapshots y de los bloqueos (`createdBy`, `host`, `jobName`, `jobId`, `sources[].path`, los avisos, y cualquier valor leído que aparezca en un mensaje de error) se **sanean antes de registrarlos o mostrarlos**:
+  - En logs, mensajes de excepción y eventos se recortan a **200 caracteres** (con `…` detrás) y se escriben como `\uXXXX` los caracteres de control (categoría Unicode `Cc`), las suplentes sueltas, U+2028, U+2029 y **toda la categoría Unicode `Cf` (formato)**: controles bidireccionales (U+200E, U+200F, U+061C, U+202A–U+202E, U+2066–U+2069), espacios y uniones de anchura cero (U+200B–U+200D, U+2060), BOM (U+FEFF), guion blando (U+00AD), etiquetas (U+E0000–U+E007F) y el resto. La categoría se decide por punto de código (`Rune.GetUnicodeCategory`), así que un carácter `Cf` fuera del plano básico se escribe como sus dos unidades UTF-16 (`\uXXXX\uXXXX`). Así un repositorio hostil no puede inundar los registros, falsear líneas, ocultar caracteres ni reordenar visualmente el texto. En Core lo hace `Untrusted.Describe`.
+  - El saneado se aplica igual en el **servicio** cuando registra o reenvía estos textos (logs, Visor de eventos, mensajes de error por IPC). Si el servicio reutiliza el helper de Core o tiene uno propio compartido se decide en la primera historia del servicio que los registre (HU-04/HU-05); el comportamiento es el de esta sección.
+  - La app los muestra siempre como texto plano (nunca como marcado ni como enlace o ruta que se abre), con los mismos caracteres (controles, suplentes sueltas, U+2028, U+2029 y `Cf`) sustituidos.
+- **Nombres no direccionables en `tmp\` y `locks\`**: el NAS puede servir nombres que Backbone no puede abrir ni borrar por ruta de Windows (p. ej. `nul.lock` o `a:b.tmp` creados en el NAS y servidos por Samba sin *mangling*). En `tmp\` se **ignoran**; en `locks\` cada uno cuenta como **bloqueo ilegible** (`exclusive`, con la fecha de modificación del archivo como latido, §6.4.4): impide copias y limpiezas mientras no esté abandonado (15 minutos sin cambiar su fecha de modificación) y después deja de bloquear. Backbone no los borra nunca, ni vigentes ni abandonados (tampoco la limpieza ni la adquisición exclusiva); hay que quitarlos a mano en el NAS (R8).
 
 ### 6.2 `repo.json`
 
@@ -273,7 +281,7 @@ Prioridad: **MVP** = fase 1, **F2** = fase 2 (uso diario), **F3** = fase 3 (puli
 - `formatVersion` se comprueba **antes que ningún otro campo**: mayor que la versión que entiende Backbone → **incompatible** (RNF-14), aunque el resto del archivo no se entienda; ausente, no entera o menor que 1 → corrupto.
 - `hash` distinto de `sha256`, o `compression`/`encryption` distintos de `none` → incompatible (características de un formato posterior).
 - `repositoryId` es un GUID con guiones (formato `D`); `createdUtc` sigue las reglas de fechas de §6.3. Si falta algún campo o no es válido → corrupto.
-- `createdBy` es texto libre; el UTF-16 no válido se sustituye por U+FFFD.
+- `createdBy` es texto libre y no confiable (§6.1); el UTF-16 no válido se sustituye por U+FFFD.
 - **Inicialización**: se crean las carpetas de §6.1 y `repo.json` se publica **el último**, de forma atómica y sin sobrescribir (§6.4.1). Hasta que existe, el destino no es un repositorio y una inicialización interrumpida se puede repetir. Si otro proceso lo publicó antes, la inicialización falla como "ya inicializado".
 
 ### 6.3 Snapshot `snapshots/<id>.json`
@@ -311,12 +319,46 @@ El ejemplo está sangrado para leerlo; el archivo real es compacto (ver "Seriali
 
 - **Orden (regla, no solo ejemplo)**: todos los campos de cabecera van **antes** de `entries`, y `entries` es el último campo que escribe Backbone. Así se lee la cabecera (listar snapshots) sin recorrer las entradas. El lector no busca cabecera después de `entries`: lo que haya detrás se descarta, y si falta un campo obligatorio antes de `entries` el manifiesto es corrupto.
 - `id` debe coincidir con el nombre del archivo.
+- `jobId`: no vacío (el escritor pone el GUID del trabajo en formato `D`). `jobName`: el nombre del trabajo al hacer la copia. `host`: nombre del equipo, que cumple las reglas de segmento (abajo). Los tres son texto no confiable (§6.1).
 - `parentId` siempre está presente: `null` explícito en el primer snapshot del trabajo.
 - `status`: `completed` o `completedWithWarnings`; cualquier otro valor → corrupto.
-- `sources`: al menos uno; cada `alias` cumple las reglas de segmento (abajo) y los alias son únicos **sin distinguir mayúsculas**.
+- `sources`: al menos uno; cada `alias` cumple las reglas de segmento (abajo) y los alias son únicos **sin distinguir mayúsculas**. `path` es la ruta local del origen al hacer la copia; es texto no confiable y, si se usa como ubicación original al restaurar, se valida como cualquier carpeta de destino (§8.6).
 - `stats.files` y `stats.bytes` los calcula el escritor a partir de las entradas; al terminar de leer las entradas se comprueba que coinciden (discrepancia → corrupto). Los demás contadores no pueden ser negativos.
-- `warnings`: los textos con UTF-16 no válido se guardan con U+FFFD en su lugar.
-- `formatVersion` mayor que la que entiende Backbone → incompatible. Los campos desconocidos (de la cabecera, de las entradas o de objetos anidados) se ignoran: dentro de v1 se pueden añadir campos opcionales sin romper lectores anteriores.
+- `warnings` (opcional; ausente equivale a ninguno): cada aviso tiene `path` (ruta del snapshot a la que se refiere, o vacía si no se refiere a un archivo, como `VssUnavailable`), `code` y `message`. `code` es el nombre de un valor de `RunIssueCode` (§7.2); quien lo muestre trata un código que no conoce como `Other`. Los textos con UTF-16 no válido se guardan con U+FFFD en su lugar.
+- `formatVersion` mayor que la que entiende Backbone → incompatible. Los campos desconocidos (de la cabecera, de las entradas o de objetos anidados) se ignoran: dentro de v1 se pueden añadir campos opcionales sin romper lectores anteriores. Cuentan para los límites (abajo) igual que los conocidos.
+
+**Límites**
+
+Protegen al lector frente a un manifiesto hostil o dañado (memoria, tiempo, registros). Las longitudes de texto se miden en caracteres UTF-16 (`string.Length`); los tamaños, en bytes del archivo. Superar cualquiera al leer → **corrupto**.
+
+| Elemento | Límite |
+|---|---|
+| Manifiesto completo | 16 GiB |
+| Cabecera: todo lo anterior a `entries` (desde la `{` inicial hasta `"entries":[`), incluidas las propiedades desconocidas | 16 MiB |
+| Unidad de cabecera: el valor completo de una propiedad simple o desconocida, `stats`, un elemento de `sources` o de `warnings`, y cada propiedad posterior a `entries` | 256 KiB |
+| Una entrada (el objeto completo) | 1 MiB |
+| Profundidad de anidamiento JSON | 16 |
+| Entradas (archivos más carpetas vacías) | 5 000 000 (10 × RNF-05) |
+| `sources` | 32 (`ContractLimits.MaxSources`) |
+| `warnings` | 10 000 |
+| `id`, `parentId`, `status` | 64 caracteres (además, su formato) |
+| `jobId` | 128 caracteres |
+| `jobName` | 128 caracteres (`ContractLimits.MaxJobNameLength`) |
+| `host` | segmento válido (255 caracteres) |
+| `sources[].alias` | 64 caracteres y segmento válido |
+| `sources[].path` | 32 767 caracteres |
+| `warnings[].path` / `code` / `message` | 32 767 / 64 / 2 048 caracteres |
+| `p` | 32 767 caracteres, segmentos de 255 (`SnapshotPaths`, §7.5) |
+
+- La unidad de cabecera está dimensionada para el mayor elemento válido: un aviso con los tres textos al máximo (32 767 + 64 + 2 048 caracteres) ocupa como mucho unos 210 KB aunque cada carácter se escape como `\uXXXX` (6 bytes). Con 32 orígenes al máximo (≈ 6,3 MB) queda sitio en la cabecera para miles de avisos de tamaño normal.
+- Lo que hay detrás de `entries` se descarta (ver "Orden"), pero sigue sujeto a la unidad de cabecera, a la profundidad y al tamaño total.
+
+**El escritor nunca publica un manifiesto que el lector rechace**:
+
+- Los textos de un aviso que superan su límite se **recortan** a él (sin partir un par suplente).
+- Si hay como mucho 10 000 avisos y caben todos en la cabecera, se guardan todos. Si no, se guardan en orden los primeros que quepan, como mucho 9 999 y mientras la cabecera, contando el aviso que se añade, no pase de 16 MiB − 256 KiB (sitio reservado para el resumen); los demás se descartan y se añade al final un **aviso resumen** `{ "path": "", "code": "WarningsTruncated", "message": "<N> avisos más no se han guardado en el snapshot." }`, con `N` el número de avisos descartados. Así nunca hay más de 10 000 avisos ni la cabecera supera su presupuesto.
+- Los demás campos de cabecera que superan su límite (`jobId`, `jobName`, `host`, `sources`) no pueden venir de un trabajo válido (§7.5): el escritor los rechaza al empezar la copia.
+- Si la copia llega a más de 5 000 000 de entradas o el manifiesto superaría 16 GiB, la copia **falla** con un mensaje que indica el límite superado y no se publica snapshot (el anterior sigue siendo el último restaurable). Por ahora Core lo señala con `InvalidOperationException`; su traducción a `BackboneErrorCode`/`RunIssueCode` (y si hace falta un código nuevo) se decide en HU-13.
 
 **Entradas**
 
@@ -353,13 +395,20 @@ El ejemplo está sangrado para leerlo; el archivo real es compacto (ver "Seriali
      { "host": "PC-SALON", "pid": 4242, "type": "shared", "heartbeatUtc": "2026-11-15T02:00:00Z" }
      ```
    - `type`: `shared` (copia; compatible con otras copias) o `exclusive` (limpieza; incompatible con cualquier otro bloqueo vigente).
-   - Un bloqueo es **vigente** si su `heartbeatUtc` tiene menos de **15 minutos** según el reloj del equipo que lo comprueba (riesgo de desfase entre equipos: Q1); si no, está **abandonado**. Un archivo de bloqueo ilegible se trata como `exclusive` vigente, con la fecha de modificación del archivo como latido.
+   - El archivo ocupa como mucho 64 KiB. Su contenido es no confiable (§6.1): `host` se sanea antes de registrarlo o de mostrarlo en el mensaje de "repositorio bloqueado".
+   - **Latido de cada bloqueo**: su `heartbeatUtc` si el archivo es legible. Un archivo ilegible (contenido no válido, más de 64 KiB, error de lectura) se trata como `exclusive` con la **fecha de modificación** del archivo como latido. Un archivo de `locks\` con un nombre que Backbone no puede direccionar (§6.1) cuenta como ilegible igual que los demás; la única diferencia es que **no se borra nunca**, tampoco abandonado (R8).
+   - **Vigencia** (regla sin estado; `ahora` es el reloj del equipo que comprueba, `T` = `StaleAfter` = **15 minutos**, que hace también de tolerancia de reloj, y `m` la fecha de modificación del archivo):
+     1. `L` = el latido del punto anterior.
+     2. Si `L > ahora + T`, el latido es **anómalo** (en el futuro más allá de la tolerancia): se usa `L = m` si `m ≤ ahora + T`; si `m` también es anómala, el bloqueo está **abandonado**.
+     3. Con `L` no anómalo: **vigente** si `ahora − L < T`; si no, **abandonado**. Un latido en el futuro dentro de la tolerancia es vigente.
+
+     Consecuencias: sin escrituras nuevas, ningún bloqueo bloquea más de `2 × T` (30 min) desde la primera vez que se ve, y uno con todas sus fechas en el futuro lejano no bloquea nunca; quien solo tiene escritura en el recurso no puede bloquear el repositorio indefinidamente sin seguir escribiendo. Sin guardar estado entre comprobaciones no se puede acotar a `T` sin rechazar también latidos de equipos con un desfase menor que `T`. Contrapartida: un titular legítimo con el reloj adelantado más de `T` respecto al que comprueba (y con una `m` también futura) se ve abandonado; es el riesgo de desfase de Q1 en el sentido contrario.
    - **Adquisición**: (a) se **publica el bloqueo propio** (sobrescribiendo: un archivo con el mismo nombre es de un proceso anterior que ya no existe); (b) después se **examinan los demás**; si hay alguno vigente incompatible, se borra el propio y se falla con "repositorio bloqueado"; (c) **solo la adquisición exclusiva borra los bloqueos abandonados**. Si dos procesos compiten, al menos uno ve al otro: en el peor caso fallan los dos, nunca entran los dos.
    - **Latido** cada **60 s**, reescribiendo `heartbeatUtc`. Si el archivo propio ha desaparecido (otro proceso lo dio por abandonado), no se recrea: el bloqueo se da por perdido. Los errores transitorios se reintentan en el siguiente latido.
    - El titular da su bloqueo por **perdido a los 13 minutos** sin un latido correcto (15 min − 2 latidos), antes de que otro pueda considerarlo abandonado, y deja de escribir en el repositorio.
    - Al terminar, el titular borra su archivo. Si no puede, caduca solo a los 15 minutos.
 5. La limpieza borra primero los snapshots que expiran y después los objetos no referenciados **con más de 24 h de antigüedad** (protege objetos de una ejecución en curso en otro equipo).
-6. `tmp\` se vacía al empezar una limpieza.
+6. `tmp\` se vacía al empezar una limpieza; los temporales con nombres no direccionables se ignoran y se quedan (§6.1).
 
 ### 6.5 Evolución (v2, F3)
 
@@ -374,7 +423,7 @@ Objetos troceados (*content-defined chunking*, FastCDC, tamaño medio 1 MiB) emp
 - Named pipe `Backbone.Service.v1` (`\\.\pipe\Backbone.Service.v1`), dúplex, asíncrono, mensajes con `HeaderDelimitedMessageHandler` y `SystemTextJsonFormatter`.
 - Una conexión por instancia de la app; el servidor admite hasta 8 conexiones simultáneas, y como mucho 4 por SID para que un usuario no agote las instancias (B-4).
 - Versión: `GetServiceInfoAsync` devuelve la versión del contrato; la app muestra un aviso si no coincide en la versión mayor.
-- Constantes en `Backbone.Contracts`: `BackboneIpc.PipeName` (`Backbone.Service.v1`; el sufijo es la versión mayor del contrato), `BackboneIpc.MaxConnections` (8), `BackboneIpc.MaxRunProgressEventsPerSecond` (4), `BackboneIpc.MaxMessageBytes` (4 MiB) y `ContractVersion` (`Value = "1.0"`, `Major`, `Minor`, `IsCompatibleWith`). Los límites de las entradas están en `ContractLimits` (§7.5).
+- Constantes en `Backbone.Contracts`: `BackboneIpc.PipeName` (`Backbone.Service.v1`; el sufijo es la versión mayor del contrato), `BackboneIpc.MaxConnections` (8), `BackboneIpc.MaxRunProgressEventsPerSecond` (4), `BackboneIpc.MaxMessageBytes` (4 MiB) y `ContractVersion` (`Value = "1.1"`, `Major`, `Minor`, `IsCompatibleWith`). Los límites de las entradas están en `ContractLimits` (§7.5).
 - `ContractVersion` es semántica: un cambio incompatible (quitar o renombrar un método, propiedad o valor de enumerado, cambiar un tipo o un significado) sube la **mayor** y el nombre del pipe; añadir métodos, propiedades opcionales o valores de enumerado sube la **menor**.
 - Formato (ADR-10): servicio y app crean `new SystemTextJsonFormatter()` **sin cambiar** `JsonSerializerOptions`. Los nombres de propiedad viajan tal cual (PascalCase), los enumerados como número, las propiedades desconocidas se ignoran y las ausentes toman su valor por defecto. La profundidad máxima es la de System.Text.Json por defecto (64, `ContractLimits.MaxJsonDepth`).
 - Tamaño de mensaje: ambos extremos cortan la conexión si un mensaje supera `BackboneIpc.MaxMessageBytes` (4 MiB), sin llegar a deserializarlo. Por eso el historial, la exploración de snapshots y la búsqueda se paginan.
@@ -536,6 +585,7 @@ Transporte del error:
   - `DeleteJobAsync` de un trabajo en ejecución o en cola → `JobAlreadyRunning` (hay que cancelarlo antes).
   - `CancelRunAsync` sin ejecución en curso ni en cola no hace nada (idempotente); solo falla con `JobNotFound`.
   - `JobStatus.RepositoryState` indica `ReadOnlyNewerFormat` cuando el repositorio es de formato superior (HU-06.4).
+- **Avisos**: `RunIssueCode.WarningsTruncated` (contrato 1.1) resume los avisos que no caben en el snapshot (§6.3) y puede aparecer también entre las incidencias de la ejecución; su `Message` indica cuántos se han descartado.
 - **Ejecuciones**: `RunRecord.Kind` distingue copia (`Backup`) de mantenimiento F2 (`Retention`, `Prune`, `QuickCheck`, `FullCheck`), que comparten historial, `RunProgress` y `RunCompleted`. `ServiceStatus.CurrentRun` es el último `RunProgressEvent` de la ejecución en curso, para el cliente que conecta a mitad.
 - **Historial**: `GetHistoryAsync` devuelve `HistoryPage { Items, TotalCount }`. `HistoryQuery` pagina con `Offset` y `Limit` (por defecto 100, máximo 1000), del más reciente al más antiguo.
 - **Snapshots**:
@@ -746,4 +796,6 @@ Cada historia de usuario lista sus criterios de aceptación; cada criterio debe 
 | R4 | Archivos de OneDrive "solo en la nube". | Detectar `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` / `RECALL_ON_OPEN` y omitir sin desencadenar la descarga. |
 | R5 | Firma de código: sin certificado, SmartScreen avisará. | Documentar; obtener certificado antes de distribuir fuera del entorno propio. |
 | R6 | El manifiesto no lleva suma de comprobación (§6.3): un `h` o un `s` alterados con un valor bien formado pasan la lectura y solo los detecta la verificación completa (HU-26); un `h` cambiado por el de otro objeto existente del mismo tamaño no lo detecta nadie. | v1: se acepta (los manifiestos son inmutables y se publican de forma atómica). v2: añadir una suma del manifiesto (p. ej. SHA-256 de las entradas en la cabecera o en un archivo aparte), comprobada al leer. |
-| Q1 | ¿Varias máquinas en el mismo repositorio? | v1: no se soporta oficialmente (un repositorio por trabajo y equipo), aunque el formato ya lo tolera. Riesgo si se usa: el abandono de un bloqueo (§6.4.4) se decide con el reloj del equipo que comprueba frente al `heartbeatUtc` que el titular escribió con el suyo; si el reloj del que comprueba va adelantado unos 14 minutos o más, una limpieza podría borrar un bloqueo vivo (el titular no se daría cuenta hasta su siguiente latido). Mitigación: equipos sincronizados por NTP; en v2, valorar comparar con la fecha de modificación que asigna el NAS. |
+| R7 | Puntos de reanálisis en el repositorio (§6.1): la comprobación y la operación no son atómicas (TOCTOU), así que quien puede escribir en el recurso del NAS podría cambiar una carpeta por un *junction* entre ambas. | v1: se acepta; ese atacante ya puede destruir el repositorio. Valorar abrir con `FILE_FLAG_OPEN_REPARSE_POINT` y comprobar el identificador del archivo abierto. |
+| R8 | Nombres no direccionables en `tmp\` o `locks\` (§6.1): Samba sin *mangling* puede servir nombres que Windows no puede abrir por ruta (`nul.lock`, `a:b.tmp`). Un bloqueo así impide copias y limpiezas mientras su fecha de modificación tenga menos de 15 minutos (§6.4.4) y después deja de bloquear, pero se queda; un temporal así ocupa espacio sin que la limpieza lo quite. | v1: limitación conocida; Backbone no los borra nunca y hay que quitarlos a mano en el NAS. Valorar borrarlos por identificador de archivo o con rutas `\\?\` en una versión posterior. |
+| Q1 | ¿Varias máquinas en el mismo repositorio? | v1: no se soporta oficialmente (un repositorio por trabajo y equipo), aunque el formato ya lo tolera. Riesgo si se usa: el abandono de un bloqueo (§6.4.4) se decide con el reloj del equipo que comprueba frente al `heartbeatUtc` que el titular escribió con el suyo; si el reloj del que comprueba va adelantado unos 14 minutos o más, una limpieza podría borrar un bloqueo vivo (el titular no se daría cuenta hasta su siguiente latido). En el caso contrario (titular adelantado más de 15 minutos) su latido es anómalo: se sustituye por la fecha de modificación del archivo o, si también es futura, el bloqueo cuenta como abandonado (§6.4.4). Mitigación: equipos sincronizados por NTP; en v2, valorar comparar siempre con la fecha de modificación que asigna el NAS. |

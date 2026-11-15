@@ -133,6 +133,7 @@ Como Ana, quiero escribir una vez el usuario y la contraseña del NAS, para que 
   3. Una búsqueda de la contraseña en `%ProgramData%\Backbone` (logs, config, historial) no encuentra coincidencias.
   4. El campo de contraseña de la app usa `PasswordBox` y se vacía tras guardar.
   5. Con la sesión cerrada, una ejecución programada se conecta con esas credenciales.
+- **Pendiente de HT-04**: si esta historia registra o reenvía textos no confiables (nombres de recurso o equipo, mensajes con valores leídos del NAS), decidir aquí el helper de saneado del servicio (reutilizar `Untrusted` de Core o uno compartido) con el comportamiento de §6.1. Si no, la decisión pasa a HU-05.
 
 ### HU-05 · Probar la conexión al NAS
 Como Luis, quiero comprobar la conexión antes de guardar un trabajo, para saber exactamente qué falla si algo no va.
@@ -144,6 +145,7 @@ Como Luis, quiero comprobar la conexión antes de guardar un trabajo, para saber
   3. Con servidor apagado veo "No se encuentra el NAS en la red" en menos de 15 s.
   4. Con recurso inexistente o sin permiso de escritura veo un mensaje específico para cada caso.
   5. La prueba no deja archivos en el recurso.
+- **Pendiente de HT-04**: si HU-04 no lo decidió, decidir aquí el helper de saneado de textos no confiables del servicio (§6.1).
 
 ### HU-06 · Inicializar o adoptar un repositorio
 Como Luis, quiero que si reinstalo Windows y apunto al mismo destino, Backbone reconozca las copias anteriores, para no perder el historial de versiones.
@@ -238,6 +240,7 @@ Como Ana, quiero que cada copia guarde solo lo que ha cambiado y conserve las ve
   5. Un archivo ilegible se omite, aparece en `warnings` y la ejecución termina `CompletedWithWarnings`; si existía en el snapshot anterior, se conserva su versión anterior.
   6. El hash se calcula mientras se copia; si el contenido cambió, se usa el hash real (§6.4.2).
   7. Rutas de más de 260 caracteres funcionan en origen y destino (RNF-09).
+- **Pendiente de HT-04**: decidir cómo se traduce el fallo por manifiesto demasiado grande (más de 5 000 000 de entradas o más de 16 GiB, §6.3) a `BackboneErrorCode`/`RunIssueCode`, y si hace falta un código nuevo en el contrato (lo añadiría backbone-architect antes). Hoy Core lanza `InvalidOperationException`.
 
 ### HU-14 · Copiar ahora y cancelar
 Como Luis, quiero lanzar una copia en el momento y poder cancelarla, para controlar cuándo se usa la red.
@@ -367,6 +370,7 @@ Como Ana, quiero restaurar los archivos que elija a su sitio o a otra carpeta, p
   5. Se rechazan destinos dentro de las carpetas protegidas de §8.6.4.
   6. Puedo cancelar; los archivos ya restaurados se quedan y el resumen indica cuáles.
   7. Al terminar veo el resumen y el botón "Abrir carpeta".
+- **Nota de HT-04**: el manifiesto es no confiable (§6.1) y sus rutas son únicas solo con comparación ordinal (§6.3), así que puede traer entradas que en NTFS colisionan: rutas que solo difieren en mayúsculas (`A.txt` y `a.txt`, o carpetas `Fotos/` y `fotos/`) y un archivo y una carpeta con el mismo nombre (`x` como archivo y `x/…` como carpeta, también con distinta capitalización). La restauración debe tratarlas como conflicto (RF-32: preguntar u omitir, nunca sobrescribir en silencio ni mezclar el contenido de un archivo con el de una carpeta) y cubrirlo con pruebas.
 
 ### HU-26 · Versiones de un archivo
 Como Ana, quiero ver todas las versiones de un archivo concreto, para elegir la que necesito sin revisar snapshot por snapshot.
@@ -505,7 +509,7 @@ Las historias de una misma fila pueden desarrollarse en paralelo por agentes dis
 | HT-01 | MVP | 3 | backbone-architect | Hecha |
 | HT-02 | MVP | 3 | backbone-architect | Hecha |
 | HT-03 | MVP | 5 | backbone-service | Pendiente |
-| HT-04 | MVP | 8 | backbone-core | Pendiente |
+| HT-04 | MVP | 8 | backbone-core | Hecha |
 | HU-01 | MVP | 8 | backbone-installer | Pendiente |
 | HU-02 | MVP | 3 | backbone-installer | Pendiente |
 | HU-03 | F2 | 5 | backbone-app | Pendiente |

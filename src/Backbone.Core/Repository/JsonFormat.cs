@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 
@@ -114,6 +115,69 @@ internal static class JsonFormat
                 }
             })
             : value;
+    }
+
+    /// <summary>
+    /// Lee una cadena JSON sustituyendo por U+FFFD las suplentes sueltas escapadas (<c>\ud800</c>), que
+    /// <see cref="JsonElement.GetString"/> rechaza con <see cref="InvalidOperationException"/>.
+    /// </summary>
+    public static string GetStringReplacingInvalidUtf16(JsonElement element)
+    {
+        try
+        {
+            return element.GetString() ?? string.Empty;
+        }
+        catch (InvalidOperationException)
+        {
+            // El texto JSON en bruto ya es UTF-8 válido (lo comprueba el analizador); solo hay que deshacer los escapes.
+            return SanitizeText(Unescape(element.GetRawText()));
+        }
+    }
+
+    /// <summary>Deshace los escapes de una cadena JSON en bruto (con sus comillas) sin exigir UTF-16 válido.</summary>
+    private static string Unescape(string raw)
+    {
+        var builder = new StringBuilder(raw.Length);
+        for (var i = 1; i < raw.Length - 1; i++)
+        {
+            var c = raw[i];
+            if (c != '\\' || i + 1 >= raw.Length - 1)
+            {
+                builder.Append(c);
+                continue;
+            }
+
+            var escaped = raw[++i];
+            switch (escaped)
+            {
+                case 'b':
+                    builder.Append('\b');
+                    break;
+                case 'f':
+                    builder.Append('\f');
+                    break;
+                case 'n':
+                    builder.Append('\n');
+                    break;
+                case 'r':
+                    builder.Append('\r');
+                    break;
+                case 't':
+                    builder.Append('\t');
+                    break;
+                case 'u' when i + 4 < raw.Length
+                    && ushort.TryParse(raw.AsSpan(i + 1, 4), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var code):
+                    builder.Append((char)code);
+                    i += 4;
+                    break;
+                default:
+                    // \" \\ \/ (el analizador ya rechazó cualquier otro escape).
+                    builder.Append(escaped);
+                    break;
+            }
+        }
+
+        return builder.ToString();
     }
 
     /// <summary>Indica si el texto contiene suplentes sueltas (UTF-16 no válido, posible en nombres de NTFS).</summary>

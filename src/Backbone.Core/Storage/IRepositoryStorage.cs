@@ -16,6 +16,17 @@ namespace Backbone.Core.Storage;
 /// Las implementaciones deben ser seguras para uso concurrente. Las comparaciones de nombres
 /// no distinguen mayúsculas (como NTFS y SMB).
 /// </para>
+/// <para>
+/// Cualquier operación puede lanzar <see cref="Repository.RepositoryException"/> con
+/// <see cref="Repository.RepositoryErrorKind.Corrupt"/> si encuentra un punto de reanálisis (<i>junction</i>, enlace
+/// simbólico u otro) en la raíz, en una carpeta intermedia, en el propio elemento o, al enumerar, en un elemento de la
+/// carpeta (§6.1): la operación falla sin tocar nada.
+/// </para>
+/// <para>
+/// Los nombres que devuelve <see cref="EnumerateAsync"/> son los del almacenamiento y no confiables: pueden no cumplir
+/// <see cref="RepositoryPath.IsValidSegment"/> (un NAS admite nombres que Backbone rechaza); el llamante los comprueba
+/// antes de componer rutas con ellos.
+/// </para>
 /// </remarks>
 public interface IRepositoryStorage
 {

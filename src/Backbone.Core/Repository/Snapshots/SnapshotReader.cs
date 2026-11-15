@@ -13,6 +13,17 @@ namespace Backbone.Core.Repository.Snapshots;
 /// <see cref="SnapshotWriter"/>; los campos posteriores se ignoran. Toda entrada se valida (ruta, hash,
 /// tamaño, unicidad) y al final se comprueba que coincide con <see cref="SnapshotStats.Files"/> y
 /// <see cref="SnapshotStats.Bytes"/>; cualquier discrepancia es <see cref="RepositoryErrorKind.Corrupt"/>.
+/// <para>
+/// Se aplican los límites de §6.3 (<see cref="SnapshotLimits"/>): cada unidad se valida en cuanto se lee, sin acumular
+/// elementos no válidos, y la cabecera completa no puede pasar de <see cref="SnapshotLimits.MaxHeaderBytes"/>.
+/// </para>
+/// <para>
+/// Los textos de la cabecera (<see cref="SnapshotHeader.JobId"/>, <see cref="SnapshotHeader.JobName"/>,
+/// <see cref="SnapshotHeader.Host"/>, <see cref="SnapshotSource.Path"/> y los avisos) son <b>no confiables</b> (§6.1): los
+/// puede haber escrito otro equipo o cualquiera con escritura en el recurso. Quien los registre o los muestre debe
+/// sanearlos antes (<c>Untrusted.Describe</c> en logs y mensajes; texto plano en la app) y <see cref="SnapshotSource.Path"/>
+/// se valida como cualquier carpeta de destino si se usa para restaurar (§8.6).
+/// </para>
 /// </remarks>
 public sealed class SnapshotReader : IAsyncDisposable
 {
@@ -32,9 +43,17 @@ public sealed class SnapshotReader : IAsyncDisposable
     /// <summary>Cabecera del snapshot.</summary>
     public SnapshotHeader Header { get; }
 
+    /// <summary>Máximo de entradas (las pruebas lo reducen para comprobar el corte sin escribir millones).</summary>
+    internal long MaxEntries { get; set; } = RepositoryLayout.MaxSnapshotEntries;
+
     /// <summary>
     /// Recorre las entradas. Solo se puede recorrer una vez; al terminar se valida el resto del documento.
     /// </summary>
+    /// <remarks>
+    /// Se aborta en cuanto el recuento supera lo que declara la cabecera (<see cref="SnapshotStats.Files"/>,
+    /// <see cref="SnapshotStats.Bytes"/>) o <see cref="RepositoryLayout.MaxSnapshotEntries"/>: un manifiesto hostil no
+    /// puede hacer crecer sin límite la memoria del conjunto de rutas.
+    /// </remarks>
     public async IAsyncEnumerable<SnapshotEntry> ReadEntriesAsync([EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (entriesStarted)
@@ -43,7 +62,9 @@ public sealed class SnapshotReader : IAsyncDisposable
         }
 
         entriesStarted = true;
+        json.MaxUnitBytes = SnapshotLimits.MaxEntryUnitBytes;
         var paths = new EntryPathSet();
+        long entries = 0;
         long files = 0;
         long bytes = 0;
         while (true)
@@ -55,26 +76,37 @@ public sealed class SnapshotReader : IAsyncDisposable
                 break;
             }
 
-            if (!aliases.Contains(entry.Alias))
+            if (++entries > MaxEntries)
             {
-                throw json.Corrupt($"tiene una entrada de un origen que no figura en 'sources': '{entry.Path}'.");
+                throw json.Corrupt($"tiene más de {MaxEntries} entradas.");
             }
 
-            if (!paths.Add(entry.Path))
+            if (!aliases.Contains(entry.Alias))
             {
-                throw json.Corrupt($"tiene una ruta repetida: '{entry.Path}'.");
+                throw json.Corrupt($"tiene una entrada de un origen que no figura en 'sources': '{Untrusted.Describe(entry.Path)}'.");
             }
 
             if (!entry.IsDirectory)
             {
-                files++;
-                bytes = checked(bytes + entry.Size);
+                // Sin suma que pueda desbordarse (B-4): se compara con lo que queda por cuadrar.
+                if (++files > Header.Stats.Files || entry.Size > Header.Stats.Bytes - bytes)
+                {
+                    throw json.Corrupt("tiene más archivos o bytes de los que declaran sus estadísticas.");
+                }
+
+                bytes += entry.Size;
+            }
+
+            if (!paths.Add(entry.Path))
+            {
+                throw json.Corrupt($"tiene una ruta repetida: '{Untrusted.Describe(entry.Path)}'.");
             }
 
             yield return entry;
         }
 
         // Resto del objeto principal: campos posteriores a "entries" (se ignoran).
+        json.MaxUnitBytes = SnapshotLimits.MaxHeaderUnitBytes;
         while (await json.ReadAsync<string?>(ParsePropertyNameOrEnd, cancellationToken).ConfigureAwait(false) is not null)
         {
             await json.ReadAsync<bool>(ParseSkip, cancellationToken).ConfigureAwait(false);
@@ -104,20 +136,36 @@ public sealed class SnapshotReader : IAsyncDisposable
     {
         if (!SnapshotId.IsValid(snapshotId))
         {
-            throw new ArgumentException($"Identificador de snapshot no válido: '{snapshotId}'.", nameof(snapshotId));
+            throw new ArgumentException($"Identificador de snapshot no válido: '{Untrusted.Describe(snapshotId)}'.", nameof(snapshotId));
         }
 
+        var path = RepositoryLayout.SnapshotPath(snapshotId);
         Stream stream;
         try
         {
-            stream = await storage.OpenReadAsync(RepositoryLayout.SnapshotPath(snapshotId), cancellationToken).ConfigureAwait(false);
+            stream = await storage.OpenReadAsync(path, cancellationToken).ConfigureAwait(false);
         }
-        catch (FileNotFoundException ex)
+        catch (Exception ex) when (ex is FileNotFoundException or UnauthorizedAccessException)
         {
+            if (await storage.DirectoryExistsAsync(path, cancellationToken).ConfigureAwait(false))
+            {
+                throw new RepositoryException(RepositoryErrorKind.Corrupt, $"El snapshot {snapshotId} es una carpeta.", ex);
+            }
+
+            if (ex is UnauthorizedAccessException)
+            {
+                throw;
+            }
+
             throw new RepositoryException(RepositoryErrorKind.SnapshotNotFound, $"No existe el snapshot {snapshotId}.", ex);
         }
 
-        var json = new JsonStreamReader(stream, $"El snapshot {snapshotId}", bufferSize);
+        var json = new JsonStreamReader(stream, $"El snapshot {snapshotId}", bufferSize, RepositoryLayout.MaxSnapshotManifestBytes)
+        {
+            MaxUnitBytes = SnapshotLimits.MaxHeaderUnitBytes,
+            MaxConsumedBytes = SnapshotLimits.MaxHeaderBytes,
+            ConsumedLimitDetail = $"tiene una cabecera de más de {SnapshotLimits.MaxHeaderBytes} bytes.",
+        };
         try
         {
             var header = await ReadHeaderAsync(json, snapshotId, cancellationToken).ConfigureAwait(false);
@@ -161,22 +209,22 @@ public sealed class SnapshotReader : IAsyncDisposable
 
                     break;
                 case "id":
-                    id = await json.ReadAsync<string?>(ParseString, cancellationToken).ConfigureAwait(false);
+                    id = await ReadTextAsync(json, ParseString, SnapshotLimits.MaxShortTextLength, name, cancellationToken).ConfigureAwait(false);
                     break;
                 case "jobId":
-                    jobId = await json.ReadAsync<string?>(ParseString, cancellationToken).ConfigureAwait(false);
+                    jobId = await ReadTextAsync(json, ParseString, SnapshotLimits.MaxJobIdLength, name, cancellationToken).ConfigureAwait(false);
                     break;
                 case "jobName":
-                    jobName = await json.ReadAsync<string?>(ParseString, cancellationToken).ConfigureAwait(false);
+                    jobName = await ReadTextAsync(json, ParseString, SnapshotLimits.MaxJobNameLength, name, cancellationToken).ConfigureAwait(false);
                     break;
                 case "host":
-                    host = await json.ReadAsync<string?>(ParseString, cancellationToken).ConfigureAwait(false);
+                    host = await ReadTextAsync(json, ParseString, SnapshotLimits.MaxHostLength, name, cancellationToken).ConfigureAwait(false);
                     break;
                 case "parentId":
-                    parentId = await json.ReadAsync<string?>(ParseNullableString, cancellationToken).ConfigureAwait(false);
+                    parentId = await ReadTextAsync(json, ParseNullableString, SnapshotLimits.MaxShortTextLength, name, cancellationToken).ConfigureAwait(false);
                     break;
                 case "status":
-                    status = await json.ReadAsync<string?>(ParseString, cancellationToken).ConfigureAwait(false);
+                    status = await ReadTextAsync(json, ParseString, SnapshotLimits.MaxShortTextLength, name, cancellationToken).ConfigureAwait(false);
                     break;
                 case "startedUtc":
                     startedUtc = await json.ReadAsync<DateTime>(ParseUtc, cancellationToken).ConfigureAwait(false);
@@ -188,16 +236,18 @@ public sealed class SnapshotReader : IAsyncDisposable
                     usedVss = await json.ReadAsync<bool>(ParseBoolean, cancellationToken).ConfigureAwait(false);
                     break;
                 case "sources":
-                    sources = await json.ReadAsync<List<SnapshotSource>>(ParseSources, cancellationToken).ConfigureAwait(false);
+                    sources = await ReadListAsync<SnapshotSource>(json, ParseSourceItem, SnapshotLimits.MaxSources, name, cancellationToken).ConfigureAwait(false);
                     break;
                 case "stats":
                     stats = await json.ReadAsync<SnapshotStats>(ParseStats, cancellationToken).ConfigureAwait(false);
                     break;
                 case "warnings":
-                    warnings = await json.ReadAsync<List<SnapshotWarning>>(ParseWarnings, cancellationToken).ConfigureAwait(false);
+                    warnings = await ReadListAsync<SnapshotWarning>(json, ParseWarningItem, SnapshotLimits.MaxWarnings, name, cancellationToken).ConfigureAwait(false);
                     break;
                 case "entries":
+                    // El presupuesto de la cabecera incluye "entries":[ (§6.3); después ya no se aplica.
                     await json.ReadAsync<bool>(ParseStartArray, cancellationToken).ConfigureAwait(false);
+                    json.MaxConsumedBytes = long.MaxValue;
                     return BuildHeader();
                 default:
                     await json.ReadAsync<bool>(ParseSkip, cancellationToken).ConfigureAwait(false);
@@ -214,12 +264,17 @@ public sealed class SnapshotReader : IAsyncDisposable
 
             if (id != expectedId)
             {
-                throw json.Corrupt($"declara el identificador '{id}', distinto del nombre del archivo.");
+                throw json.Corrupt($"declara el identificador '{Untrusted.Describe(id)}', distinto del nombre del archivo.");
             }
 
-            if (string.IsNullOrEmpty(jobId) || jobName is null || string.IsNullOrEmpty(host))
+            if (string.IsNullOrEmpty(jobId) || jobName is null || host is null)
             {
                 throw json.Corrupt("no identifica el trabajo o el equipo.");
+            }
+
+            if (!RepositoryPath.IsValidSegment(host))
+            {
+                throw json.Corrupt($"tiene un nombre de equipo no válido: '{Untrusted.Describe(host)}'.");
             }
 
             if (parentId is not null && !SnapshotId.IsValid(parentId))
@@ -236,11 +291,11 @@ public sealed class SnapshotReader : IAsyncDisposable
             {
                 "completed" => SnapshotStatus.Completed,
                 "completedWithWarnings" => SnapshotStatus.CompletedWithWarnings,
-                _ => throw json.Corrupt($"tiene un estado desconocido: '{status}'."),
+                _ => throw json.Corrupt($"tiene un estado desconocido: '{Untrusted.Describe(status)}'."),
             };
 
+            // Cada origen y cada aviso ya se validaron al leerlos (ParseSourceItem, ParseWarningItem).
             if (sources.Count == 0
-                || sources.Any(s => !EntryPath.IsValidAlias(s.Alias))
                 || sources.Select(s => s.Alias).Distinct(StringComparer.OrdinalIgnoreCase).Count() != sources.Count)
             {
                 throw json.Corrupt("tiene orígenes no válidos.");
@@ -263,6 +318,43 @@ public sealed class SnapshotReader : IAsyncDisposable
                 Warnings = warnings ?? [],
             };
         }
+    }
+
+    private static async Task<string?> ReadTextAsync(
+        JsonStreamReader json,
+        JsonStreamReader.Parser<string?> parser,
+        int maxLength,
+        string name,
+        CancellationToken cancellationToken)
+    {
+        var value = await json.ReadAsync(parser, cancellationToken).ConfigureAwait(false);
+        return value is null || value.Length <= maxLength
+            ? value
+            : throw json.Corrupt($"tiene un '{name}' de más de {maxLength} caracteres.");
+    }
+
+    /// <summary>Lista de la cabecera leída elemento a elemento, con tope de elementos.</summary>
+    private static async Task<List<T>> ReadListAsync<T>(
+        JsonStreamReader json,
+        JsonStreamReader.Parser<T?> itemParser,
+        int maxItems,
+        string name,
+        CancellationToken cancellationToken)
+        where T : class
+    {
+        await json.ReadAsync<bool>(ParseStartArray, cancellationToken).ConfigureAwait(false);
+        var items = new List<T>();
+        while (await json.ReadAsync(itemParser, cancellationToken).ConfigureAwait(false) is { } item)
+        {
+            if (items.Count == maxItems)
+            {
+                throw json.Corrupt($"tiene más de {maxItems} elementos en '{name}'.");
+            }
+
+            items.Add(item);
+        }
+
+        return items;
     }
 
     // ---- Analizadores de unidades (todo o nada; véase JsonStreamReader) ----
@@ -376,15 +468,10 @@ public sealed class SnapshotReader : IAsyncDisposable
         return JsonFormat.TryGetUtc(ref reader, out value) ? true : throw new JsonException("Se esperaba una fecha ISO 8601.");
     }
 
-    private static bool ParseSources(ref Utf8JsonReader reader, out List<SnapshotSource> value)
+    /// <summary>Un origen, o <see langword="null"/> al llegar al final de la lista.</summary>
+    private static bool ParseSourceItem(ref Utf8JsonReader reader, out SnapshotSource? value)
     {
-        value = [];
-        if (!ParseStartArray(ref reader, out _))
-        {
-            return false;
-        }
-
-        while (true)
+        value = null;
         {
             if (!reader.Read())
             {
@@ -434,9 +521,18 @@ public sealed class SnapshotReader : IAsyncDisposable
                 }
             }
 
-            value.Add(new SnapshotSource(
-                alias ?? throw new JsonException("Origen sin alias."),
-                path ?? throw new JsonException("Origen sin ruta.")));
+            if (!EntryPath.IsValidAlias(alias))
+            {
+                throw new JsonException($"origen con un alias no válido: '{Untrusted.Describe(alias)}'.");
+            }
+
+            if (path is null || path.Length > SnapshotLimits.MaxSourcePathLength)
+            {
+                throw new JsonException($"origen sin ruta o con una ruta de más de {SnapshotLimits.MaxSourcePathLength} caracteres.");
+            }
+
+            value = new SnapshotSource(alias, path);
+            return true;
         }
     }
 
@@ -505,15 +601,10 @@ public sealed class SnapshotReader : IAsyncDisposable
         : reader.ValueTextEquals("skipped"u8) ? 6
         : -1;
 
-    private static bool ParseWarnings(ref Utf8JsonReader reader, out List<SnapshotWarning> value)
+    /// <summary>Un aviso, o <see langword="null"/> al llegar al final de la lista.</summary>
+    private static bool ParseWarningItem(ref Utf8JsonReader reader, out SnapshotWarning? value)
     {
-        value = [];
-        if (!ParseStartArray(ref reader, out _))
-        {
-            return false;
-        }
-
-        while (true)
+        value = null;
         {
             if (!reader.Read())
             {
@@ -567,7 +658,18 @@ public sealed class SnapshotReader : IAsyncDisposable
                 }
             }
 
-            value.Add(new SnapshotWarning(path ?? string.Empty, code ?? string.Empty, message ?? string.Empty));
+            path ??= string.Empty;
+            code ??= string.Empty;
+            message ??= string.Empty;
+            if (path.Length > SnapshotLimits.MaxWarningPathLength
+                || code.Length > SnapshotLimits.MaxWarningCodeLength
+                || message.Length > SnapshotLimits.MaxWarningMessageLength)
+            {
+                throw new JsonException($"aviso con textos demasiado largos (como mucho {SnapshotLimits.MaxWarningPathLength}, {SnapshotLimits.MaxWarningCodeLength} y {SnapshotLimits.MaxWarningMessageLength} caracteres en path, code y message).");
+            }
+
+            value = new SnapshotWarning(path, code, message);
+            return true;
         }
     }
 
@@ -669,24 +771,24 @@ public sealed class SnapshotReader : IAsyncDisposable
     private static SnapshotEntry BuildDirectory(string? path) =>
         EntryPath.IsValidDirectoryPath(path)
             ? SnapshotEntry.Directory(path)
-            : throw new JsonException($"Ruta de carpeta no válida: '{path}'.");
+            : throw new JsonException($"Ruta de carpeta no válida: '{Untrusted.Describe(path)}'.");
 
     private static SnapshotEntry BuildFile(string? path, string? hash, long? size, DateTime? modified, int? attributes)
     {
         if (!EntryPath.IsValidFilePath(path))
         {
-            throw new JsonException($"Ruta de archivo no válida: '{path}'.");
+            throw new JsonException($"Ruta de archivo no válida: '{Untrusted.Describe(path)}'.");
         }
 
         if (!ContentHash.TryParse(hash, out var contentHash))
         {
-            throw new JsonException($"Hash no válido en '{path}'.");
+            throw new JsonException($"Hash no válido en '{Untrusted.Describe(path)}'.");
         }
 
         if (size is null or < 0 || modified is null || attributes is null
             || ((FileAttributes)attributes.Value & ~SnapshotEntry.StoredAttributes) != 0)
         {
-            throw new JsonException($"Entrada incompleta o no válida: '{path}'.");
+            throw new JsonException($"Entrada incompleta o no válida: '{Untrusted.Describe(path)}'.");
         }
 
         return SnapshotEntry.File(path, contentHash, size.Value, modified.Value, (FileAttributes)attributes.Value);

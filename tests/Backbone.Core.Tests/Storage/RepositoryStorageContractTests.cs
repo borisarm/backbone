@@ -236,7 +236,7 @@ public sealed class FileSystemRepositoryStorageTests : RepositoryStorageContract
 
     public FileSystemRepositoryStorageTests()
     {
-        Storage = new FileSystemRepositoryStorage(directory.Path);
+        Storage = FileSystemRepositoryStorage.ForLocalTesting(directory.Path);
     }
 
     protected override IRepositoryStorage Storage { get; }
@@ -244,9 +244,33 @@ public sealed class FileSystemRepositoryStorageTests : RepositoryStorageContract
     [Fact]
     public void HT04_5_Root_must_be_an_absolute_path()
     {
-        Assert.Throws<ArgumentException>(() => new FileSystemRepositoryStorage(@"relativa\repo"));
-        Assert.ThrowsAny<ArgumentException>(() => new FileSystemRepositoryStorage(" "));
-        Assert.Equal(directory.Path, new FileSystemRepositoryStorage(directory.Path + Path.DirectorySeparatorChar).RootPath);
+        Assert.Throws<ArgumentException>(() => FileSystemRepositoryStorage.ForLocalTesting(@"relativa\repo"));
+        Assert.ThrowsAny<ArgumentException>(() => FileSystemRepositoryStorage.ForLocalTesting(" "));
+        Assert.Equal(directory.Path, FileSystemRepositoryStorage.ForLocalTesting(directory.Path + Path.DirectorySeparatorChar).RootPath);
+    }
+
+    [Theory]
+    [InlineData(@"C:\Backups")]
+    [InlineData(@"relativa\repo")]
+    [InlineData(@"\\?\C:\Backups")]
+    [InlineData(@"\\.\C:\Backups")]
+    [InlineData(@"\??\C:\Backups")]
+    [InlineData(@"\\localhost\Backups")]
+    [InlineData(@"\\127.0.0.1\Backups")]
+    [InlineData(@"\\nas\C$")]
+    [InlineData(@"\\nas\ADMIN$")]
+    [InlineData(@"\\nas\IPC$")]
+    public void HT04_5_Production_constructor_only_accepts_unc_destinations(string destination)
+    {
+        // §6.1 "Solo destinos UNC": la variante local es solo para pruebas.
+        Assert.ThrowsAny<ArgumentException>(() => new FileSystemRepositoryStorage(destination));
+    }
+
+    [Fact]
+    public void HT04_5_Production_constructor_accepts_a_unc_share()
+    {
+        var storage = new FileSystemRepositoryStorage(@"\\nas\Backups\PC-SALON");
+        Assert.StartsWith(@"\\nas\Backups", storage.RootPath, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

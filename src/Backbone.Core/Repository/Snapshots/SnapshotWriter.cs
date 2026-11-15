@@ -1,5 +1,7 @@
 using System.Buffers;
+using System.Globalization;
 using System.Text.Json;
+using Backbone.Contracts;
 using Backbone.Core.Repository.Locking;
 using Backbone.Core.Storage;
 
@@ -20,11 +22,21 @@ namespace Backbone.Core.Repository.Snapshots;
 /// El llamante debe garantizar que todos los objetos referenciados existen antes de llamar a
 /// <see cref="CompleteAsync"/> (§6.4.3). Si el escritor se libera sin completar, no se publica nada.
 /// </para>
+/// <para>
+/// Nunca publica un manifiesto que <see cref="SnapshotReader"/> rechace (§6.3 "Límites"): rechaza al empezar los datos de
+/// cabecera fuera de límite, recorta los textos de los avisos y guarda como mucho los que caben (con un aviso resumen
+/// <see cref="RunIssueCode.WarningsTruncated"/>), y falla con <see cref="InvalidOperationException"/>, sin publicar, si
+/// se superan <see cref="RepositoryLayout.MaxSnapshotEntries"/> entradas o <see cref="RepositoryLayout.MaxSnapshotManifestBytes"/>
+/// bytes.
+/// </para>
 /// </remarks>
 public sealed class SnapshotWriter : IAsyncDisposable
 {
     private const int StagingFlushThreshold = 256 * 1024;
     private const int CopyBufferSize = 1024 * 1024;
+
+    /// <summary>Lo que sigue a la lista de avisos en la cabecera: <c>],"entries":[</c>.</summary>
+    private const int HeaderSuffixBytes = 13;
 
     private readonly IRepositoryStorage storage;
     private readonly TimeProvider timeProvider;
@@ -40,6 +52,7 @@ public sealed class SnapshotWriter : IAsyncDisposable
     private long files;
     private long bytes;
     private long entries;
+    private long entryBytes;
 
     private SnapshotWriter(
         IRepositoryStorage storage,
@@ -74,9 +87,22 @@ public sealed class SnapshotWriter : IAsyncDisposable
     /// <summary>Número de entradas añadidas.</summary>
     public long EntryCount => entries;
 
+    /// <summary>Máximo de entradas (las pruebas lo reducen para comprobar el corte sin escribir millones).</summary>
+    internal long MaxEntries { get; set; } = RepositoryLayout.MaxSnapshotEntries;
+
+    /// <summary>Tamaño máximo del manifiesto (las pruebas lo reducen).</summary>
+    internal long MaxManifestBytes { get; set; } = RepositoryLayout.MaxSnapshotManifestBytes;
+
+    /// <summary>Lo que cierra el manifiesto después de las entradas: salto de línea, <c>]</c> y <c>}</c>.</summary>
+    private static ReadOnlySpan<byte> ManifestEnd => "\n]}"u8;
+
     /// <summary>Añade una entrada.</summary>
     /// <exception cref="ArgumentException">
     /// La ruta no pertenece a ningún origen del snapshot o ya se había añadido.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// Se supera <see cref="RepositoryLayout.MaxSnapshotEntries"/> o el tamaño máximo del manifiesto: el escritor queda
+    /// fallido y no publicará nada (§6.3).
     /// </exception>
     public async Task AddAsync(SnapshotEntry entry, CancellationToken cancellationToken)
     {
@@ -84,17 +110,23 @@ public sealed class SnapshotWriter : IAsyncDisposable
         ThrowIfNotOpen();
         cancellationToken.ThrowIfCancellationRequested();
 
+        if (entries >= MaxEntries)
+        {
+            throw Fail($"La copia supera el máximo de {MaxEntries} entradas (archivos y carpetas vacías) de un snapshot; no se publica el snapshot.");
+        }
+
         if (!aliases.Contains(entry.Alias))
         {
-            throw new ArgumentException($"La entrada '{entry.Path}' no pertenece a ningún origen del snapshot.", nameof(entry));
+            throw new ArgumentException($"La entrada '{Untrusted.Describe(entry.Path)}' no pertenece a ningún origen del snapshot.", nameof(entry));
         }
 
         if (!paths.Add(entry.Path))
         {
-            throw new ArgumentException($"La ruta '{entry.Path}' ya está en el snapshot.", nameof(entry));
+            throw new ArgumentException($"La ruta '{Untrusted.Describe(entry.Path)}' ya está en el snapshot.", nameof(entry));
         }
 
         // Separador entre entradas: una por línea, legible y sin coste apreciable.
+        var before = pending.WrittenCount;
         pending.Write(entries == 0 ? "\n"u8 : ",\n"u8);
         entryWriter.Reset();
         entryWriter.WriteStartObject();
@@ -116,6 +148,13 @@ public sealed class SnapshotWriter : IAsyncDisposable
         entryWriter.WriteEndObject();
         entryWriter.Flush();
         entries++;
+        entryBytes += pending.WrittenCount - before;
+
+        // Aun sin cabecera, las entradas ya no caben: no tiene sentido seguir copiando.
+        if (entryBytes + ManifestEnd.Length > MaxManifestBytes)
+        {
+            throw Fail(ManifestTooLargeMessage());
+        }
 
         if (pending.WrittenCount >= StagingFlushThreshold)
         {
@@ -137,7 +176,11 @@ public sealed class SnapshotWriter : IAsyncDisposable
         ThrowIfNotOpen();
         try
         {
-            var header = BuildHeader(completion);
+            var (header, headerBytes) = BuildHeader(completion);
+            if (headerBytes.Length + entryBytes + ManifestEnd.Length > MaxManifestBytes)
+            {
+                throw new InvalidOperationException(ManifestTooLargeMessage());
+            }
 
             await FlushPendingAsync(cancellationToken).ConfigureAwait(false);
             var stream = staging ?? throw new InvalidOperationException("Temporal de entradas cerrado.");
@@ -149,7 +192,7 @@ public sealed class SnapshotWriter : IAsyncDisposable
                 storage,
                 RepositoryLayout.SnapshotPath(Id),
                 overwrite: false,
-                (output, ct) => WriteManifestAsync(output, header, ct),
+                (output, ct) => WriteManifestAsync(output, headerBytes, ct),
                 cancellationToken,
                 beforeMove: repositoryLock.EnsureHeldAsync).ConfigureAwait(false);
 
@@ -223,6 +266,10 @@ public sealed class SnapshotWriter : IAsyncDisposable
         return new SnapshotWriter(storage, timeProvider, repositoryLock, start, id, stagingPath, staging);
     }
 
+    /// <summary>
+    /// Datos de cabecera que no pueden venir de un trabajo válido (§7.5): se rechazan al empezar la copia, porque el lector
+    /// los consideraría corrupción (§6.3 "Límites").
+    /// </summary>
     private static void Validate(SnapshotStart start)
     {
         ArgumentNullException.ThrowIfNull(start);
@@ -232,9 +279,29 @@ public sealed class SnapshotWriter : IAsyncDisposable
         JsonFormat.RequireUtc(start.StartedUtc, nameof(start));
         ArgumentNullException.ThrowIfNull(start.Sources);
 
+        if (start.JobId.Length > SnapshotLimits.MaxJobIdLength)
+        {
+            throw new ArgumentException($"El identificador del trabajo supera {SnapshotLimits.MaxJobIdLength} caracteres.", nameof(start));
+        }
+
+        if (start.JobName.Length > SnapshotLimits.MaxJobNameLength)
+        {
+            throw new ArgumentException($"El nombre del trabajo supera {SnapshotLimits.MaxJobNameLength} caracteres.", nameof(start));
+        }
+
+        if (!RepositoryPath.IsValidSegment(start.Host))
+        {
+            throw new ArgumentException($"Nombre de equipo no válido para un snapshot: '{Untrusted.Describe(start.Host)}'.", nameof(start));
+        }
+
+        if (start.Sources.Count > SnapshotLimits.MaxSources)
+        {
+            throw new ArgumentException($"Un snapshot admite como mucho {SnapshotLimits.MaxSources} orígenes.", nameof(start));
+        }
+
         if (start.ParentId is not null && !SnapshotId.IsValid(start.ParentId))
         {
-            throw new ArgumentException($"parentId no válido: '{start.ParentId}'.", nameof(start));
+            throw new ArgumentException($"parentId no válido: '{Untrusted.Describe(start.ParentId)}'.", nameof(start));
         }
 
         if (start.Sources.Count == 0)
@@ -247,13 +314,18 @@ public sealed class SnapshotWriter : IAsyncDisposable
         {
             if (!EntryPath.IsValidAlias(source.Alias) || !seen.Add(source.Alias))
             {
-                throw new ArgumentException($"Alias de origen no válido o repetido: '{source.Alias}'.", nameof(start));
+                throw new ArgumentException($"Alias de origen no válido o repetido: '{Untrusted.Describe(source.Alias)}'.", nameof(start));
             }
 
             ArgumentException.ThrowIfNullOrEmpty(source.Path);
+            if (source.Path.Length > SnapshotLimits.MaxSourcePathLength)
+            {
+                throw new ArgumentException($"La ruta del origen '{Untrusted.Describe(source.Alias)}' supera {SnapshotLimits.MaxSourcePathLength} caracteres.", nameof(start));
+            }
+
             if (JsonFormat.HasLoneSurrogate(source.Path))
             {
-                throw new ArgumentException($"La ruta del origen '{source.Alias}' no es UTF-16 válido.", nameof(start));
+                throw new ArgumentException($"La ruta del origen '{Untrusted.Describe(source.Alias)}' no es UTF-16 válido.", nameof(start));
             }
         }
 
@@ -266,7 +338,150 @@ public sealed class SnapshotWriter : IAsyncDisposable
         }
     }
 
-    private SnapshotHeader BuildHeader(SnapshotCompletion completion)
+    /// <summary>Recorta un texto a <paramref name="maxLength"/> caracteres sin partir un par suplente.</summary>
+    internal static string Truncate(string value, int maxLength)
+    {
+        if (value.Length <= maxLength)
+        {
+            return value;
+        }
+
+        var cut = maxLength;
+        if (char.IsHighSurrogate(value[cut - 1]) && char.IsLowSurrogate(value[cut]))
+        {
+            cut--;
+        }
+
+        return value[..cut];
+    }
+
+    /// <summary>Aviso tal como se guarda: UTF-16 válido (U+FFFD en las suplentes sueltas) y textos recortados a su límite.</summary>
+    internal static SnapshotWarning NormalizeWarning(SnapshotWarning warning)
+    {
+        ArgumentNullException.ThrowIfNull(warning);
+        return new SnapshotWarning(
+            Truncate(JsonFormat.SanitizeText(warning.Path), SnapshotLimits.MaxWarningPathLength),
+            Truncate(JsonFormat.SanitizeText(warning.Code), SnapshotLimits.MaxWarningCodeLength),
+            Truncate(JsonFormat.SanitizeText(warning.Message), SnapshotLimits.MaxWarningMessageLength));
+    }
+
+    /// <summary>Aviso resumen de los descartados (§6.3).</summary>
+    internal static SnapshotWarning TruncationSummary(long discarded) =>
+        new(
+            string.Empty,
+            nameof(RunIssueCode.WarningsTruncated),
+            $"{discarded.ToString(CultureInfo.InvariantCulture)} avisos más no se han guardado en el snapshot.");
+
+    /// <summary>
+    /// Elige los avisos que se guardan (§6.3): todos si son como mucho <see cref="SnapshotLimits.MaxWarnings"/> y la cabecera
+    /// no pasa de <see cref="SnapshotLimits.MaxHeaderBytes"/>; si no, los primeros que quepan, como mucho
+    /// <see cref="SnapshotLimits.MaxWarnings"/> − 1 y con la cabecera dentro de
+    /// <see cref="SnapshotLimits.TruncatedWarningsHeaderBytes"/>, seguidos del aviso resumen.
+    /// </summary>
+    /// <param name="warnings">Avisos de la ejecución, en orden.</param>
+    /// <param name="fixedHeaderBytes">Bytes de la cabecera sin ningún aviso (incluido <c>],"entries":[</c>).</param>
+    internal static List<SnapshotWarning> SelectWarnings(IReadOnlyList<SnapshotWarning> warnings, long fixedHeaderBytes)
+    {
+        var measure = new ArrayBufferWriter<byte>(4096);
+        using var measureWriter = new Utf8JsonWriter(measure, JsonFormat.WriterOptions(indented: false));
+
+        // Como mucho se examinan MaxWarnings avisos: con más ya se sabe que no caben todos.
+        var limit = Math.Min(warnings.Count, SnapshotLimits.MaxWarnings);
+        var normalized = new List<SnapshotWarning>(limit);
+        var allFit = warnings.Count <= SnapshotLimits.MaxWarnings;
+        var kept = 0;
+        var keptStopped = false;
+        var headerBytes = fixedHeaderBytes;
+        for (var i = 0; i < limit && (allFit || !keptStopped); i++)
+        {
+            var warning = NormalizeWarning(warnings[i]);
+            measure.ResetWrittenCount();
+            measureWriter.Reset();
+            WriteWarning(measureWriter, warning);
+            measureWriter.Flush();
+
+            // Detrás del primero, cada aviso lleva una coma delante.
+            headerBytes += measure.WrittenCount + (i > 0 ? 1 : 0);
+            allFit &= headerBytes <= SnapshotLimits.MaxHeaderBytes;
+            if (!keptStopped && i < SnapshotLimits.MaxWarnings - 1 && headerBytes <= SnapshotLimits.TruncatedWarningsHeaderBytes)
+            {
+                kept = i + 1;
+            }
+            else
+            {
+                keptStopped = true;
+            }
+
+            normalized.Add(warning);
+        }
+
+        if (allFit)
+        {
+            return normalized;
+        }
+
+        normalized.RemoveRange(kept, normalized.Count - kept);
+        normalized.Add(TruncationSummary(warnings.Count - kept));
+        return normalized;
+    }
+
+    private static void WriteWarning(Utf8JsonWriter writer, SnapshotWarning warning)
+    {
+        writer.WriteStartObject();
+        writer.WriteString("path", warning.Path);
+        writer.WriteString("code", warning.Code);
+        writer.WriteString("message", warning.Message);
+        writer.WriteEndObject();
+    }
+
+    /// <summary>Cabecera hasta <c>"warnings":[</c> incluido.</summary>
+    private static void WriteHeaderStart(Utf8JsonWriter writer, SnapshotHeader header)
+    {
+        writer.WriteStartObject();
+        writer.WriteNumber("formatVersion", header.FormatVersion);
+        writer.WriteString("id", header.Id);
+        writer.WriteString("jobId", header.JobId);
+        writer.WriteString("jobName", header.JobName);
+        writer.WriteString("host", header.Host);
+        JsonFormat.WriteUtc(writer, "startedUtc", header.StartedUtc);
+        JsonFormat.WriteUtc(writer, "completedUtc", header.CompletedUtc);
+        if (header.ParentId is null)
+        {
+            writer.WriteNull("parentId");
+        }
+        else
+        {
+            writer.WriteString("parentId", header.ParentId);
+        }
+
+        writer.WriteString("status", header.Status == SnapshotStatus.CompletedWithWarnings ? "completedWithWarnings" : "completed");
+        writer.WriteBoolean("usedVss", header.UsedVss);
+
+        writer.WriteStartArray("sources");
+        foreach (var source in header.Sources)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("alias", source.Alias);
+            writer.WriteString("path", source.Path);
+            writer.WriteEndObject();
+        }
+
+        writer.WriteEndArray();
+
+        writer.WriteStartObject("stats");
+        writer.WriteNumber("files", header.Stats.Files);
+        writer.WriteNumber("bytes", header.Stats.Bytes);
+        writer.WriteNumber("newFiles", header.Stats.NewFiles);
+        writer.WriteNumber("changedFiles", header.Stats.ChangedFiles);
+        writer.WriteNumber("newObjects", header.Stats.NewObjects);
+        writer.WriteNumber("newBytes", header.Stats.NewBytes);
+        writer.WriteNumber("skipped", header.Stats.Skipped);
+        writer.WriteEndObject();
+
+        writer.WriteStartArray("warnings");
+    }
+
+    private (SnapshotHeader Header, ReadOnlyMemory<byte> Bytes) BuildHeader(SnapshotCompletion completion)
     {
         ArgumentNullException.ThrowIfNull(completion.Stats);
         ArgumentNullException.ThrowIfNull(completion.Warnings);
@@ -276,7 +491,7 @@ public sealed class SnapshotWriter : IAsyncDisposable
             throw new ArgumentException("Las estadísticas no pueden ser negativas.", nameof(completion));
         }
 
-        return new SnapshotHeader
+        var header = new SnapshotHeader
         {
             FormatVersion = RepositoryLayout.FormatVersion,
             Id = Id,
@@ -290,91 +505,56 @@ public sealed class SnapshotWriter : IAsyncDisposable
             UsedVss = start.UsedVss,
             Sources = [.. start.Sources],
             Stats = stats,
-            Warnings = [.. completion.Warnings.Select(w => new SnapshotWarning(
-                JsonFormat.SanitizeText(w.Path),
-                JsonFormat.SanitizeText(w.Code),
-                JsonFormat.SanitizeText(w.Message)))],
+            Warnings = [],
         };
+
+        // La cabecera se compone en memoria (como mucho 16 MiB) para conocer su tamaño exacto al elegir los avisos.
+        var buffer = new ArrayBufferWriter<byte>(64 * 1024);
+        using var writer = new Utf8JsonWriter(buffer, JsonFormat.WriterOptions(indented: false));
+        WriteHeaderStart(writer, header);
+        writer.Flush();
+
+        var warnings = SelectWarnings(completion.Warnings, buffer.WrittenCount + HeaderSuffixBytes);
+        foreach (var warning in warnings)
+        {
+            WriteWarning(writer, warning);
+        }
+
+        writer.WriteEndArray();
+        writer.WriteStartArray("entries");
+        writer.Flush();
+
+        // Defensa: con los límites de inicio y la selección de avisos no puede pasar, y el lector lo rechazaría.
+        if (buffer.WrittenCount > SnapshotLimits.MaxHeaderBytes)
+        {
+            throw new InvalidOperationException($"La cabecera del snapshot supera {SnapshotLimits.MaxHeaderBytes} bytes; no se publica el snapshot.");
+        }
+
+        return (header with { Warnings = warnings }, buffer.WrittenMemory);
     }
 
-    private async Task WriteManifestAsync(Stream output, SnapshotHeader header, CancellationToken cancellationToken)
+    private async Task WriteManifestAsync(Stream output, ReadOnlyMemory<byte> header, CancellationToken cancellationToken)
     {
-        var writer = new Utf8JsonWriter(output, JsonFormat.WriterOptions(indented: false));
-        await using (writer.ConfigureAwait(false))
+        await output.WriteAsync(header, cancellationToken).ConfigureAwait(false);
+
+        // Las entradas ya están serializadas en el temporal: se copian tal cual dentro de la lista.
+        var entriesStream = await storage.OpenReadAsync(stagingPath, cancellationToken).ConfigureAwait(false);
+        await using (entriesStream.ConfigureAwait(false))
         {
-            writer.WriteStartObject();
-            writer.WriteNumber("formatVersion", header.FormatVersion);
-            writer.WriteString("id", header.Id);
-            writer.WriteString("jobId", header.JobId);
-            writer.WriteString("jobName", header.JobName);
-            writer.WriteString("host", header.Host);
-            JsonFormat.WriteUtc(writer, "startedUtc", header.StartedUtc);
-            JsonFormat.WriteUtc(writer, "completedUtc", header.CompletedUtc);
-            if (header.ParentId is null)
-            {
-                writer.WriteNull("parentId");
-            }
-            else
-            {
-                writer.WriteString("parentId", header.ParentId);
-            }
-
-            writer.WriteString("status", header.Status == SnapshotStatus.CompletedWithWarnings ? "completedWithWarnings" : "completed");
-            writer.WriteBoolean("usedVss", header.UsedVss);
-
-            writer.WriteStartArray("sources");
-            foreach (var source in header.Sources)
-            {
-                writer.WriteStartObject();
-                writer.WriteString("alias", source.Alias);
-                writer.WriteString("path", source.Path);
-                writer.WriteEndObject();
-            }
-
-            writer.WriteEndArray();
-
-            writer.WriteStartObject("stats");
-            writer.WriteNumber("files", header.Stats.Files);
-            writer.WriteNumber("bytes", header.Stats.Bytes);
-            writer.WriteNumber("newFiles", header.Stats.NewFiles);
-            writer.WriteNumber("changedFiles", header.Stats.ChangedFiles);
-            writer.WriteNumber("newObjects", header.Stats.NewObjects);
-            writer.WriteNumber("newBytes", header.Stats.NewBytes);
-            writer.WriteNumber("skipped", header.Stats.Skipped);
-            writer.WriteEndObject();
-
-            writer.WriteStartArray("warnings");
-            foreach (var warning in header.Warnings)
-            {
-                writer.WriteStartObject();
-                writer.WriteString("path", warning.Path);
-                writer.WriteString("code", warning.Code);
-                writer.WriteString("message", warning.Message);
-                writer.WriteEndObject();
-
-                if (writer.BytesPending >= StagingFlushThreshold)
-                {
-                    await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
-                }
-            }
-
-            writer.WriteEndArray();
-
-            // Las entradas ya están serializadas en el temporal: se copian tal cual dentro de la lista.
-            writer.WriteStartArray("entries");
-            await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
-
-            var entriesStream = await storage.OpenReadAsync(stagingPath, cancellationToken).ConfigureAwait(false);
-            await using (entriesStream.ConfigureAwait(false))
-            {
-                await entriesStream.CopyToAsync(output, CopyBufferSize, cancellationToken).ConfigureAwait(false);
-            }
-
-            await output.WriteAsync("\n"u8.ToArray(), cancellationToken).ConfigureAwait(false);
-            writer.WriteEndArray();
-            writer.WriteEndObject();
-            await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+            await entriesStream.CopyToAsync(output, CopyBufferSize, cancellationToken).ConfigureAwait(false);
         }
+
+        await output.WriteAsync(ManifestEnd.ToArray(), cancellationToken).ConfigureAwait(false);
+    }
+
+    private string ManifestTooLargeMessage() =>
+        $"El manifiesto del snapshot superaría el tamaño máximo de {MaxManifestBytes} bytes; no se publica el snapshot.";
+
+    /// <summary>Deja el escritor fallido (no publicará nada) y devuelve la excepción que se debe lanzar.</summary>
+    private InvalidOperationException Fail(string message)
+    {
+        state = State.Failed;
+        return new InvalidOperationException(message);
     }
 
     private async Task FlushPendingAsync(CancellationToken cancellationToken)

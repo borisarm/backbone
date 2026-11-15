@@ -36,7 +36,7 @@ public readonly struct ContentHash : IEquatable<ContentHash>
     /// <summary>Interpreta un hash en hexadecimal minúsculo.</summary>
     /// <exception cref="FormatException">No es un hash válido.</exception>
     public static ContentHash Parse(string value) =>
-        TryParse(value, out var hash) ? hash : throw new FormatException($"Hash no válido: '{value}'.");
+        TryParse(value, out var hash) ? hash : throw new FormatException($"Hash no válido: '{Untrusted.Describe(value)}'.");
 
     /// <summary>Interpreta un hash en hexadecimal minúsculo; las mayúsculas no se admiten.</summary>
     public static bool TryParse([NotNullWhen(true)] string? value, out ContentHash hash)

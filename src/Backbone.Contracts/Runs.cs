@@ -246,6 +246,12 @@ public enum RunIssueCode
 
     /// <summary>F2 (RF-42). Objeto con tamaño o hash que no coincide.</summary>
     ObjectCorrupt = 11,
+
+    /// <summary>
+    /// Contrato 1.1. Resumen de avisos no guardados: el snapshot admite como mucho 10 000 avisos y un presupuesto de cabecera
+    /// (§6.3); los sobrantes se cuentan en <see cref="RunIssue.Message"/> de este aviso, que es el último.
+    /// </summary>
+    WarningsTruncated = 12,
 }
 
 /// <summary>

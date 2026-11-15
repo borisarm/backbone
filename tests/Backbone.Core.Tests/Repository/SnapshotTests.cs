@@ -180,7 +180,7 @@ public sealed class SnapshotTests
     public async Task HT04_3_Snapshot_round_trips_on_the_file_system()
     {
         using var directory = new TempDirectory();
-        var storage = new FileSystemRepositoryStorage(directory.Path);
+        var storage = FileSystemRepositoryStorage.ForLocalTesting(directory.Path);
         var repository = await BackupRepository.InitializeAsync(storage, new RepositoryInitializationOptions { CreatedBy = "x" }, TimeProvider.System, Ct);
         await using var repositoryLock = await repository.AcquireLockAsync(RepositoryLockType.Shared, new LockOwner("PC", 1), Ct);
         var entries = ManyEntries(5000).ToList();

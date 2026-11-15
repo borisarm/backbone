@@ -23,7 +23,7 @@ public sealed class SnapshotPerformanceTests(ITestOutputHelper output)
     {
         var ct = TestContext.Current.CancellationToken;
         using var directory = new TempDirectory();
-        var storage = new FileSystemRepositoryStorage(directory.Path);
+        var storage = FileSystemRepositoryStorage.ForLocalTesting(directory.Path);
         var repository = await BackupRepository.InitializeAsync(storage, new RepositoryInitializationOptions { CreatedBy = "perf" }, TimeProvider.System, ct);
         await using var repositoryLock = await repository.AcquireLockAsync(RepositoryLockType.Shared, new LockOwner("PERF", 1), ct);
 

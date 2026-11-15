@@ -125,7 +125,131 @@ public sealed class RepositoryLockTests
             Assert.Contains("locks/PC-VIEJO-7.lock", storage.FilePaths);
         }
 
-        Assert.True(RepositoryLockPolicy.IsStale(time.UtcNow.AddSeconds(-ageSeconds), time.UtcNow) == abandoned);
+        Assert.True(RepositoryLockPolicy.IsStale(time.UtcNow.AddSeconds(-ageSeconds), time.UtcNow.AddSeconds(-ageSeconds), time.UtcNow) == abandoned);
+    }
+
+    /// <summary>
+    /// Regla de vigencia de §6.4.4 en minutos respecto a <c>ahora</c>: latido, fecha de modificación y si está abandonado.
+    /// </summary>
+    public static TheoryData<int, int, bool> VigencyTable => new()
+    {
+        // Latido no anómalo: manda el latido, la fecha de modificación no importa.
+        { 0, -60, false },
+        { -14, -60, false },
+        { -15, 0, true },
+        { -60, 0, true },
+        // Latido futuro dentro de la tolerancia (ahora + 15 min incluido): vigente.
+        { 1, 0, false },
+        { 14, 0, false },
+        { 15, 0, false },
+        { 15, 60, false },
+        // Latido anómalo (más de ahora + T): se usa la fecha de modificación si no es anómala.
+        { 16, 0, false },
+        { 16, -14, false },
+        { 16, -15, true },
+        { 525_600, 15, false },
+        { 525_600, -60, true },
+        // Latido y fecha de modificación anómalos: abandonado.
+        { 16, 16, true },
+        { 525_600, 525_600, true },
+    };
+
+    [Theory]
+    [MemberData(nameof(VigencyTable))]
+    [Trait("Requirement", "§6.4.4")]
+    public void N2_Vigency_rule_with_clock_tolerance(int heartbeatMinutes, int modifiedMinutes, bool abandoned)
+    {
+        var now = new DateTime(2026, 11, 15, 2, 0, 0, DateTimeKind.Utc);
+
+        Assert.Equal(abandoned, RepositoryLockPolicy.IsStale(now.AddMinutes(heartbeatMinutes), now.AddMinutes(modifiedMinutes), now));
+    }
+
+    [Fact]
+    public async Task N2_A_heartbeat_in_the_future_within_the_tolerance_is_alive()
+    {
+        var (storage, time, repository) = await CreateAsync();
+        WriteForeignLock(storage, "PC-ADELANTADO-7.lock", "shared", time.UtcNow.AddMinutes(14));
+        storage.SetLastWriteUtc("locks/PC-ADELANTADO-7.lock", time.UtcNow.AddHours(-3));
+
+        var ex = await Assert.ThrowsAsync<RepositoryException>(() => repository.AcquireLockAsync(RepositoryLockType.Exclusive, Salon, Ct));
+
+        Assert.Equal(RepositoryErrorKind.Locked, ex.Kind);
+        Assert.Contains("locks/PC-ADELANTADO-7.lock", storage.FilePaths);
+    }
+
+    [Fact]
+    public async Task N2_An_anomalous_heartbeat_uses_an_acceptable_modification_time()
+    {
+        var (storage, time, repository) = await CreateAsync();
+        WriteForeignLock(storage, "PC-ADELANTADO-7.lock", "shared", time.UtcNow.AddDays(365));
+        storage.SetLastWriteUtc("locks/PC-ADELANTADO-7.lock", time.UtcNow.AddMinutes(-1));
+
+        // Fecha de modificación de hace 1 minuto: vigente.
+        var ex = await Assert.ThrowsAsync<RepositoryException>(() => repository.AcquireLockAsync(RepositoryLockType.Exclusive, Salon, Ct));
+        Assert.Equal(RepositoryErrorKind.Locked, ex.Kind);
+
+        // Sin escrituras nuevas, a los 15 minutos de su fecha de modificación queda abandonado y se borra.
+        time.Advance(TimeSpan.FromMinutes(14));
+        await using var exclusive = await repository.AcquireLockAsync(RepositoryLockType.Exclusive, Salon, Ct);
+        Assert.DoesNotContain("locks/PC-ADELANTADO-7.lock", storage.FilePaths);
+    }
+
+    [Fact]
+    public async Task N2_An_anomalous_heartbeat_with_an_anomalous_modification_time_is_abandoned()
+    {
+        var (storage, time, repository) = await CreateAsync();
+        WriteForeignLock(storage, "PC-FUTURO-7.lock", "exclusive", time.UtcNow.AddDays(365));
+        storage.SetLastWriteUtc("locks/PC-FUTURO-7.lock", time.UtcNow.AddDays(365));
+
+        var info = Assert.Single(await repository.ListLocksAsync(Ct));
+        Assert.True(RepositoryLockPolicy.IsStale(info, time.UtcNow));
+
+        // No bloquea una copia (que no lo borra) y la limpieza lo borra.
+        await using (var shared = await repository.AcquireLockAsync(RepositoryLockType.Shared, Salon, Ct))
+        {
+            Assert.Contains("locks/PC-FUTURO-7.lock", storage.FilePaths);
+        }
+
+        await using var exclusive = await repository.AcquireLockAsync(RepositoryLockType.Exclusive, Salon, Ct);
+        Assert.DoesNotContain("locks/PC-FUTURO-7.lock", storage.FilePaths);
+    }
+
+    [Fact]
+    public async Task N2_An_unreadable_lock_with_a_far_future_modification_time_does_not_block()
+    {
+        var (storage, time, repository) = await CreateAsync();
+        storage.SetFileContent("locks/raro-1.lock", "no es json"u8);
+        storage.SetLastWriteUtc("locks/raro-1.lock", time.UtcNow.AddDays(30));
+
+        await using var exclusive = await repository.AcquireLockAsync(RepositoryLockType.Exclusive, Salon, Ct);
+
+        Assert.DoesNotContain("locks/raro-1.lock", storage.FilePaths);
+    }
+
+    [Fact]
+    public async Task N5_A_lock_that_cannot_be_opened_is_unreadable_instead_of_failing()
+    {
+        var inner = new InMemoryRepositoryStorage();
+        var time = new ManualTimeProvider();
+        await BackupRepository.InitializeAsync(inner, new RepositoryInitializationOptions { CreatedBy = "x" }, time, Ct);
+        WriteForeignLock(inner, "PC-ESTUDIO-42.lock", "shared", time.UtcNow);
+        WriteForeignLock(inner, "PC-COCINA-9.lock", "shared", time.UtcNow);
+        inner.SetLastWriteUtc("locks/PC-ESTUDIO-42.lock", time.UtcNow);
+        inner.SetLastWriteUtc("locks/PC-COCINA-9.lock", time.UtcNow);
+        var storage = new FailingOpenStorage(inner, new Dictionary<string, Exception>(StringComparer.Ordinal)
+        {
+            ["locks/PC-ESTUDIO-42.lock"] = new UnauthorizedAccessException("denegado"),
+            ["locks/PC-COCINA-9.lock"] = new IOException("en uso"),
+        });
+        var repository = await BackupRepository.OpenAsync(storage, time, Ct);
+
+        var locks = await repository.ListLocksAsync(Ct);
+        var ex = await Assert.ThrowsAsync<RepositoryException>(() => repository.AcquireLockAsync(RepositoryLockType.Shared, Salon, Ct));
+
+        Assert.Equal(2, locks.Count);
+        Assert.All(locks, l => Assert.False(l.IsReadable));
+        Assert.All(locks, l => Assert.Equal(RepositoryLockType.Exclusive, l.Type));
+        Assert.Equal(RepositoryErrorKind.Locked, ex.Kind);
     }
 
     [Fact]
@@ -145,6 +269,7 @@ public sealed class RepositoryLockTests
     {
         var (storage, time, repository) = await CreateAsync();
         storage.SetFileContent("locks/raro-1.lock", "no es json"u8);
+        storage.SetLastWriteUtc("locks/raro-1.lock", time.UtcNow);
 
         var ex = await Assert.ThrowsAsync<RepositoryException>(() => repository.AcquireLockAsync(RepositoryLockType.Shared, Salon, Ct));
         Assert.Equal(RepositoryErrorKind.Locked, ex.Kind);
@@ -338,6 +463,29 @@ public sealed class RepositoryLockTests
         var host = name[..name.LastIndexOf('-')];
         var json = $$"""{ "host": "{{host}}", "pid": 7, "type": "{{type}}", "heartbeatUtc": "{{heartbeatUtc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture)}}" }""";
         storage.SetFileContent(RepositoryPath.Combine("locks", name), Encoding.UTF8.GetBytes(json));
+    }
+
+    /// <summary>Almacenamiento en el que abrir ciertos archivos falla con la excepción indicada.</summary>
+    private sealed class FailingOpenStorage(IRepositoryStorage inner, IReadOnlyDictionary<string, Exception> failures) : IRepositoryStorage
+    {
+        public Task<Stream> OpenReadAsync(string path, CancellationToken cancellationToken) =>
+            failures.TryGetValue(path, out var failure) ? Task.FromException<Stream>(failure) : inner.OpenReadAsync(path, cancellationToken);
+
+        public Task<Stream> CreateNewAsync(string path, CancellationToken cancellationToken) => inner.CreateNewAsync(path, cancellationToken);
+
+        public Task<bool> TryMoveAsync(string sourcePath, string destinationPath, bool overwrite, CancellationToken cancellationToken) =>
+            inner.TryMoveAsync(sourcePath, destinationPath, overwrite, cancellationToken);
+
+        public Task DeleteFileAsync(string path, CancellationToken cancellationToken) => inner.DeleteFileAsync(path, cancellationToken);
+
+        public Task CreateDirectoryAsync(string path, CancellationToken cancellationToken) => inner.CreateDirectoryAsync(path, cancellationToken);
+
+        public Task<bool> DirectoryExistsAsync(string path, CancellationToken cancellationToken) => inner.DirectoryExistsAsync(path, cancellationToken);
+
+        public Task<StorageEntry?> GetFileInfoAsync(string path, CancellationToken cancellationToken) => inner.GetFileInfoAsync(path, cancellationToken);
+
+        public IAsyncEnumerable<StorageEntry> EnumerateAsync(string directoryPath, CancellationToken cancellationToken) =>
+            inner.EnumerateAsync(directoryPath, cancellationToken);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition)

@@ -142,13 +142,13 @@ public sealed class ContractConventionTests
     // ---- Criterio 3 y transporte (§7.1) ----
 
     [Fact]
-    public void Contract_version_is_semantic_1_0()
+    public void Contract_version_is_semantic_1_1()
     {
-        const string expected = "1.0";
+        const string expected = "1.1";
         Assert.Equal(expected, ContractVersion.Value);
         Assert.Equal(ContractVersion.Value, string.Create(CultureInfo.InvariantCulture, $"{ContractVersion.Major}.{ContractVersion.Minor}"));
         Assert.True(ContractVersion.TryParse(ContractVersion.Value, out var major, out var minor));
-        Assert.Equal((1, 0), (major, minor));
+        Assert.Equal((1, 1), (major, minor));
     }
 
     [Theory]

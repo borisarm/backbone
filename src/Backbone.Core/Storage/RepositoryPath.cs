@@ -1,3 +1,7 @@
+using System.Diagnostics.CodeAnalysis;
+using Backbone.Contracts;
+using Backbone.Core.Repository;
+
 namespace Backbone.Core.Storage;
 
 /// <summary>
@@ -35,7 +39,7 @@ public static class RepositoryPath
         {
             if (!IsValidSegment(segment))
             {
-                throw new ArgumentException($"Ruta del repositorio no válida: '{path}'.", nameof(path));
+                throw new ArgumentException($"Ruta del repositorio no válida: '{Untrusted.Describe(path)}'.", nameof(path));
             }
         }
 
@@ -44,35 +48,10 @@ public static class RepositoryPath
 
     /// <summary>
     /// Indica si <paramref name="segment"/> es un nombre de archivo o carpeta admisible en el repositorio.
+    /// Es la regla única de nombres de Backbone (<see cref="SnapshotPaths.IsValidSegment"/>, §7.5): sin caracteres
+    /// no válidos en Windows, sin punto ni espacio final, sin nombres de dispositivo reservados y como mucho
+    /// 255 caracteres; además, UTF-16 válido.
     /// </summary>
-    public static bool IsValidSegment(string segment)
-    {
-        ArgumentNullException.ThrowIfNull(segment);
-        return IsValidSegment(segment.AsSpan());
-    }
-
-    /// <inheritdoc cref="IsValidSegment(string)"/>
-    public static bool IsValidSegment(ReadOnlySpan<char> segment)
-    {
-        if (segment.Length == 0 || segment is "." or "..")
-        {
-            return false;
-        }
-
-        // Windows elimina puntos y espacios finales: "a." y "a" serían el mismo archivo.
-        if (segment[^1] is '.' or ' ')
-        {
-            return false;
-        }
-
-        foreach (var c in segment)
-        {
-            if (c < 0x20 || c is '<' or '>' or ':' or '"' or '/' or '\\' or '|' or '?' or '*')
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
+    public static bool IsValidSegment([NotNullWhen(true)] string? segment) =>
+        segment is not null && SnapshotPaths.IsValidSegment(segment) && !JsonFormat.HasLoneSurrogate(segment);
 }

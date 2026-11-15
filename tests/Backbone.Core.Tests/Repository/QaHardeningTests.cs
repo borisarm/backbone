@@ -155,7 +155,7 @@ public sealed partial class QaHardeningTests
         RepositoryLockType second)
     {
         using var directory = new TempDirectory();
-        var storage = new FileSystemRepositoryStorage(directory.Path);
+        var storage = FileSystemRepositoryStorage.ForLocalTesting(directory.Path);
         await BackupRepository.InitializeAsync(storage, new RepositoryInitializationOptions { CreatedBy = "x" }, TimeProvider.System, Ct);
         var compatible = first == RepositoryLockType.Shared && second == RepositoryLockType.Shared;
 
@@ -327,7 +327,7 @@ public sealed partial class QaHardeningTests
     public async Task HT04_2_Full_backup_scenario_on_the_file_system_leaves_a_consistent_repository_and_no_temporaries()
     {
         using var directory = new TempDirectory();
-        var storage = new FileSystemRepositoryStorage(directory.Path);
+        var storage = FileSystemRepositoryStorage.ForLocalTesting(directory.Path);
         var time = new ManualTimeProvider();
 
         await BackupScenario.RunAsync(storage, time, Salon, run: 0, Ct);
@@ -373,7 +373,7 @@ public sealed partial class QaHardeningTests
         }
 
         Directory.CreateDirectory(deep);
-        var storage = new FileSystemRepositoryStorage(deep);
+        var storage = FileSystemRepositoryStorage.ForLocalTesting(deep);
 
         var header = await BackupScenario.RunAsync(storage, new ManualTimeProvider(), Salon, run: 0, Ct);
 

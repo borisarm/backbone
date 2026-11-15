@@ -12,13 +12,18 @@ namespace Backbone.Core.Repository.Snapshots;
 /// Cada analizador debe ser "todo o nada": devuelve <see langword="false"/> en cuanto
 /// <see cref="Utf8JsonReader.Read"/> o <see cref="Utf8JsonReader.TrySkip"/> indican que faltan datos;
 /// entonces se rellena el búfer y se repite la unidad desde su principio.
+/// <para>
+/// Los analizadores señalan un valor no válido lanzando <see cref="JsonException"/> (exactamente ese tipo) con un mensaje
+/// propio, ya saneado con <see cref="Untrusted.Describe"/>: se incorpora al error de corrupción. Las excepciones del propio
+/// <see cref="Utf8JsonReader"/> (tipos derivados) se informan sin su mensaje.
+/// </para>
 /// </remarks>
 internal sealed class JsonStreamReader : IDisposable
 {
     /// <summary>Tamaño inicial del búfer.</summary>
     public const int DefaultBufferSize = 64 * 1024;
 
-    /// <summary>Tamaño máximo de una unidad; más grande se considera corrupción (y protege la memoria).</summary>
+    /// <summary>Tamaño máximo absoluto del búfer.</summary>
     public const int MaxBufferSize = 64 * 1024 * 1024;
 
     private readonly Stream stream;
@@ -26,16 +31,38 @@ internal sealed class JsonStreamReader : IDisposable
     private byte[] buffer;
     private int start;
     private int end;
+    private long discarded;
+    private readonly long maxTotalBytes;
+    private long totalRead;
     private bool isFinalBlock;
     private JsonReaderState state = new(new JsonReaderOptions { MaxDepth = 16 });
 
-    public JsonStreamReader(Stream stream, string description, int initialBufferSize = DefaultBufferSize)
+    public JsonStreamReader(Stream stream, string description, int initialBufferSize = DefaultBufferSize, long maxTotalBytes = long.MaxValue)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(initialBufferSize, 1);
         this.stream = stream;
         this.description = description;
+        this.maxTotalBytes = maxTotalBytes;
         buffer = ArrayPool<byte>.Shared.Rent(initialBufferSize);
     }
+
+    /// <summary>
+    /// Tamaño máximo de una unidad; una unidad más grande se considera corrupción (M-2). Se puede cambiar entre unidades
+    /// (p. ej. más pequeña para la cabecera que para las entradas).
+    /// </summary>
+    public int MaxUnitBytes { get; set; } = MaxBufferSize;
+
+    /// <summary>
+    /// Posición máxima (bytes desde el principio del flujo) hasta la que pueden llegar las unidades analizadas; más allá se
+    /// considera corrupción con <see cref="ConsumedLimitDetail"/>. Sirve para el presupuesto de la cabecera (§6.3).
+    /// </summary>
+    public long MaxConsumedBytes { get; set; } = long.MaxValue;
+
+    /// <summary>Texto del error cuando se supera <see cref="MaxConsumedBytes"/>.</summary>
+    public string ConsumedLimitDetail { get; set; } = "supera el tamaño máximo.";
+
+    /// <summary>Bytes del flujo ya analizados (hasta el final de la última unidad).</summary>
+    public long BytesConsumed => discarded + start;
 
     /// <summary>Analizador de una unidad.</summary>
     public delegate bool Parser<T>(ref Utf8JsonReader reader, out T value);
@@ -100,6 +127,11 @@ internal sealed class JsonStreamReader : IDisposable
         {
             complete = parser(ref reader, out value);
         }
+        catch (JsonException ex) when (ex.GetType() == typeof(JsonException))
+        {
+            // Lanzada por un analizador con un mensaje propio y saneado.
+            throw Corrupt($"no es válido: {ex.Message}", ex);
+        }
         catch (JsonException ex)
         {
             throw Corrupt("no es un JSON válido.", ex);
@@ -119,8 +151,20 @@ internal sealed class JsonStreamReader : IDisposable
             return false;
         }
 
+        // El límite de unidad se comprueba también aquí: si el búfer ya era grande (p. ej. por una entrada grande anterior),
+        // una unidad mayor que MaxUnitBytes puede completarse sin pasar por FillAsync (N-3).
+        if (reader.BytesConsumed > MaxUnitBytes)
+        {
+            throw Corrupt("contiene un elemento demasiado grande.");
+        }
+
         start += checked((int)reader.BytesConsumed);
         state = reader.CurrentState;
+        if (BytesConsumed > MaxConsumedBytes)
+        {
+            throw Corrupt(ConsumedLimitDetail);
+        }
+
         return true;
     }
 
@@ -132,16 +176,23 @@ internal sealed class JsonStreamReader : IDisposable
         {
             Buffer.BlockCopy(buffer, start, buffer, 0, end - start);
             end -= start;
+            discarded += start;
             start = 0;
+        }
+
+        if (end >= MaxUnitBytes)
+        {
+            throw Corrupt("contiene un elemento demasiado grande.");
+        }
+
+        // La unidad a medias ya pasa del límite de posición: no hace falta leer más para saber que no cabe.
+        if (discarded + end > MaxConsumedBytes)
+        {
+            throw Corrupt(ConsumedLimitDetail);
         }
 
         if (end == buffer.Length)
         {
-            if (buffer.Length >= MaxBufferSize)
-            {
-                throw Corrupt("contiene un elemento demasiado grande.");
-            }
-
             var larger = ArrayPool<byte>.Shared.Rent(Math.Min(buffer.Length * 2, MaxBufferSize));
             Buffer.BlockCopy(buffer, 0, larger, 0, end);
             ArrayPool<byte>.Shared.Return(buffer);
@@ -159,6 +210,11 @@ internal sealed class JsonStreamReader : IDisposable
             }
 
             end += read;
+            totalRead += read;
+            if (totalRead > maxTotalBytes)
+            {
+                throw Corrupt("supera el tamaño máximo.");
+            }
         }
     }
 }

@@ -175,7 +175,7 @@ public sealed record SnapshotEntry
     {
         if (!EntryPath.IsValidFilePath(path))
         {
-            throw new ArgumentException($"Ruta de entrada no válida: '{path}'.", nameof(path));
+            throw new ArgumentException($"Ruta de entrada no válida: '{Untrusted.Describe(path)}'.", nameof(path));
         }
 
         if (hash == default)
@@ -194,7 +194,7 @@ public sealed record SnapshotEntry
     {
         if (!EntryPath.IsValidDirectoryPath(path))
         {
-            throw new ArgumentException($"Ruta de carpeta no válida: '{path}'.", nameof(path));
+            throw new ArgumentException($"Ruta de carpeta no válida: '{Untrusted.Describe(path)}'.", nameof(path));
         }
 
         return new SnapshotEntry(path, isDirectory: true, hash: null, 0, DateTime.MinValue, FileAttributes.None);

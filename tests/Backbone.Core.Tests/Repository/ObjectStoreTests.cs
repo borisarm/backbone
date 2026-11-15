@@ -130,7 +130,7 @@ public sealed class ObjectStoreTests
     public async Task HT04_2_Objects_work_on_the_file_system()
     {
         using var directory = new TempDirectory();
-        var storage = new FileSystemRepositoryStorage(directory.Path);
+        var storage = FileSystemRepositoryStorage.ForLocalTesting(directory.Path);
         var repository = await BackupRepository.InitializeAsync(storage, new RepositoryInitializationOptions { CreatedBy = "x" }, TimeProvider.System, Ct);
         await using var repositoryLock = await repository.AcquireLockAsync(RepositoryLockType.Shared, new LockOwner("PC", 1), Ct);
         var content = RandomBytes(2 * 1024 * 1024, seed: 9);

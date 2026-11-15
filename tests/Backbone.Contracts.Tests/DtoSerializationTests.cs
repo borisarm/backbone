@@ -75,6 +75,20 @@ public sealed class DtoSerializationTests
     }
 
     [Fact]
+    public void Warnings_truncated_issue_code_round_trips_with_its_stable_value()
+    {
+        // Contrato 1.1 (§6.3): resumen de los avisos que no caben en el snapshot.
+        var issue = new RunIssue { Severity = IssueSeverity.Warning, Code = RunIssueCode.WarningsTruncated, Message = "3 avisos más no se han guardado en el snapshot." };
+
+        var json = JsonSerializer.Serialize(issue, ContractTypes.FormatterOptions);
+        var copy = JsonSerializer.Deserialize<RunIssue>(json, ContractTypes.FormatterOptions);
+
+        using var doc = JsonDocument.Parse(json);
+        Assert.Equal(12, doc.RootElement.GetProperty("Code").GetInt32());
+        Assert.Equal(issue, copy);
+    }
+
+    [Fact]
     public void Dates_keep_UTC_and_100ns_precision()
     {
         var instant = new DateTimeOffset(2026, 1, 31, 10, 22, 1, TimeSpan.Zero).AddTicks(1_234_567);

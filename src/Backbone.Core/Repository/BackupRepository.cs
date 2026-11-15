@@ -41,29 +41,33 @@ public sealed class BackupRepository
     // ---------------------------------------------------------------- Creación y apertura
 
     /// <summary>Examina un destino sin escribir nada.</summary>
+    /// <remarks>
+    /// Un punto de reanálisis en la raíz o en lo que se examina (§6.1), o un <c>repo.json</c> ilegible, da
+    /// <see cref="RepositoryState.Corrupt"/> en lugar de una excepción.
+    /// </remarks>
     public static async Task<RepositoryProbeResult> ProbeAsync(IRepositoryStorage storage, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(storage);
-        if (!await storage.DirectoryExistsAsync(string.Empty, cancellationToken).ConfigureAwait(false))
-        {
-            return new RepositoryProbeResult(RepositoryState.Missing);
-        }
 
         byte[]? config;
         try
         {
+            if (!await storage.DirectoryExistsAsync(string.Empty, cancellationToken).ConfigureAwait(false))
+            {
+                return new RepositoryProbeResult(RepositoryState.Missing);
+            }
+
             config = await TryReadConfigAsync(storage, cancellationToken).ConfigureAwait(false);
+            if (config is null)
+            {
+                return await IsEmptyOrInterruptedInitializationAsync(storage, cancellationToken).ConfigureAwait(false)
+                    ? new RepositoryProbeResult(RepositoryState.Empty)
+                    : new RepositoryProbeResult(RepositoryState.NotARepository, Detail: "Hay archivos y no hay repo.json.");
+            }
         }
         catch (RepositoryException ex) when (ex.Kind == RepositoryErrorKind.Corrupt)
         {
             return new RepositoryProbeResult(RepositoryState.Corrupt, Detail: ex.Message);
-        }
-
-        if (config is null)
-        {
-            return await IsEmptyOrInterruptedInitializationAsync(storage, cancellationToken).ConfigureAwait(false)
-                ? new RepositoryProbeResult(RepositoryState.Empty)
-                : new RepositoryProbeResult(RepositoryState.NotARepository, Detail: "Hay archivos y no hay repo.json.");
         }
 
         var declaredVersion = TryGetDeclaredVersion(config);
@@ -89,7 +93,9 @@ public sealed class BackupRepository
     /// </summary>
     /// <exception cref="RepositoryException">
     /// <see cref="RepositoryErrorKind.NotEmpty"/> si el destino contiene otros archivos;
-    /// <see cref="RepositoryErrorKind.AlreadyInitialized"/> si ya hay un repositorio.
+    /// <see cref="RepositoryErrorKind.AlreadyInitialized"/> si ya hay un repositorio compatible;
+    /// <see cref="RepositoryErrorKind.Incompatible"/> si hay uno incompatible (RNF-14);
+    /// <see cref="RepositoryErrorKind.Corrupt"/> si el destino es corrupto (§6.1, §6.2).
     /// </exception>
     public static async Task<BackupRepository> InitializeAsync(
         IRepositoryStorage storage,
@@ -109,6 +115,11 @@ public sealed class BackupRepository
                 break;
             case RepositoryState.NotARepository:
                 throw new RepositoryException(RepositoryErrorKind.NotEmpty, "El destino contiene archivos que no son de un repositorio de Backbone.");
+            case RepositoryState.Corrupt:
+                // P. ej. la raíz es un punto de reanálisis o repo.json no es válido (§6.1): no es "ya inicializado".
+                throw new RepositoryException(RepositoryErrorKind.Corrupt, $"El destino es un repositorio corrupto: {probe.Detail}");
+            case RepositoryState.Incompatible:
+                throw new RepositoryException(RepositoryErrorKind.Incompatible, $"El destino ya contiene un repositorio incompatible: {probe.Detail}");
             default:
                 throw new RepositoryException(RepositoryErrorKind.AlreadyInitialized, "El destino ya contiene un repositorio.");
         }
@@ -358,6 +369,10 @@ public sealed class BackupRepository
 
     /// <summary>Vacía <c>tmp/</c> (§6.4.6). Exige el bloqueo exclusivo.</summary>
     /// <returns>Número de archivos borrados.</returns>
+    /// <remarks>
+    /// Los archivos cuyo nombre no es un segmento válido (p. ej. un nombre de dispositivo que el NAS admite) no se pueden
+    /// direccionar dentro del repositorio y se dejan donde están.
+    /// </remarks>
     public async Task<int> CleanTemporaryFilesAsync(RepositoryLock exclusiveLock, CancellationToken cancellationToken)
     {
         RequireLock(exclusiveLock);
@@ -371,7 +386,7 @@ public sealed class BackupRepository
         var names = new List<string>();
         await foreach (var entry in storage.EnumerateAsync(RepositoryLayout.TempDirectory, cancellationToken).ConfigureAwait(false))
         {
-            if (!entry.IsDirectory)
+            if (!entry.IsDirectory && RepositoryPath.IsValidSegment(entry.Name))
             {
                 names.Add(entry.Name);
             }

@@ -188,7 +188,7 @@ public sealed class RepositoryLock : IAsyncDisposable
                     continue;
                 }
 
-                if (RepositoryLockPolicy.IsStale(other.HeartbeatUtc, now))
+                if (RepositoryLockPolicy.IsStale(other, now))
                 {
                     stale.Add(other);
                     continue;
@@ -198,7 +198,7 @@ public sealed class RepositoryLock : IAsyncDisposable
                 {
                     throw new RepositoryException(
                         RepositoryErrorKind.Locked,
-                        $"El repositorio está bloqueado ({(other.Type == RepositoryLockType.Exclusive ? "exclusive" : "shared")}) por {other.Host} (proceso {other.ProcessId}).");
+                        $"El repositorio está bloqueado ({(other.Type == RepositoryLockType.Exclusive ? "exclusive" : "shared")}) por {Untrusted.Describe(other.Host)} (proceso {other.ProcessId}).");
                 }
             }
 
@@ -206,6 +206,13 @@ public sealed class RepositoryLock : IAsyncDisposable
             {
                 foreach (var abandoned in stale)
                 {
+                    // Un nombre que no es un segmento válido no se puede direccionar en el repositorio: no se borra nunca
+                    // (R8); abandonado ya no bloquea a nadie.
+                    if (!abandoned.IsAddressable || !RepositoryPath.IsValidSegment(abandoned.FileName))
+                    {
+                        continue;
+                    }
+
                     await storage.DeleteFileAsync(
                         RepositoryPath.Combine(RepositoryLayout.LocksDirectory, abandoned.FileName),
                         cancellationToken).ConfigureAwait(false);
@@ -247,8 +254,18 @@ public sealed class RepositoryLock : IAsyncDisposable
         return result;
     }
 
+    /// <summary>
+    /// Lee un bloqueo. Su contenido es no confiable (§6.1, §6.4.4): un nombre de archivo que no es un segmento válido, un
+    /// <c>host</c> que no lo es o cualquier dato que no se entienda hacen que se trate como ilegible (exclusivo vigente).
+    /// </summary>
     private static async Task<RepositoryLockInfo?> TryReadAsync(IRepositoryStorage storage, StorageEntry entry, CancellationToken cancellationToken)
     {
+        if (!RepositoryPath.IsValidSegment(entry.Name))
+        {
+            // Nombre que el NAS admite pero Backbone no (p. ej. un nombre de dispositivo): no se puede abrir.
+            return Unreadable(entry, addressable: false);
+        }
+
         var lockPath = RepositoryPath.Combine(RepositoryLayout.LocksDirectory, entry.Name);
         byte[] content;
         try
@@ -268,6 +285,11 @@ public sealed class RepositoryLock : IAsyncDisposable
         {
             return Unreadable(entry);
         }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            // Error de lectura (permisos, archivo en uso, red): bloqueo ilegible, no un fallo de la operación (§6.4.4).
+            return Unreadable(entry);
+        }
 
         try
         {
@@ -281,12 +303,12 @@ public sealed class RepositoryLock : IAsyncDisposable
                 "exclusive" => RepositoryLockType.Exclusive,
                 _ => null,
             };
-            if (host is null || type is null || !JsonFormat.TryGetUtc(root.GetProperty("heartbeatUtc"), out var heartbeat))
+            if (!RepositoryPath.IsValidSegment(host) || type is null || !JsonFormat.TryGetUtc(root.GetProperty("heartbeatUtc"), out var heartbeat))
             {
                 return Unreadable(entry);
             }
 
-            return new RepositoryLockInfo(entry.Name, host, pid, type.Value, heartbeat);
+            return new RepositoryLockInfo(entry.Name, host, pid, type.Value, heartbeat, entry.LastWriteUtc);
         }
         catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException or FormatException)
         {
@@ -294,8 +316,8 @@ public sealed class RepositoryLock : IAsyncDisposable
         }
     }
 
-    private static RepositoryLockInfo Unreadable(StorageEntry entry) =>
-        new(entry.Name, "?", 0, RepositoryLockType.Exclusive, entry.LastWriteUtc, IsReadable: false);
+    private static RepositoryLockInfo Unreadable(StorageEntry entry, bool addressable = true) =>
+        new(entry.Name, "?", 0, RepositoryLockType.Exclusive, entry.LastWriteUtc, entry.LastWriteUtc, IsReadable: false, IsAddressable: addressable);
 
     private static Task<bool> WriteAsync(
         IRepositoryStorage storage,

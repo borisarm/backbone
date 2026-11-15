@@ -124,6 +124,19 @@ public sealed partial class SpecConsistencyTests
     }
 
     [Fact]
+    public void Snapshot_limits_of_section_6_3_use_the_contract_values()
+    {
+        // §6.3: el código del aviso resumen es un valor de RunIssueCode y los límites compartidos coinciden con ContractLimits.
+        var section = Section("### 6.3 ", "### 6.4 ");
+
+        Assert.Contains($"\"code\": \"{nameof(RunIssueCode.WarningsTruncated)}\"", section, StringComparison.Ordinal);
+        Assert.Contains($"| `sources` | {ContractLimits.MaxSources} (`ContractLimits.MaxSources`) |", section, StringComparison.Ordinal);
+        Assert.Contains($"| `jobName` | {ContractLimits.MaxJobNameLength} caracteres (`ContractLimits.MaxJobNameLength`) |", section, StringComparison.Ordinal);
+        Assert.Contains($"| `host` | segmento válido ({ContractLimits.MaxSegmentLength} caracteres) |", section, StringComparison.Ordinal);
+        Assert.Contains($"| `sources[].alias` | {ContractLimits.MaxAliasLength} caracteres y segmento válido |", section, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Pipe_constants_match_section_7_1()
     {
         var section = Section("### 7.1 ", "### 7.2 ");

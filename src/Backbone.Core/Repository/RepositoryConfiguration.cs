@@ -6,7 +6,10 @@ namespace Backbone.Core.Repository;
 /// <param name="FormatVersion">Versión de formato.</param>
 /// <param name="RepositoryId">Identificador único del repositorio.</param>
 /// <param name="CreatedUtc">Fecha de creación (UTC).</param>
-/// <param name="CreatedBy">Texto libre con la versión de Backbone y el equipo que lo creó.</param>
+/// <param name="CreatedBy">
+/// Texto libre con la versión de Backbone y el equipo que lo creó. Al leerlo es <b>no confiable</b> (§6.1): se sanea antes
+/// de registrarlo o mostrarlo.
+/// </param>
 /// <param name="Hash">Algoritmo de hash de los objetos (<c>sha256</c> en v1).</param>
 /// <param name="Compression">Compresión de los objetos (<c>none</c> en v1).</param>
 /// <param name="Encryption">Cifrado de los objetos (<c>none</c> en v1).</param>
@@ -31,7 +34,7 @@ public sealed record RepositoryConfiguration(
         writer.WriteNumber("formatVersion", FormatVersion);
         writer.WriteString("repositoryId", RepositoryId.ToString("D"));
         JsonFormat.WriteUtc(writer, "createdUtc", CreatedUtc);
-        writer.WriteString("createdBy", CreatedBy);
+        writer.WriteString("createdBy", JsonFormat.SanitizeText(CreatedBy));
         writer.WriteString("hash", Hash);
         writer.WriteString("compression", Compression);
         writer.WriteString("encryption", Encryption);
@@ -47,6 +50,19 @@ public sealed record RepositoryConfiguration(
     /// desconocidas; <see cref="RepositoryErrorKind.Corrupt"/> si no es válido.
     /// </exception>
     internal static RepositoryConfiguration Parse(ReadOnlyMemory<byte> json)
+    {
+        try
+        {
+            return ParseCore(json);
+        }
+        catch (InvalidOperationException ex)
+        {
+            // GetString de un campo con una suplente suelta escapada: UTF-16 no válido.
+            throw Corrupt("repo.json tiene un texto que no es UTF-16 válido.", ex);
+        }
+    }
+
+    private static RepositoryConfiguration ParseCore(ReadOnlyMemory<byte> json)
     {
         JsonDocument document;
         try
@@ -67,9 +83,23 @@ public sealed record RepositoryConfiguration(
             }
 
             if (!root.TryGetProperty("formatVersion", out var versionElement)
-                || versionElement.ValueKind != JsonValueKind.Number
-                || !versionElement.TryGetInt32(out var version))
+                || versionElement.ValueKind != JsonValueKind.Number)
             {
+                throw Corrupt("repo.json no tiene una versión de formato válida.");
+            }
+
+            if (!versionElement.TryGetInt32(out var version))
+            {
+                // Un entero positivo que no cabe en Int32 es una versión mayor que cualquiera conocida (§6.2, RNF-14), no
+                // una corrupción. Los no enteros (1.5, 1e3) y los negativos siguen siendo corrupción.
+                var raw = versionElement.GetRawText();
+                if (IsPositiveIntegerLiteral(raw))
+                {
+                    throw new RepositoryException(
+                        RepositoryErrorKind.Incompatible,
+                        $"El repositorio usa la versión de formato {Untrusted.Describe(raw)}; esta versión de Backbone solo entiende hasta la {RepositoryLayout.FormatVersion}.");
+                }
+
                 throw Corrupt("repo.json no tiene una versión de formato válida.");
             }
 
@@ -92,7 +122,7 @@ public sealed record RepositoryConfiguration(
             {
                 throw new RepositoryException(
                     RepositoryErrorKind.Incompatible,
-                    $"Características no admitidas en el formato {RepositoryLayout.FormatVersion}: hash={hash}, compression={compression}, encryption={encryption}.");
+                    $"Características no admitidas en el formato {RepositoryLayout.FormatVersion}: hash={Untrusted.Describe(hash)}, compression={Untrusted.Describe(compression)}, encryption={Untrusted.Describe(encryption)}.");
             }
 
             if (!Guid.TryParseExact(RequiredString(root, "repositoryId"), "D", out var repositoryId))
@@ -105,7 +135,10 @@ public sealed record RepositoryConfiguration(
                 throw Corrupt("repo.json tiene un createdUtc no válido.");
             }
 
-            var createdBy = RequiredString(root, "createdBy");
+            // Texto libre (§6.2): el UTF-16 no válido se sustituye por U+FFFD en lugar de rechazar el repositorio.
+            var createdBy = root.TryGetProperty("createdBy", out var createdByElement) && createdByElement.ValueKind == JsonValueKind.String
+                ? JsonFormat.GetStringReplacingInvalidUtf16(createdByElement)
+                : throw Corrupt("repo.json no tiene 'createdBy'.");
             return new RepositoryConfiguration(version, repositoryId, createdUtc, createdBy, hash, compression, encryption);
         }
     }
@@ -117,4 +150,8 @@ public sealed record RepositoryConfiguration(
 
     private static RepositoryException Corrupt(string message, Exception? inner = null) =>
         new(RepositoryErrorKind.Corrupt, message, inner);
+
+    /// <summary>Si el literal JSON es un entero positivo (solo dígitos, sin signo, fracción ni exponente).</summary>
+    private static bool IsPositiveIntegerLiteral(string raw) =>
+        raw.Length > 0 && raw[0] is >= '1' and <= '9' && !raw.AsSpan().ContainsAnyExceptInRange('0', '9');
 }

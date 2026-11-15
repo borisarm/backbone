@@ -57,7 +57,7 @@ public sealed class RepositoryInitializationTests
     public async Task HT04_1_Initialize_and_open_on_the_file_system()
     {
         using var directory = new TempDirectory();
-        var storage = new FileSystemRepositoryStorage(Path.Join(directory.Path, "Backups", "PC-SALON"));
+        var storage = FileSystemRepositoryStorage.ForLocalTesting(Path.Join(directory.Path, "Backups", "PC-SALON"));
 
         await BackupRepository.InitializeAsync(storage, Options, TimeProvider.System, Ct);
         var opened = await BackupRepository.OpenAsync(storage, TimeProvider.System, Ct);

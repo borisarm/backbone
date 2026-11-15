@@ -6,7 +6,9 @@ namespace Backbone.Core.Repository.Snapshots;
 /// <summary>
 /// Conjunto de rutas para comprobar que cada <c>p</c> es única en un snapshot (§6.3) sin guardar las
 /// cadenas: se guarda un resumen de 128 bits (SHA-256 truncado) de cada ruta en UTF-8.
-/// Con 500 000 rutas ocupa unos 20 MB y la probabilidad de colisión es despreciable (≈ 2⁻⁹⁰).
+/// Cada ruta ocupa unos 28 bytes en el <see cref="HashSet{T}"/> (más el margen de crecimiento): con 500 000 rutas
+/// (RNF-05) son unos 20 MB y con el máximo de 5 000 000 de entradas (§6.3) unos 200 MB. La probabilidad de colisión es
+/// despreciable incluso en el máximo (≈ n²/2¹²⁹ ≈ 2⁻⁸⁴).
 /// La comparación es ordinal (distingue mayúsculas), como la unicidad que pide el formato.
 /// </summary>
 internal sealed class EntryPathSet
