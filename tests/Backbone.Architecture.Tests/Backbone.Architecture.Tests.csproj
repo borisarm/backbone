@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Reglas de dependencia entre proyectos (§3.1). -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Backbone.Architecture.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Backbone.Contracts\Backbone.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Backbone.Core\Backbone.Core.csproj" />
+  </ItemGroup>
+
+</Project>

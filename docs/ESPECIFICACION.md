@@ -94,7 +94,9 @@ Backbone.slnx
 └── docs/
 ```
 
-Reglas de dependencia: `App → Contracts`; `Service → Core → Contracts`. **La app nunca referencia Core ni Service.** Core no conoce Windows (salvo `System.IO`): todo lo específico del SO vive en Service detrás de interfaces.
+Reglas de dependencia: `App → Contracts`; `Service → Core → Contracts`. **La app nunca referencia Core ni Service.** Core no conoce Windows (salvo `System.IO`): todo lo específico del SO vive en Service detrás de interfaces. `Backbone.Architecture.Tests` comprueba estas reglas leyendo los `.csproj` de `src/` (cierre transitivo de `ProjectReference`) y, para Contracts y Core, también las referencias de los ensamblados compilados.
+
+Compilación: SDK fijado en `global.json` (10.0.x); propiedades comunes en `Directory.Build.props` y versiones de NuGet en `Directory.Packages.props`. La app, al ser autocontenida, necesita una arquitectura concreta: con `-p:Platform=x64|ARM64` (o `-r win-x64|win-arm64`) se compila para esa arquitectura y, si no se indica, para la de la máquina, de modo que `dotnet build Backbone.slnx` funciona sin opciones.
 
 ### 3.2 Decisiones de arquitectura (ADR)
 

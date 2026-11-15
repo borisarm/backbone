@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Contrato IPC compartido entre servicio y app (§7). net10.0 puro: sin dependencias de Windows ni de Core. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Backbone.Contracts</RootNamespace>
+  </PropertyGroup>
+
+</Project>

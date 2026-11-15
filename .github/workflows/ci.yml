@@ -1,0 +1,107 @@
+# Integración continua de Backbone (HT-01, criterio 4).
+# Compila la solución con las advertencias como errores, ejecuta las pruebas que no son
+# de integración ni de rendimiento y publica la cobertura de Backbone.Core.
+name: CI
+
+on:
+  push:
+    branches: [main, "historia/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
+
+jobs:
+  build-test:
+    name: Compilar y probar
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Obtener el código
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Instalar el SDK de .NET (global.json)
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Restaurar
+        run: |
+          dotnet restore Backbone.slnx
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet tool restore
+
+      - name: Compilar (Release, advertencias como errores)
+        run: dotnet build Backbone.slnx -c Release --no-restore -warnaserror -p:ContinuousIntegrationBuild=true
+
+      - name: Compilar la app para ARM64
+        run: dotnet build src/Backbone.App/Backbone.App.csproj -c Release -p:Platform=ARM64 -warnaserror -p:ContinuousIntegrationBuild=true
+
+      - name: Pruebas (sin Integration ni Perf) con cobertura
+        run: >
+          dotnet test Backbone.slnx -c Release --no-build
+          --filter "Category!=Integration&Category!=Perf"
+          --collect:"XPlat Code Coverage"
+          --logger trx
+          --results-directory "${{ runner.temp }}/TestResults"
+
+      - name: Informe de cobertura de Backbone.Core
+        if: success() || failure()
+        run: |
+          # Si aún no hay archivos de cobertura (p. ej. Backbone.Core.Tests sin pruebas), se avisa y se sigue.
+          $results = "${{ runner.temp }}/TestResults"
+          $files = @(if (Test-Path $results) { Get-ChildItem -Path $results -Recurse -Filter coverage.cobertura.xml })
+          if ($files.Count -eq 0) {
+            "> **Aviso:** no se ha generado ningún archivo de cobertura; no se publica el informe de Backbone.Core." |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            Write-Output "::warning::No hay archivos de cobertura; se omite el informe de Backbone.Core."
+            exit 0
+          }
+          # ReportGenerator es herramienta local (.config/dotnet-tools.json), restaurada en el paso "Restaurar".
+          dotnet tool run reportgenerator `
+            "-reports:$results/**/coverage.cobertura.xml" `
+            "-targetdir:${{ runner.temp }}/CoverageReport" `
+            "-reporttypes:MarkdownSummaryGithub;Cobertura;HtmlInline" `
+            "-assemblyfilters:+Backbone.Core"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Content "${{ runner.temp }}/CoverageReport/SummaryGithub.md" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Publicar cobertura
+        if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cobertura-backbone-core
+          path: ${{ runner.temp }}/CoverageReport
+          if-no-files-found: warn
+
+      - name: Publicar instalador (MSI x64)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: instalador-x64
+          path: installer/Backbone.Installer/bin/x64/Release/**/*.msi
+          if-no-files-found: error
+
+      - name: Publicar resultados de pruebas
+        if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: resultados-pruebas
+          path: ${{ runner.temp }}/TestResults/**/*.trx
+          if-no-files-found: warn

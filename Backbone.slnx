@@ -1,0 +1,28 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Backbone.Contracts/Backbone.Contracts.csproj" />
+    <Project Path="src/Backbone.Core/Backbone.Core.csproj" />
+    <Project Path="src/Backbone.Service/Backbone.Service.csproj" />
+    <Project Path="src/Backbone.App/Backbone.App.csproj" />
+  </Folder>
+  <Folder Name="/installer/">
+    <Project Path="installer/Backbone.Installer/Backbone.Installer.wixproj">
+      <Platform Solution="*|AnyCPU" Project="x64" />
+      <Build Solution="*|*" Project="true" />
+    </Project>
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Backbone.Core.Tests/Backbone.Core.Tests.csproj" />
+    <Project Path="tests/Backbone.Service.Tests/Backbone.Service.Tests.csproj" />
+    <Project Path="tests/Backbone.App.Tests/Backbone.App.Tests.csproj" />
+    <Project Path="tests/Backbone.Architecture.Tests/Backbone.Architecture.Tests.csproj" />
+    <Project Path="tests/Backbone.IntegrationTests/Backbone.IntegrationTests.csproj" />
+  </Folder>
+  <Folder Name="/Solution Items/">
+    <File Path=".editorconfig" />
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path="global.json" />
+    <File Path=".github/workflows/ci.yml" />
+  </Folder>
+</Solution>

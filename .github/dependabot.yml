@@ -1,0 +1,17 @@
+# Actualizaciones automáticas de dependencias. Las versiones de NuGet viven en Directory.Packages.props.
+# Recordatorio: solo se aceptan versiones estables publicadas hace al menos dos semanas (CLAUDE.md).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14

@@ -1,0 +1,10 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <!-- Paquete mínimo: sin archivos todavía (el servicio y la app se añaden en HU-01/HU-02). -->
+  <!-- UpgradeCode: GUID fijo que identifica la familia de productos Backbone. NO DEBE CAMBIAR NUNCA (rompería MajorUpgrade). -->
+  <Package Name="Backbone" Manufacturer="Backbone" Version="0.1.0"
+           UpgradeCode="226429b1-654b-485f-9ce3-cefb34976eff" Scope="perMachine" Language="1034">
+    <MajorUpgrade DowngradeErrorMessage="!(loc.DowngradeError)" />
+    <MediaTemplate EmbedCab="yes" />
+    <Feature Id="Main" Title="Backbone" />
+  </Package>
+</Wix>

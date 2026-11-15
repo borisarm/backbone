@@ -1,0 +1,34 @@
+<Project>
+  <!--
+    Propiedades comunes a todos los proyectos de Backbone (HT-01, ADR-01).
+    Cada proyecto puede sobrescribir TargetFramework si necesita una plataforma concreta
+    (Service y App usan net10.0-windows*; véase §3.1 de la especificación).
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <Deterministic>true</Deterministic>
+    <SatelliteResourceLanguages>es;en</SatelliteResourceLanguages>
+
+    <!-- Auditoría de vulnerabilidades de NuGet en paquetes directos y transitivos, desde gravedad baja. -->
+    <NuGetAudit>true</NuGetAudit>
+    <NuGetAuditMode>all</NuGetAuditMode>
+    <NuGetAuditLevel>low</NuGetAuditLevel>
+
+    <Product>Backbone</Product>
+    <Company>Backbone</Company>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <!-- En integración continua (GitHub Actions define GITHUB_ACTIONS=true y CI=true) las advertencias son errores. -->
+  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true' or '$(CI)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(ContinuousIntegrationBuild)' == 'true'">
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>

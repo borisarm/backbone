@@ -59,6 +59,9 @@ Como equipo, quiero un canal named pipe con StreamJsonRpc y control de acceso, p
   4. Si la app se desconecta de forma abrupta, el servidor libera los recursos de esa conexión sin afectar a otras.
   5. Cliente con reconexión automática según §9.1.
   6. Prueba de integración con servidor y cliente reales sobre un pipe de nombre aleatorio.
+- **Requisitos de seguridad (revisión HT-01)**
+  - I-1: al arrancar, el servicio comprueba `%ProgramData%\Backbone` (no es punto de reanálisis, propietario Administradores/SYSTEM, DACL protegida según RNF-07) y la corrige o se niega a usarla antes de leer `authorizedUsers` o la configuración.
+  - I-5: al añadir `AddWindowsService`, `ContentRootPath = AppContext.BaseDirectory` y `Environment = Production` fijos; no se carga configuración (appsettings, variables de entorno, rutas) desde ubicaciones escribibles por usuarios.
 
 ### HT-04 · Motor: formato del repositorio
 Como equipo, quiero leer y escribir repositorios en formato v1 con escrituras atómicas y bloqueos, para tener una base fiable para copiar y restaurar.
@@ -86,6 +89,12 @@ Como Ana, quiero instalar Backbone con un instalador normal de Windows, para emp
   4. Mi usuario figura en `authorizedUsers` y la app, abierta sin elevar, conecta con el servicio.
   5. La app arranca minimizada en la bandeja al iniciar sesión (si dejé marcada la casilla).
   6. Hay MSI para x64 y ARM64.
+- **Requisitos de seguridad (revisión HT-01)**
+  - I-1: `%ProgramData%\Backbone` puede existir antes de instalar, creado por un usuario o como *junction*. El MSI comprueba que no es un punto de reanálisis, toma la propiedad (Administradores/SYSTEM) y aplica una DACL protegida (sin herencia) según RNF-07.
+  - I-2: ninguna acción personalizada se ejecuta en reparación si puede alterar ACL o datos; las elevadas son `deferred` sin suplantación. `INSTALLFOLDER` cuelga de `ProgramFiles64Folder`.
+  - I-3: decidir de forma explícita si x64 y ARM64 comparten `UpgradeCode`; la versión es única y se pasa al `.wixproj` como `$(Version)` (la de `Directory.Build.props`).
+  - I-4: la entrada `HKCU\…\Run` la crea la app en la sesión del usuario (casilla del primer arranque o Ajustes), no el MSI per-machine.
+  - B-6: los artefactos de CI no son distribuibles; la publicación de MSI firmados va por un flujo aparte.
 
 ### HU-02 · Actualizar y desinstalar
 Como Luis, quiero actualizar a una versión nueva sin perder la configuración y poder desinstalar limpiamente, para mantener el sistema ordenado.
@@ -96,6 +105,8 @@ Como Luis, quiero actualizar a una versión nueva sin perder la configuración y
   2. Si hay una copia en curso al actualizar, se cancela de forma controlada (sin corromper el repositorio) antes de detener el servicio.
   3. Al desinstalar con la casilla desmarcada, `%ProgramData%\Backbone` se conserva; marcada, se elimina.
   4. Ninguna desinstalación modifica el repositorio del NAS.
+- **Requisitos de seguridad (revisión HT-01)**
+  - I-3: `MajorUpgrade` según el `UpgradeCode` por arquitectura decidido en HU-01; la versión del MSI sale de `$(Version)` para que cada actualización la suba.
 
 ### HU-03 · Asistente de primer uso
 Como Ana, quiero que la primera vez que abro Backbone me guíe paso a paso, para tener la primera copia hecha en pocos minutos.
@@ -489,7 +500,7 @@ Las historias de una misma fila pueden desarrollarse en paralelo por agentes dis
 
 | Historia | Fase | Puntos | Agente | Estado |
 |---|---|---|---|---|
-| HT-01 | MVP | 3 | backbone-architect | Pendiente |
+| HT-01 | MVP | 3 | backbone-architect | Hecha |
 | HT-02 | MVP | 3 | backbone-architect | Pendiente |
 | HT-03 | MVP | 5 | backbone-service | Pendiente |
 | HT-04 | MVP | 8 | backbone-core | Pendiente |

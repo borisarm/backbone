@@ -1,0 +1,17 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+  <!--
+    Esqueleto del instalador (HT-01). El contenido real (servicio, ACL, app) llega con HU-01/HU-02.
+    La solución pasa Platform=AnyCPU; el MSI es x64 y se fija aquí. ARM64 se añadirá en HU-01 con -p:InstallerPlatform=arm64.
+  -->
+  <PropertyGroup>
+    <InstallerPlatform Condition="'$(InstallerPlatform)' == ''">x64</InstallerPlatform>
+    <Platforms>AnyCPU;x64;arm64</Platforms>
+    <Platform Condition="'$(Platform)' == 'AnyCPU' or '$(Platform)' == ''">$(InstallerPlatform)</Platform>
+    <OutputType>Package</OutputType>
+    <!-- Sin archivos aún la tabla Media queda vacía (ICE71); se quita al añadir contenido en HU-01. -->
+    <SuppressIces>ICE71</SuppressIces>
+    <!-- Ajustes por defecto de Directory.Build.props que no aplican a WiX -->
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+</Project>
