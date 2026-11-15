@@ -72,6 +72,20 @@ internal static class SolutionLayout
             .Select(e => e.Value.Trim())
             .Single();
 
+    /// <summary>Nombres de los proyectos referenciados directamente por un proyecto de tests/.</summary>
+    public static IReadOnlyList<string> TestProjectReferences(string testProjectName)
+    {
+        var path = Path.Combine(RepositoryRoot.FullName, "tests", testProjectName, testProjectName + ".csproj");
+        Assert.True(File.Exists(path), $"No se encuentra el proyecto {path}.");
+        return XDocument.Load(path)
+            .Descendants()
+            .Where(e => e.Name.LocalName == "ProjectReference")
+            .Select(e => (string?)e.Attribute("Include") ?? string.Empty)
+            .Select(include => Path.GetFileNameWithoutExtension(include.Replace('\\', Path.DirectorySeparatorChar)))
+            .Order(StringComparer.Ordinal)
+            .ToList();
+    }
+
     private static string ProjectPath(string projectName) =>
         Path.Combine(RepositoryRoot.FullName, "src", projectName, projectName + ".csproj");
 
