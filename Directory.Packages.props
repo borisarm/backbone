@@ -14,8 +14,12 @@
   </ItemGroup>
 
   <ItemGroup Label="Aplicación (ADR-02: Windows App SDK, última estable 1.x)">
-    <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.6.4" />
-    <PackageVersion Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.9169" />
+    <PackageVersion Include="Microsoft.WindowsAppSDK" Version="1.8.260921001" />
+    <PackageVersion Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2957" />
+  </ItemGroup>
+
+  <ItemGroup Label="IPC (ADR-03)">
+    <PackageVersion Include="StreamJsonRpc" Version="2.26.150" />
   </ItemGroup>
 
   <ItemGroup Label="Pruebas">

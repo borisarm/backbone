@@ -86,7 +86,7 @@ Como Ana, quiero instalar Backbone con un instalador normal de Windows, para emp
   1. Dado un Windows 11 limpio, cuando ejecuto el MSI y acepto la elevación, entonces el servicio `BackboneService` queda instalado, en ejecución, con inicio automático retrasado y las acciones de recuperación de RNF-02.
   2. El origen `Backbone` existe en el registro Aplicación del Visor de eventos.
   3. `%ProgramData%\Backbone` existe con las ACL de RNF-07.
-  4. Mi usuario figura en `authorizedUsers` y la app, abierta sin elevar, conecta con el servicio.
+  4. Si mi usuario es administrador, figura en `authorizedUsers` y la app, abierta sin elevar, conecta con el servicio (§7.3).
   5. La app arranca minimizada en la bandeja al iniciar sesión (si dejé marcada la casilla).
   6. Hay MSI para x64 y ARM64.
 - **Requisitos de seguridad (revisión HT-01)**
@@ -427,7 +427,9 @@ Como Luis, quiero que solo los usuarios que yo autorice puedan cambiar o restaur
 - **Criterios**
   1. Un usuario estándar no autorizado no puede conectar con el servicio y la app le muestra la pantalla de §9.3.
   2. Desde la app elevada puedo añadir y quitar usuarios autorizados; sin elevar, la opción pide elevación.
-  3. Las operaciones de escritura quedan en el log con el usuario que las hizo.
+  3. Las operaciones de escritura quedan en el log con el usuario (SID) que las hizo, sin argumentos.
+  4. Solo se pueden añadir cuentas de usuario cualificadas (`EQUIPO\usuario`, `DOMINIO\usuario` o SID) miembros del grupo local Administradores; grupos, Everyone, SID bien conocidos o cuentas no administradoras se rechazan con un mensaje específico (§7.3).
+  5. Si una cuenta autorizada deja de ser administradora o se quita de la lista, pierde el acceso y se cierran sus conexiones.
 
 ### HU-32 · Cifrado del repositorio
 Como Luis, quiero cifrar el repositorio con una contraseña, para que nadie con acceso al NAS pueda leer mis archivos.
@@ -501,7 +503,7 @@ Las historias de una misma fila pueden desarrollarse en paralelo por agentes dis
 | Historia | Fase | Puntos | Agente | Estado |
 |---|---|---|---|---|
 | HT-01 | MVP | 3 | backbone-architect | Hecha |
-| HT-02 | MVP | 3 | backbone-architect | Pendiente |
+| HT-02 | MVP | 3 | backbone-architect | Hecha |
 | HT-03 | MVP | 5 | backbone-service | Pendiente |
 | HT-04 | MVP | 8 | backbone-core | Pendiente |
 | HU-01 | MVP | 8 | backbone-installer | Pendiente |
