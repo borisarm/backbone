@@ -200,3 +200,75 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 **Resultado esperado:** todas pasan, ninguna omitida.
 
 **Estado:** pendiente.
+
+## PM-HU18-01 · Icono de la bandeja: cuatro estados y texto emergente
+
+**Cubre:** HU-18 criterio 1 (RF-50). La lógica de estado, texto y dibujo está probada de forma automática (`Backbone.App.Tests/Tray`); aquí se comprueba lo que solo se ve en pantalla.
+
+**Por qué es manual:** el icono nativo, su animación y el texto emergente los dibuja el Explorador; no se pueden verificar sin pantalla.
+
+**Preparación:** servicio en marcha (`dotnet run --project src/Backbone.Service -- --console`) con un trabajo activado; app con `dotnet run --project src/Backbone.App -p:Platform=x64`. Si el icono no está visible, arrastrarlo desde el desbordamiento de la bandeja.
+
+**Pasos**
+1. Servicio y trabajo correctos: el icono es **verde con una marca**; al pasar el ratón el texto dice el estado y "Última copia correcta: …" (hoy HH:mm, o fecha completa si fue otro día).
+2. Lanzar una copia (menú "Copiar todo ahora"): el icono pasa a **azul con tres puntos que giran** mientras dura, sin parpadeos ni consumo de CPU apreciable; al terminar vuelve a verde.
+3. Provocar un aviso (p. ej. archivo bloqueado en el origen) o un trabajo desactualizado: icono **amarillo con "!"**.
+4. Provocar un error (destino inaccesible): icono **rojo con aspa**.
+5. Comprobar en tema claro, oscuro, **alto contraste** y escalados 100 %, 150 % y **200 %**: el icono se ve nítido y se distingue cada estado también por la forma (no solo por el color).
+6. Con **Narrador** (Win+Ctrl+Intro) mover el foco al icono (Win+B, flechas): lee "Backbone" con el estado y la última copia correcta.
+7. Cambiar el idioma de visualización a inglés y reiniciar la app: los textos del tooltip y del menú están en inglés.
+
+**Resultado esperado:** cuatro iconos distinguibles, tooltip correcto en ambos idiomas, Narrador lee el texto emergente.
+
+**Estado:** pendiente.
+
+## PM-HU18-02 · Menú contextual de la bandeja
+
+**Cubre:** HU-18 criterio 2.
+
+**Por qué es manual:** menú nativo del shell y foco; no hay UI automatizable sin pantalla.
+
+**Pasos**
+1. Botón derecho en el icono (y también: foco en el icono con Win+B y tecla Menú / Mayús+F10): aparece el menú con **Copiar todo ahora, Pausar (próximamente), Abrir Backbone, Salir**; "Pausar" aparece deshabilitado (F2).
+2. Clic fuera o Esc: el menú se cierra y no queda ningún elemento colgado; repetir 5 veces.
+3. "Copiar todo ahora" con dos trabajos activados: ambos pasan a ejecutarse/encolarse; con el servicio detenido está deshabilitado.
+4. Teclas de acceso: con el menú abierto, T, P, A, S activan Copiar todo ahora, (Pausar deshabilitado), Abrir, Salir (en inglés: A, P, O, X).
+5. Con Narrador, cada elemento se lee con su nombre y el estado "no disponible" cuando está deshabilitado.
+6. Comprobar el aspecto del menú en tema oscuro y alto contraste (es un menú nativo: puede seguir el tema del sistema o no; anotar el resultado).
+
+**Resultado esperado:** menú con los cuatro elementos y su accesibilidad correcta.
+
+**Estado:** pendiente.
+
+## PM-HU18-03 · Cerrar oculta, Salir no detiene el servicio, instancia única
+
+**Cubre:** HU-18 criterios 3 y 4 (§9.1).
+
+**Por qué es manual:** ciclo de vida de ventanas y procesos reales, foco y primer plano.
+
+**Pasos** (con el servicio instalado y en marcha, o en modo consola)
+1. Abrir la app (clic en el icono o "Abrir Backbone"). Cerrar la ventana con la X o Alt+F4: la ventana desaparece y también su botón de la barra de tareas; el icono de la bandeja sigue y `Get-Process Backbone.App` muestra el proceso.
+2. Clic en el icono: la ventana vuelve al frente. Minimizarla y volver a hacer clic: se restaura.
+3. Con la app abierta, lanzar de nuevo `Backbone.App.exe` desde el menú Inicio o el Explorador: **no** aparece una segunda ventana; la existente pasa al frente (también si estaba oculta en la bandeja o minimizada), y solo hay un proceso `Backbone.App`.
+4. Arrancar con `Backbone.App.exe --minimized` (así lo lanzará la clave Run del instalador): no aparece ventana, solo el icono.
+5. "Salir" en el menú: el icono desaparece de la bandeja (sin icono fantasma al pasar el ratón) y el proceso termina; `Get-Service BackboneService` sigue en `Running` y una copia en curso continúa.
+6. Reiniciar el Explorador (`Stop-Process explorer` y esperar): el icono reaparece solo.
+
+**Resultado esperado:** cerrar oculta; Salir cierra solo la app; una sola instancia que se trae al frente.
+
+**Estado:** pendiente.
+
+## PM-HU18-04 · Servicio detenido: icono rojo en menos de 15 s
+
+**Cubre:** HU-18 criterio 5 y §9.1 (reconexión). La temporización está probada con tiempo simulado (`TrayServiceStoppedTests`); aquí se mide con el servicio real.
+
+**Pasos** (PowerShell **elevado**, servicio instalado)
+1. App abierta y conectada (icono verde).
+2. `Stop-Service BackboneService`; cronometrar hasta que el icono sea rojo con aspa. Debe ser menos de 15 s (esperado: unos 8 a 11 s, pasando antes por amarillo "reconectando").
+3. El texto emergente dice "servicio detenido".
+4. `Start-Service BackboneService`: en menos de 10 s el icono vuelve a verde/azul y el texto se actualiza.
+5. Repetir con la app arrancada con el servicio ya detenido: el icono se pone rojo en pocos segundos.
+
+**Resultado esperado:** rojo en menos de 15 s; recuperación automática.
+
+**Estado:** pendiente.
