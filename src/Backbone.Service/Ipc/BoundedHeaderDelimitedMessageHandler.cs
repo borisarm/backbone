@@ -24,8 +24,6 @@ namespace Backbone.Service.Ipc;
 /// cualquier otra cabecera se rechaza.</item>
 /// <item>Toda respuesta de error pasa por <see cref="BackboneServerJsonRpc.SanitizeOutgoingError"/> antes de serializarse
 /// (§7.4, M-5): nunca sale un <c>CommonErrorData</c> ni texto del cliente.</item>
-/// <item>Permite pedir el cierre de la conexión justo después de enviar la siguiente respuesta de error
-/// (<see cref="CloseAfterNextError"/>), para que un cliente rechazado reciba <c>NotAuthorized</c> antes de cortarse.</item>
 /// <item>Peticiones simultáneas (leídas y aún sin respuesta) limitadas: al superar el máximo se lanza
 /// <see cref="TooManyConcurrentRequestsException"/> y <c>JsonRpc</c> cierra la conexión (B-2).</item>
 /// <item>El cuerpo de cada mensaje recibido (que puede llevar una contraseña) se pone a cero en cuanto termina su
@@ -48,9 +46,6 @@ internal sealed partial class BoundedHeaderDelimitedMessageHandler : PipeMessage
     private readonly int _maxConcurrentRequests;
     private readonly ILogger _logger;
     private readonly ArrayBufferWriter<byte> _body = new();
-    private Action? _closeCallback;
-    private volatile bool _closeAfterNextError;
-    private bool _closePending;
     private byte[]? _pendingBody;
     private JsonRpcMessage? _pendingMessage;
     private int _inFlightRequests;
@@ -72,15 +67,6 @@ internal sealed partial class BoundedHeaderDelimitedMessageHandler : PipeMessage
 
     /// <summary>Peticiones leídas a las que aún no se ha respondido.</summary>
     internal int InFlightRequests => Volatile.Read(ref _inFlightRequests);
-
-    /// <summary>
-    /// Tras escribir y volcar la siguiente respuesta de error, invoca <paramref name="onClosed"/> (en el grupo de subprocesos).
-    /// </summary>
-    public void CloseAfterNextError(Action onClosed)
-    {
-        _closeCallback = onClosed;
-        _closeAfterNextError = true;
-    }
 
     /// <remarks>
     /// Esta clase vuelve a implementar la interfaz, así que la implementación de <see cref="PipeMessageHandler"/> no se
@@ -298,26 +284,6 @@ internal sealed partial class BoundedHeaderDelimitedMessageHandler : PipeMessage
         writer.Write(header[..length]);
         writer.Write(_body.WrittenSpan);
         _body.Clear();
-
-        if (content is JsonRpcError && _closeAfterNextError)
-        {
-            _closePending = true;
-        }
-    }
-
-    protected override async ValueTask FlushAsync(CancellationToken cancellationToken)
-    {
-        await base.FlushAsync(cancellationToken).ConfigureAwait(false);
-        if (_closePending)
-        {
-            _closePending = false;
-            _closeAfterNextError = false;
-            var callback = Interlocked.Exchange(ref _closeCallback, null);
-            if (callback is not null)
-            {
-                ThreadPool.QueueUserWorkItem(static cb => cb(), callback, preferLocal: false);
-            }
-        }
     }
 
     private void DecrementInFlight()

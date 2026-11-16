@@ -56,9 +56,34 @@ public sealed class ConnectionAuthorizationTests : IAsyncLifetime
 
         await RpcAssert.FailsWithAsync(BackboneErrorCode.NotAuthorized, () => client.Proxy.GetServiceInfoAsync(Ct));
 
-        await client.WaitClosedAsync();
+        await _server.WaitRejectedClosedAsync(client);
         Assert.True(client.Channel.IsDisposed);
         Assert.Equal(0, _server.Manager.Count);
+    }
+
+    [Fact]
+    public async Task A_rejected_connection_is_released_as_soon_as_the_client_closes_it()
+    {
+        var client = _server.Connect(TestSids.Identity(TestSids.Luis));
+        await RpcAssert.FailsWithAsync(BackboneErrorCode.NotAuthorized, () => client.Proxy.GetServiceInfoAsync(Ct));
+
+        await client.Client.DisposeAsync(); // sin avanzar el reloj: no espera al plazo
+
+        await client.WaitClosedAsync();
+        Assert.Equal(0, _server.Manager.Count);
+    }
+
+    [Fact]
+    public async Task While_a_rejected_connection_lingers_every_call_gets_NotAuthorized()
+    {
+        var client = _server.Connect(TestSids.Identity(TestSids.Luis));
+        await RpcAssert.FailsWithAsync(BackboneErrorCode.NotAuthorized, () => client.Proxy.GetServiceInfoAsync(Ct));
+
+        // Aunque entretanto se le autorice: la conexión rechazada no se rehabilita (Luis ya es administrador).
+        await _server.AuthorizeAsync(TestSids.Luis);
+        await RpcAssert.FailsWithAsync(BackboneErrorCode.NotAuthorized, () => client.Proxy.GetServiceInfoAsync(Ct));
+
+        await _server.WaitRejectedClosedAsync(client);
     }
 
     [Fact]
@@ -89,7 +114,7 @@ public sealed class ConnectionAuthorizationTests : IAsyncLifetime
         var client = _server.Connect(TestSids.Identity(TestSids.Eva, elevated: true));
 
         await RpcAssert.FailsWithAsync(BackboneErrorCode.NotAuthorized, () => client.Proxy.GetServiceInfoAsync(Ct));
-        await client.WaitClosedAsync();
+        await _server.WaitRejectedClosedAsync(client);
     }
 
     [Fact]
@@ -99,7 +124,7 @@ public sealed class ConnectionAuthorizationTests : IAsyncLifetime
         var client = _server.Connect(TestSids.Identity(TestSids.Ana));
 
         await RpcAssert.FailsWithAsync(BackboneErrorCode.NotAuthorized, () => client.Proxy.GetServiceInfoAsync(Ct));
-        await client.WaitClosedAsync();
+        await _server.WaitRejectedClosedAsync(client);
     }
 
     [Theory]
@@ -111,7 +136,7 @@ public sealed class ConnectionAuthorizationTests : IAsyncLifetime
         var client = _server.Connect(TestSids.Identity(TestSids.Ana, elevated: true, level));
 
         await RpcAssert.FailsWithAsync(BackboneErrorCode.NotAuthorized, () => client.Proxy.GetServiceInfoAsync(Ct));
-        await client.WaitClosedAsync();
+        await _server.WaitRejectedClosedAsync(client);
     }
 
     [Fact]
@@ -128,7 +153,7 @@ public sealed class ConnectionAuthorizationTests : IAsyncLifetime
         var client = _server.Connect(() => throw new IOException("ImpersonateNamedPipeClient failed"));
 
         await RpcAssert.FailsWithAsync(BackboneErrorCode.NotAuthorized, () => client.Proxy.GetServiceInfoAsync(Ct));
-        await client.WaitClosedAsync();
+        await _server.WaitRejectedClosedAsync(client);
     }
 
     [Fact]
@@ -153,7 +178,7 @@ public sealed class ConnectionAuthorizationTests : IAsyncLifetime
         _server.Accounts.SetAdministrator(TestSids.Ana, false);
 
         await RpcAssert.FailsWithAsync(BackboneErrorCode.NotAuthorized, () => client.Proxy.GetServiceInfoAsync(Ct));
-        await client.WaitClosedAsync();
+        await _server.WaitRejectedClosedAsync(client);
     }
 
     [Fact]

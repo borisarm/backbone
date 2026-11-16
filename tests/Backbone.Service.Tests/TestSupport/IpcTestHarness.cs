@@ -96,6 +96,19 @@ internal sealed class IpcTestHarness : IAsyncDisposable
         return connection;
     }
 
+    /// <summary>
+    /// Conexión rechazada cuyo cliente no cierra: comprueba que el servidor no la corta antes de
+    /// <see cref="IpcOptions.RejectionLinger"/> (el cliente tiene tiempo de leer <c>NotAuthorized</c>) y que la cierra al
+    /// cumplirse ese plazo.
+    /// </summary>
+    public async Task WaitRejectedClosedAsync(TestConnection connection)
+    {
+        Assert.False(connection.RequiredServer.Completion.IsCompleted, "El servidor no debe cortar antes del plazo.");
+        Time.Advance(Options.RejectionLinger);
+        await connection.WaitClosedAsync();
+        Assert.True(connection.Channel.IsDisposed);
+    }
+
     public async ValueTask DisposeAsync()
     {
         foreach (var client in _clients)

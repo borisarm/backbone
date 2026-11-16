@@ -13,8 +13,9 @@ namespace Backbone.Service.Ipc;
 /// <list type="bullet">
 /// <item>La identidad se lee con el primer mensaje (antes no se puede suplantar). Si no llega en
 /// <see cref="IpcOptions.IdentificationTimeout"/>, se cierra la conexión.</item>
-/// <item>Cada llamada se autoriza de nuevo (<see cref="Authorize"/>). Un rechazo responde <c>NotAuthorized</c> y cierra la
-/// conexión justo después de enviar esa respuesta.</item>
+/// <item>Cada llamada se autoriza de nuevo (<see cref="Authorize"/>). Un rechazo responde <c>NotAuthorized</c> y la conexión
+/// queda rechazada: se cierra en cuanto el cliente cierra su extremo o, como mucho, pasado
+/// <see cref="IpcOptions.RejectionLinger"/> (cierre ordenado: el cliente siempre llega a leer la respuesta).</item>
 /// <item>Al cerrarse (por el cliente, de forma abrupta o no, o por el servidor) se cancelan las llamadas en curso, se
 /// liberan el <see cref="JsonRpc"/>, el pipe y los temporizadores, y se quita del <see cref="IpcConnectionManager"/>.</item>
 /// </list>
@@ -354,10 +355,13 @@ internal sealed partial class IpcConnection : IAsyncDisposable
             LogRejected(_logger, Id, Identity?.Sid.Value ?? "-", method, failure);
         }
 
-        // Se cierra justo después de enviar la respuesta NotAuthorized y, por si no llegara a enviarse, a los 5 s.
-        _handler?.CloseAfterNextError(() => Close(CloseReason.Rejected));
+        // No se cierra al enviar la respuesta NotAuthorized: cerrar el extremo del servidor (DisconnectNamedPipe o el cierre del
+        // handle con datos aún en tránsito) puede hacer que el cliente no llegue a procesarla y vea ConnectionLostException.
+        // Se deja que cierre el cliente (Disconnected cierra aquí al momento) y, si no lo hace, se fuerza el cierre pasado
+        // RejectionLinger: un cliente no autorizado no retiene una instancia del pipe más de ese tiempo (HT-03, B-2). Mientras
+        // tanto toda llamada suya recibe NotAuthorized (estado Rejected) y no recibe eventos.
         _rejectionTimer = _timeProvider.CreateTimer(
-            static state => ((IpcConnection)state!).Close(CloseReason.Rejected), this, TimeSpan.FromSeconds(5), Timeout.InfiniteTimeSpan);
+            static state => ((IpcConnection)state!).Close(CloseReason.Rejected), this, _options.RejectionLinger, Timeout.InfiniteTimeSpan);
     }
 
     private void OnIdentificationTimeout()

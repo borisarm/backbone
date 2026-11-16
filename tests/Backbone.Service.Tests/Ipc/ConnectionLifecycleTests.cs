@@ -63,7 +63,7 @@ public sealed class ConnectionLifecycleTests : IAsyncLifetime
 
         var fifth = _server.Connect(TestSids.Identity(TestSids.Ana));
         await RpcAssert.FailsWithAsync(BackboneErrorCode.NotAuthorized, () => fifth.Proxy.GetServiceInfoAsync(Ct));
-        await fifth.WaitClosedAsync();
+        await _server.WaitRejectedClosedAsync(fifth);
 
         // Otra cuenta sigue pudiendo conectar.
         var luis = await _server.ConnectAuthorizedAsync(TestSids.Identity(TestSids.Luis));

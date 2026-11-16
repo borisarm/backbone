@@ -28,6 +28,13 @@ internal sealed class IpcOptions
     public TimeSpan IdentificationTimeout { get; init; } = TimeSpan.FromSeconds(5);
 
     /// <summary>
+    /// Tiempo máximo que una conexión rechazada (<c>NotAuthorized</c>) sigue abierta esperando a que el cliente cierre. Da
+    /// tiempo a que el cliente procese la respuesta antes de que el servidor corte (cortar antes descarta lo que el cliente no
+    /// ha leído). Corto (B-2), como <see cref="IdentificationTimeout"/>: mientras tanto ocupa una instancia del pipe.
+    /// </summary>
+    public TimeSpan RejectionLinger { get; init; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>
     /// Máximo de peticiones simultáneas (leídas y sin responder) de una conexión (B-2). Al superarlo se cierra la conexión.
     /// </summary>
     public int MaxConcurrentRequestsPerConnection { get; init; } = BoundedHeaderDelimitedMessageHandler.DefaultMaxConcurrentRequests;

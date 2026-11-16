@@ -39,6 +39,11 @@ internal sealed class PipeClientChannel(NamedPipeServerStream pipe) : IClientCha
 
     public void RunAsClient(Action action) => pipe.RunAsClient(() => action());
 
+    /// <remarks>
+    /// <c>DisconnectNamedPipe</c> descarta lo que el cliente aún no haya leído: quien cierra tras enviar una respuesta que el
+    /// cliente debe recibir (rechazo <c>NotAuthorized</c>) espera antes a que cierre el cliente, con un plazo
+    /// (<see cref="IpcOptions.RejectionLinger"/>). Aquí se corta siempre, para no dejar la instancia retenida por el cliente.
+    /// </remarks>
     public ValueTask DisposeAsync()
     {
         try
