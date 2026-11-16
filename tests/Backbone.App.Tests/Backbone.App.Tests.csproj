@@ -3,8 +3,8 @@
   <!--
     View models y cliente IPC de la app, sin UI real (§11). De momento solo referencia Contracts:
     Backbone.App es un ejecutable autocontenido y no se puede referenciar desde un ejecutable de
-    pruebas que no lo sea (NETSDK1151). Por eso el código de la app que no depende de WinUI (carpeta
-    src/Backbone.App/Ipc: cliente IPC y reconexión) se compila también dentro de este proyecto mediante
+    pruebas que no lo sea (NETSDK1151). Por eso el código de la app que no depende de WinUI (carpetas
+    src/Backbone.App/Ipc: cliente IPC y reconexión; src/Backbone.App/Tray: estado, texto y menú de la bandeja) se compila también dentro de este proyecto mediante
     enlaces. Los view models, cuando existan, seguirán el mismo criterio (carpeta sin tipos de WinUI).
   -->
 
@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <Compile Include="..\..\src\Backbone.App\Ipc\**\*.cs" LinkBase="App\Ipc" />
+    <Compile Include="..\..\src\Backbone.App\Tray\**\*.cs" LinkBase="App\Tray" />
   </ItemGroup>
 
   <ItemGroup>

@@ -212,9 +212,7 @@ public sealed class ConnectionAuthorizationTests : IAsyncLifetime
 
         await RpcAssert.FailsWithAsync(
             BackboneErrorCode.ValidationFailed, () => client.Proxy.AddAuthorizedUserAsync(argument, Ct));
-        await RpcAssert.FailsWithAsync(
-            BackboneErrorCode.NotSupported,
-            () => client.Proxy.SaveCredentialAsync(@"\\nas\copias", new CredentialInput { UserName = "u", Password = "Contraseña-123" }, Ct));
+        await client.Proxy.SaveCredentialAsync(@"\\nas\copias", new CredentialInput { UserName = "u", Password = "Contraseña-123" }, Ct);
 
         var audit = _server.Logs.Entries.Where(e => e.Message.StartsWith("Auditoría IPC", StringComparison.Ordinal)).ToList();
         Assert.Contains(audit, e => e.Message.Contains(nameof(IBackboneService.AddAuthorizedUserAsync), StringComparison.Ordinal)

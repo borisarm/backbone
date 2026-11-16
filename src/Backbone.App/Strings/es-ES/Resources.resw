@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <data name="App_Title" xml:space="preserve"><value>Backbone</value></data>
+  <data name="Tray_TooltipFormat" xml:space="preserve"><value>Backbone: {0}&#10;{1}</value></data>
+  <data name="Tray_State_Ok" xml:space="preserve"><value>copias al día</value></data>
+  <data name="Tray_State_Warning" xml:space="preserve"><value>con avisos o desactualizado</value></data>
+  <data name="Tray_State_Error" xml:space="preserve"><value>error en la última copia</value></data>
+  <data name="Tray_State_Copying" xml:space="preserve"><value>copiando</value></data>
+  <data name="Tray_State_Connecting" xml:space="preserve"><value>conectando con el servicio</value></data>
+  <data name="Tray_State_Reconnecting" xml:space="preserve"><value>reconectando con el servicio</value></data>
+  <data name="Tray_State_ServiceStopped" xml:space="preserve"><value>servicio detenido</value></data>
+  <data name="Tray_State_Unauthorized" xml:space="preserve"><value>sin autorización</value></data>
+  <data name="Tray_State_IncompatibleContract" xml:space="preserve"><value>versión incompatible del servicio</value></data>
+  <data name="Tray_State_PausedFormat" xml:space="preserve"><value>{0} (en pausa)</value></data>
+  <data name="Tray_LastSuccess_None" xml:space="preserve"><value>Aún sin copia correcta</value></data>
+  <data name="Tray_LastSuccess_TodayFormat" xml:space="preserve"><value>Última copia correcta: hoy {0}</value></data>
+  <data name="Tray_LastSuccess_DateFormat" xml:space="preserve"><value>Última copia correcta: {0}</value></data>
+  <data name="Tray_Menu_RunAllNow" xml:space="preserve"><value>Copiar &amp;todo ahora</value></data>
+  <data name="Tray_Menu_Pause" xml:space="preserve"><value>&amp;Pausar (próximamente)</value></data>
+  <data name="Tray_Menu_Open" xml:space="preserve"><value>&amp;Abrir Backbone</value></data>
+  <data name="Tray_Menu_Exit" xml:space="preserve"><value>&amp;Salir</value></data>
+</root>

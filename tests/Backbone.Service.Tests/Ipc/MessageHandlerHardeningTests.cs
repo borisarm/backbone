@@ -218,8 +218,10 @@ public sealed class MessageHandlerHardeningTests
         Assert.Contains("por encima del límite", server.Logs.AllText(), StringComparison.Ordinal);
     }
 
-    /// <summary>Formateador real que guarda los cuerpos que recibe (para comprobar que se ponen a cero).</summary>
-    /// <summary>Devuelve mensajes que registran cuántas veces se liberan y si el cuerpo seguía intacto al liberarlos.</summary>
+    /// <summary>
+    /// Formateador real que devuelve mensajes que registran cuántas veces se liberan y si el cuerpo seguía intacto al
+    /// liberarlos (para comprobar que se ponen a cero).
+    /// </summary>
     private sealed class TrackingFormatter : IJsonRpcMessageFormatter, IDisposable
     {
         private readonly SystemTextJsonFormatter _inner = new();

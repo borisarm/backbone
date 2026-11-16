@@ -16,7 +16,7 @@ internal sealed class IpcTestHarness : IAsyncDisposable
     private readonly TempDirectory _temp = new();
     private readonly List<TestRpcClient> _clients = [];
 
-    public IpcTestHarness(IpcOptions? options = null)
+    public IpcTestHarness(IpcOptions? options = null, IDataProtector? protector = null)
     {
         Options = options ?? new IpcOptions();
         LoggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(b => b.AddProvider(Logs).SetMinimumLevel(LogLevel.Trace));
@@ -24,7 +24,10 @@ internal sealed class IpcTestHarness : IAsyncDisposable
         Settings = new SettingsStore(_temp.Combine("config", "settings.json"), TestFileTrust.CurrentUser, LoggerFactory.CreateLogger<SettingsStore>());
         Authorizer = new CallerAuthorizer(Settings, Accounts);
         Runtime = new ServiceRuntimeInfo(Time);
-        Operations = new BackboneOperations(Runtime, Settings, Accounts);
+        Directory.CreateDirectory(_temp.Combine("credentials")); // ídem (§8.3)
+        Protector = protector ?? new DpapiMachineProtector();
+        Credentials = new CredentialStore(_temp.Combine("credentials"), TestFileTrust.CurrentUser, Protector, Time, LoggerFactory.CreateLogger<CredentialStore>());
+        Operations = new BackboneOperations(Runtime, Settings, Accounts, Credentials);
         Manager = new IpcConnectionManager(Authorizer, Accounts, Settings, Operations, Options, Time, LoggerFactory);
         Events = new IpcEventPublisher(Manager, Options, Time);
     }
@@ -45,6 +48,14 @@ internal sealed class IpcTestHarness : IAsyncDisposable
     public IpcOptions Options { get; }
 
     public SettingsStore Settings { get; }
+
+    /// <summary>Carpeta de datos de la prueba (equivale a <c>%ProgramData%\Backbone</c>).</summary>
+    public string DataRoot => _temp.Path;
+
+    /// <summary>Protector de las credenciales (por defecto, DPAPI real con ámbito equipo).</summary>
+    public IDataProtector Protector { get; }
+
+    public CredentialStore Credentials { get; }
 
     public CallerAuthorizer Authorizer { get; }
 
@@ -96,6 +107,7 @@ internal sealed class IpcTestHarness : IAsyncDisposable
         await Manager.DisposeAsync();
         Events.Dispose();
         Settings.Dispose();
+        Credentials.Dispose();
         LoggerFactory.Dispose();
         _temp.Dispose();
     }

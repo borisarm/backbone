@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <data name="App_Title" xml:space="preserve"><value>Backbone</value></data>
+  <data name="Tray_TooltipFormat" xml:space="preserve"><value>Backbone: {0}&#10;{1}</value></data>
+  <data name="Tray_State_Ok" xml:space="preserve"><value>backups up to date</value></data>
+  <data name="Tray_State_Warning" xml:space="preserve"><value>warnings or out of date</value></data>
+  <data name="Tray_State_Error" xml:space="preserve"><value>last backup failed</value></data>
+  <data name="Tray_State_Copying" xml:space="preserve"><value>backing up</value></data>
+  <data name="Tray_State_Connecting" xml:space="preserve"><value>connecting to the service</value></data>
+  <data name="Tray_State_Reconnecting" xml:space="preserve"><value>reconnecting to the service</value></data>
+  <data name="Tray_State_ServiceStopped" xml:space="preserve"><value>service stopped</value></data>
+  <data name="Tray_State_Unauthorized" xml:space="preserve"><value>not authorized</value></data>
+  <data name="Tray_State_IncompatibleContract" xml:space="preserve"><value>incompatible service version</value></data>
+  <data name="Tray_State_PausedFormat" xml:space="preserve"><value>{0} (paused)</value></data>
+  <data name="Tray_LastSuccess_None" xml:space="preserve"><value>No successful backup yet</value></data>
+  <data name="Tray_LastSuccess_TodayFormat" xml:space="preserve"><value>Last successful backup: today {0}</value></data>
+  <data name="Tray_LastSuccess_DateFormat" xml:space="preserve"><value>Last successful backup: {0}</value></data>
+  <data name="Tray_Menu_RunAllNow" xml:space="preserve"><value>Back up &amp;all now</value></data>
+  <data name="Tray_Menu_Pause" xml:space="preserve"><value>&amp;Pause (coming soon)</value></data>
+  <data name="Tray_Menu_Open" xml:space="preserve"><value>&amp;Open Backbone</value></data>
+  <data name="Tray_Menu_Exit" xml:space="preserve"><value>E&amp;xit</value></data>
+</root>

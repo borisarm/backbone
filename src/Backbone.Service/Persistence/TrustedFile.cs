@@ -80,11 +80,18 @@ internal sealed class UntrustedFileException : Exception
 /// renombrando el handle del temporal (<c>FileRenameInfoEx</c> con semántica POSIX, o <c>FileRenameInfo</c> si el volumen
 /// no la admite). El renombrado sustituye la entrada del destino sin seguirla. Si algo falla, el temporal se borra por
 /// handle.</item>
+/// <item><b>Borrado</b>: por handle con semántica POSIX (<c>FileDispositionInfoEx</c>): el nombre desaparece al cerrar el
+/// handle aunque un lector tenga el archivo abierto, sin dejarlo "pendiente de borrado".</item>
+/// <item><b>Concurrencia</b>: las aperturas reintentan, de forma breve y acotada, los errores transitorios que provoca otra
+/// operación sobre el mismo nombre (<see cref="IsTransientOpenError"/>): un lector ve el contenido anterior completo, el
+/// nuevo completo o ninguno, nunca un error. Las excepciones de E/S llevan el código Win32.</item>
 /// </list>
 /// Un rechazo lanza <see cref="UntrustedFileException"/>; qué se hace con él lo decide cada almacén.
 /// </remarks>
 internal sealed class TrustedFile(FileTrustPolicy policy)
 {
+    private const uint ReplaceCheckAccess = ReadControl | FileReadAttributes | Synchronize;
+
     public FileTrustPolicy Policy { get; } = policy;
 
     /// <summary>Lee el archivo completo, o <see langword="null"/> si no existe.</summary>
@@ -95,7 +102,8 @@ internal sealed class TrustedFile(FileTrustPolicy policy)
     {
         var fullPath = Path.GetFullPath(path);
         using var parent = OpenParent(fullPath);
-        using var handle = Open(fullPath, GenericRead, FileShareRead | FileShareDelete, out var error);
+        var (handle, error) = await OpenRetryingAsync(fullPath, GenericRead, FileShareRead | FileShareDelete, ct).ConfigureAwait(false);
+        using var owned = handle;
         if (handle is null)
         {
             return error is ErrorFileNotFound or ErrorPathNotFound ? null : throw ToException(error, fullPath, "opened");
@@ -144,7 +152,7 @@ internal sealed class TrustedFile(FileTrustPolicy policy)
             }
 
             ct.ThrowIfCancellationRequested();
-            EnsureReplaceable(fullPath);
+            await EnsureReplaceableAsync(fullPath, ct).ConfigureAwait(false);
             Rename(handle, fullPath);
             renamed = true;
         }
@@ -174,7 +182,7 @@ internal sealed class TrustedFile(FileTrustPolicy policy)
         }
 
         using var parent = OpenParent(source);
-        using var handle = Open(source, Delete | ReadControl | FileReadAttributes | Synchronize, FileShareRead | FileShareWrite | FileShareDelete, out var error);
+        using var handle = OpenRetrying(source, Delete | ReadControl | FileReadAttributes | Synchronize, FileShareRead | FileShareWrite | FileShareDelete, out var error);
         if (handle is null)
         {
             return error is ErrorFileNotFound or ErrorPathNotFound ? false : throw ToException(error, source, "opened");
@@ -183,6 +191,34 @@ internal sealed class TrustedFile(FileTrustPolicy policy)
         Validate(handle, source);
         EnsureReplaceable(destination);
         Rename(handle, destination);
+        return true;
+    }
+
+    /// <summary>
+    /// Borra el archivo por handle (<c>FileDispositionInfo</c>), validándolo antes como en la lectura: un punto de reanálisis,
+    /// una carpeta, un enlace duro o un archivo de propietario no fiable se rechazan y no se borran (no se sigue ningún enlace
+    /// ni se borra nada fuera de la carpeta de datos).
+    /// </summary>
+    /// <returns><see langword="false"/> si no existe.</returns>
+    /// <exception cref="UntrustedFileException">Se rechaza: no se borra nada.</exception>
+    /// <exception cref="DirectoryNotFoundException">La carpeta padre no existe.</exception>
+    public bool DeleteIfExists(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        using var parent = OpenParent(fullPath);
+        using var handle = OpenRetrying(fullPath, Delete | ReadControl | FileReadAttributes | Synchronize, FileShareRead | FileShareWrite | FileShareDelete, out var error);
+        if (handle is null)
+        {
+            return error is ErrorFileNotFound or ErrorPathNotFound ? false : throw ToException(error, fullPath, "opened");
+        }
+
+        Validate(handle, fullPath);
+        var deleteError = MarkForDeletion(handle);
+        if (deleteError != ErrorSuccess)
+        {
+            throw ToException(deleteError, fullPath, "deleted");
+        }
+
         return true;
     }
 
@@ -276,7 +312,20 @@ internal sealed class TrustedFile(FileTrustPolicy policy)
     /// <summary>El destino de un reemplazo, si existe, debe pasar la misma validación que un archivo que se lee.</summary>
     private void EnsureReplaceable(string path)
     {
-        using var handle = Open(path, ReadControl | FileReadAttributes | Synchronize, FileShareRead | FileShareWrite | FileShareDelete, out var error);
+        using var handle = OpenRetrying(path, ReplaceCheckAccess, FileShareRead | FileShareWrite | FileShareDelete, out var error);
+        EnsureReplaceable(handle, error, path);
+    }
+
+    /// <inheritdoc cref="EnsureReplaceable(string)"/>
+    private async Task EnsureReplaceableAsync(string path, CancellationToken ct)
+    {
+        var (handle, error) = await OpenRetryingAsync(path, ReplaceCheckAccess, FileShareRead | FileShareWrite | FileShareDelete, ct).ConfigureAwait(false);
+        using var owned = handle;
+        EnsureReplaceable(handle, error, path);
+    }
+
+    private void EnsureReplaceable(SafeFileHandle? handle, int error, string path)
+    {
         if (handle is null)
         {
             if (error is ErrorFileNotFound or ErrorPathNotFound)
@@ -288,6 +337,81 @@ internal sealed class TrustedFile(FileTrustPolicy policy)
         }
 
         Validate(handle, path);
+    }
+
+    /// <summary>
+    /// Error de apertura que puede deberse a otra operación en curso sobre el mismo nombre, y no a un rechazo:
+    /// <c>ERROR_SHARING_VIOLATION</c> (tras el renombrado atómico, el handle de escritura del escritor sobre el archivo ya
+    /// renombrado sigue abierto hasta que lo cierra) y <c>ERROR_ACCESS_DENIED</c> (es como <c>CreateFile</c> informa de un
+    /// archivo pendiente de borrado, <c>STATUS_DELETE_PENDING</c>, hasta que se cierra el handle que lo borra). Se reintenta
+    /// con las esperas de <see cref="TransientRetryDelaysMs"/>; si persiste, se informa del error.
+    /// </summary>
+    internal static bool IsTransientOpenError(int error) => error is ErrorSharingViolation or ErrorAccessDenied;
+
+    /// <summary>Esperas (ms) entre reintentos de una apertura con error transitorio: en total, menos de medio segundo.</summary>
+    internal static ReadOnlySpan<int> TransientRetryDelaysMs => [0, 1, 2, 5, 10, 20, 40, 80, 120, 150];
+
+    /// <summary><see cref="Open"/> reintentando los errores transitorios (<see cref="IsTransientOpenError"/>).</summary>
+    private static SafeFileHandle? OpenRetrying(string path, uint access, uint share, out int error)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            var handle = Open(path, access, share, out error);
+            if (handle is not null || !IsTransientOpenError(error) || attempt >= TransientRetryDelaysMs.Length)
+            {
+                return handle;
+            }
+
+            Thread.Sleep(TransientRetryDelaysMs[attempt]);
+        }
+    }
+
+    /// <inheritdoc cref="OpenRetrying"/>
+    private static async Task<(SafeFileHandle? Handle, int Error)> OpenRetryingAsync(string path, uint access, uint share, CancellationToken ct)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            var handle = Open(path, access, share, out var error);
+            if (handle is not null || !IsTransientOpenError(error) || attempt >= TransientRetryDelaysMs.Length)
+            {
+                return (handle, error);
+            }
+
+            var delay = TransientRetryDelaysMs[attempt];
+            if (delay == 0)
+            {
+                await Task.Yield();
+                ct.ThrowIfCancellationRequested();
+            }
+            else
+            {
+                await Task.Delay(delay, ct).ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Marca el archivo abierto para borrarlo con semántica POSIX (<c>FileDispositionInfoEx</c>): el nombre desaparece al
+    /// cerrar este handle aunque haya lectores con el archivo abierto (que siguen leyendo el contenido anterior completo), en
+    /// lugar de quedar "pendiente de borrado" hasta que cierre el último. Si el volumen no la admite, borrado clásico
+    /// (<c>FileDispositionInfo</c>).
+    /// </summary>
+    /// <returns>El código Win32, o <see cref="ErrorSuccess"/>.</returns>
+    private static int MarkForDeletion(SafeFileHandle handle)
+    {
+        var flags = BitConverter.GetBytes(FileDispositionFlagDelete | FileDispositionFlagPosixSemantics);
+        if (SetFileInformationByHandle(handle, FileDispositionInfoEx, flags, (uint)flags.Length))
+        {
+            return ErrorSuccess;
+        }
+
+        var error = Marshal.GetLastPInvokeError();
+        if (error is ErrorInvalidParameter or ErrorNotSupported)
+        {
+            return SetFileInformationByHandle(handle, FileDispositionInfo, [1], 1) ? ErrorSuccess : Marshal.GetLastPInvokeError();
+        }
+
+        return error;
     }
 
     private static SecurityIdentifier? ReadOwner(SafeFileHandle handle, string path)
@@ -401,14 +525,17 @@ internal sealed class TrustedFile(FileTrustPolicy policy)
     {
         if (!handle.IsInvalid && !handle.IsClosed)
         {
-            _ = SetFileInformationByHandle(handle, FileDispositionInfo, [1], 1);
+            _ = MarkForDeletion(handle);
         }
     }
 
-    private static Exception ToException(int error, string path, string action) =>
+    /// <summary>Excepción con la ruta, la acción y el código Win32 (nunca contenido).</summary>
+    internal static Exception ToException(int error, string path, string action) =>
         error == ErrorAccessDenied
-            ? new UnauthorizedAccessException($"The file '{path}' could not be {action}.", new Win32Exception(error))
-            : new IOException($"The file '{path}' could not be {action}.", new Win32Exception(error));
+            ? new UnauthorizedAccessException($"The file '{path}' could not be {action} (Win32 error {error}).", new Win32Exception(error))
+            : new IOException($"The file '{path}' could not be {action} (Win32 error {error}).", new Win32Exception(error)) { HResult = HResultFromWin32(error) };
+
+    private static int HResultFromWin32(int error) => error <= 0 ? error : unchecked((int)(((uint)error & 0xFFFF) | 0x8007_0000));
 
     /// <summary>Tamaño mínimo de <c>FILE_RENAME_INFO</c> (con un carácter de nombre).</summary>
     [StructLayout(LayoutKind.Sequential)]

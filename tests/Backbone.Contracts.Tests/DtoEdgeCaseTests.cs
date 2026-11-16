@@ -343,7 +343,7 @@ public sealed class DtoEdgeCaseTests
         var allowedStatics = new HashSet<string>(StringComparer.Ordinal)
         {
             nameof(JobDefaults), nameof(ServiceSettingsDefaults), nameof(BackboneErrors), nameof(BackboneIpc), nameof(ContractVersion),
-            nameof(ContractLimits), nameof(SnapshotPaths), nameof(UncPaths),
+            nameof(ContractLimits), nameof(SnapshotPaths), nameof(UncPaths), nameof(UntrustedText),
         };
 
         foreach (var type in ContractTypes.Assembly.GetExportedTypes())

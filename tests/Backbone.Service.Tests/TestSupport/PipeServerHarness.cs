@@ -1,6 +1,7 @@
 using System.IO.Pipes;
 using System.Security.Principal;
 using Backbone.Service.Ipc;
+using Backbone.Service.Os;
 using Backbone.Service.Persistence;
 using Microsoft.Extensions.Logging;
 
@@ -23,7 +24,9 @@ internal sealed class PipeServerHarness : IAsyncDisposable
         Directory.CreateDirectory(_temp.Combine("config")); // la crea el servicio al arrancar (§8.3); los almacenes no crean carpetas
         Settings = new SettingsStore(_temp.Combine("config", "settings.json"), TestFileTrust.CurrentUser, LoggerFactory.CreateLogger<SettingsStore>());
         var authorizer = new CallerAuthorizer(Settings, Accounts);
-        var operations = new BackboneOperations(new ServiceRuntimeInfo(TimeProvider.System), Settings, Accounts);
+        Directory.CreateDirectory(_temp.Combine("credentials"));
+        Credentials = new CredentialStore(_temp.Combine("credentials"), TestFileTrust.CurrentUser, new DpapiMachineProtector(), TimeProvider.System, LoggerFactory.CreateLogger<CredentialStore>());
+        var operations = new BackboneOperations(new ServiceRuntimeInfo(TimeProvider.System), Settings, Accounts, Credentials);
         Manager = new IpcConnectionManager(authorizer, Accounts, Settings, operations, options, TimeProvider.System, LoggerFactory);
         Events = new IpcEventPublisher(Manager, options, TimeProvider.System);
         Server = new IpcServer(Manager, Settings, EventLog, options, LoggerFactory.CreateLogger<IpcServer>());
@@ -45,6 +48,8 @@ internal sealed class PipeServerHarness : IAsyncDisposable
     public ILoggerFactory LoggerFactory { get; }
 
     public SettingsStore Settings { get; }
+
+    public CredentialStore Credentials { get; }
 
     public IpcConnectionManager Manager { get; }
 
@@ -115,6 +120,7 @@ internal sealed class PipeServerHarness : IAsyncDisposable
         await Server.DisposeAsync();
         Events.Dispose();
         Settings.Dispose();
+        Credentials.Dispose();
         LoggerFactory.Dispose();
         _temp.Dispose();
     }

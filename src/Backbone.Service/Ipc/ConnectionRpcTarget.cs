@@ -84,25 +84,15 @@ internal sealed partial class ConnectionRpcTarget(IpcConnection connection, Back
 
     public Task SaveCredentialAsync(string shareRoot, CredentialInput credential, CancellationToken ct = default) =>
         InvokeAsync(nameof(SaveCredentialAsync), Write, _ =>
-        {
-            IpcInputValidator.Destination(shareRoot);
-            IpcInputValidator.Credential(credential);
-            throw NotYet(nameof(SaveCredentialAsync));
-        });
+            operations.SaveCredentialAsync(IpcInputValidator.Destination(shareRoot), IpcInputValidator.Credential(credential), ct));
 
     public Task<CredentialInfo?> GetCredentialInfoAsync(string shareRoot, CancellationToken ct = default) =>
-        InvokeAsync<CredentialInfo?>(nameof(GetCredentialInfoAsync), Read, _ =>
-        {
-            IpcInputValidator.Destination(shareRoot);
-            throw NotYet(nameof(GetCredentialInfoAsync));
-        });
+        InvokeAsync(nameof(GetCredentialInfoAsync), Read, _ =>
+            operations.GetCredentialInfoAsync(IpcInputValidator.Destination(shareRoot), ct));
 
     public Task DeleteCredentialAsync(string shareRoot, CancellationToken ct = default) =>
         InvokeAsync(nameof(DeleteCredentialAsync), Write, _ =>
-        {
-            IpcInputValidator.Destination(shareRoot);
-            throw NotYet(nameof(DeleteCredentialAsync));
-        });
+            operations.DeleteCredentialAsync(IpcInputValidator.Destination(shareRoot), ct));
 
     public Task<ConnectionTestResult> TestConnectionAsync(string destination, CredentialInput? credential, CancellationToken ct = default) =>
         InvokeAsync<ConnectionTestResult>(nameof(TestConnectionAsync), Write, _ =>

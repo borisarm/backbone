@@ -34,13 +34,59 @@ internal sealed class ServiceRuntimeInfo(TimeProvider timeProvider)
 
 /// <summary>
 /// Operaciones del servicio expuestas por IPC, ya autorizadas y con la entrada genérica validada por
-/// <see cref="ConnectionRpcTarget"/>. En HT-03: información del servicio y usuarios autorizados (HU-31).
+/// <see cref="ConnectionRpcTarget"/>. En HT-03: información del servicio y usuarios autorizados (HU-31). En HU-04:
+/// credenciales del NAS.
 /// </summary>
 internal sealed class BackboneOperations(
     ServiceRuntimeInfo runtime,
     SettingsStore settings,
-    IAccountDirectory accounts)
+    IAccountDirectory accounts,
+    ICredentialStore credentials)
 {
+    /// <summary>
+    /// HU-04 (RF-60, ADR-07): guarda o sustituye la credencial del recurso. El usuario no puede estar vacío ni tener
+    /// caracteres de control; ni el usuario ni la contraseña pueden tener NUL ni suplentes sueltas (no se pasarían intactos a
+    /// la API de Windows). Los errores no llevan valores.
+    /// </summary>
+    public async Task SaveCredentialAsync(string shareRoot, CredentialInput credential, CancellationToken ct)
+    {
+        var root = NormalizeShareRoot(shareRoot);
+        var issues = new List<ValidationIssue>();
+        if (string.IsNullOrWhiteSpace(credential.UserName) || !CredentialStore.IsStorable(credential.UserName, allowControl: false))
+        {
+            issues.Add(new ValidationIssue { Field = nameof(CredentialInput.UserName), Code = ValidationIssueCode.ValueOutOfRange });
+        }
+
+        if (!CredentialStore.IsStorable(credential.Password, allowControl: true))
+        {
+            issues.Add(new ValidationIssue { Field = nameof(CredentialInput.Password), Code = ValidationIssueCode.ValueOutOfRange });
+        }
+
+        if (issues.Count > 0)
+        {
+            throw BackboneException.ValidationFailed(new ValidationResult { Errors = issues });
+        }
+
+        await credentials.SaveAsync(root, credential, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>HU-04 (RF-62): usuario y fecha de la credencial guardada, nunca la contraseña.</summary>
+    public Task<CredentialInfo?> GetCredentialInfoAsync(string shareRoot, CancellationToken ct) =>
+        credentials.GetInfoAsync(NormalizeShareRoot(shareRoot), ct);
+
+    /// <summary>HU-04: borra la credencial del recurso; borrar una que no existe no es un error.</summary>
+    public async Task DeleteCredentialAsync(string shareRoot, CancellationToken ct) =>
+        await credentials.DeleteAsync(NormalizeShareRoot(shareRoot), ct).ConfigureAwait(false);
+
+    /// <summary>
+    /// Raíz normalizada del recurso (<see cref="CredentialStore.TryNormalizeShareRoot"/>). Se admite también un destino con
+    /// ruta (<c>\\nas\copias\pc</c>): la credencial es del recurso.
+    /// </summary>
+    private static string NormalizeShareRoot(string value) =>
+        CredentialStore.TryNormalizeShareRoot(value, out var root, out var issue)
+            ? root
+            : throw BackboneException.ValidationFailed(string.Empty, issue);
+
     public Task<ServiceInfo> GetServiceInfoAsync(CallerContext caller, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
