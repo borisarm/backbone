@@ -230,6 +230,16 @@ public sealed class ContractConventionTests
     }
 
     [Fact]
+    public void Run_issue_code_values_are_stable()
+    {
+        // Viajan por el cable y se guardan por nombre en los avisos del snapshot (§6.3): se añaden al final sin renumerar.
+        Assert.Equal(9, (int)RunIssueCode.ReadError);
+        Assert.Equal(12, (int)RunIssueCode.WarningsTruncated); // contrato 1.1
+        Assert.Equal(13, (int)RunIssueCode.SourceRootUnreadable); // contrato 1.2
+        Assert.Equal(13, Enum.GetValues<RunIssueCode>().Max(v => (int)v));
+    }
+
+    [Fact]
     public void No_interface_parameter_is_a_loose_password()
     {
         // M-1: una contraseña solo viaja dentro de CredentialInput (cuyo ToString la oculta), nunca como string suelto

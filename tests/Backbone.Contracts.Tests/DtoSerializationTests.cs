@@ -89,6 +89,26 @@ public sealed class DtoSerializationTests
     }
 
     [Fact]
+    public void Source_root_unreadable_issue_code_round_trips_with_its_stable_value()
+    {
+        // Contrato 1.2 (§8.4 "Memoria del motor", R11): la raíz de un origen no se pudo recorrer; Path es el alias.
+        var issue = new RunIssue
+        {
+            Severity = IssueSeverity.Warning,
+            Code = RunIssueCode.SourceRootUnreadable,
+            Path = "Sistema",
+            Message = "La carpeta tiene demasiados elementos para recorrerla con la memoria reservada a la copia.",
+        };
+
+        var json = JsonSerializer.Serialize(issue, ContractTypes.FormatterOptions);
+        var copy = JsonSerializer.Deserialize<RunIssue>(json, ContractTypes.FormatterOptions);
+
+        using var doc = JsonDocument.Parse(json);
+        Assert.Equal(13, doc.RootElement.GetProperty("Code").GetInt32());
+        Assert.Equal(issue, copy);
+    }
+
+    [Fact]
     public void Snapshot_too_large_error_code_round_trips_in_a_run_record_with_its_stable_value()
     {
         // Contrato 1.2 (§6.3, §7.4): copia con demasiados archivos y carpetas para un solo snapshot.

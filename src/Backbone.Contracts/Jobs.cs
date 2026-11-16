@@ -312,14 +312,18 @@ public enum ValidationIssueCode
     SnapshotPathInvalid = 25,
 
     /// <summary>
-    /// Contrato 1.2. Error: el origen es la carpeta de datos <c>%ProgramData%\Backbone</c> o está dentro de ella, comparando
-    /// rutas finales tras resolver puntos de reanálisis (RF-03, ADR-16, §8.3). <c>Field</c> = <c>Sources[i].Path</c>.
+    /// Contrato 1.2. Error: el origen es una carpeta protegida (la carpeta de datos <c>%ProgramData%\Backbone</c> o una
+    /// carpeta apartada <c>%ProgramData%\Backbone.untrusted-&lt;guid&gt;</c>, ADR-13) o está dentro de ella, comparando rutas
+    /// finales tras resolver puntos de reanálisis (RF-03, ADR-16, §8.3 "Carpetas protegidas"). También si hay más carpetas
+    /// apartadas de las que el servicio admite y el origen contiene <c>%ProgramData%</c> (§8.3).
+    /// <c>Field</c> = <c>Sources[i].Path</c>.
     /// </summary>
     SourceNotAllowed = 26,
 
     /// <summary>
-    /// Contrato 1.2. Aviso: el origen contiene la carpeta de datos <c>%ProgramData%\Backbone</c>, que se excluirá siempre
-    /// (exclusión obligatoria, ADR-16, §8.3). <c>Field</c> = <c>Sources[i].Path</c>. No impide guardar.
+    /// Contrato 1.2. Aviso: el origen contiene una carpeta protegida (la carpeta de datos <c>%ProgramData%\Backbone</c> o
+    /// una carpeta apartada <c>%ProgramData%\Backbone.untrusted-&lt;guid&gt;</c>), que se excluirá siempre (exclusión
+    /// obligatoria, ADR-16, §8.3). <c>Field</c> = <c>Sources[i].Path</c>. No impide guardar.
     /// </summary>
     SourceContainsDataFolder = 27,
 }

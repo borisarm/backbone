@@ -47,6 +47,42 @@ public sealed class BackupEngineFaultInjectionTests
         }
     }
 
+    [Fact]
+    public async Task HU13_The_sweep_covers_the_size_check_of_existing_objects_and_each_failure_of_it_is_a_repository_error()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var storage = new InMemoryRepositoryStorage();
+        var time = new ManualTimeProvider();
+        var source = SampleSource();
+        source.AddFile(DocumentsRoot + @"\copia de notas.txt", "hola, mundo"u8.ToArray()); // mismo contenido: objeto ya existente
+        await OpenOrInitializeAsync(storage, time, ct);
+        var probe = new FaultInjectingStorage(storage);
+        await RunAsync(probe, time, source, owner: FirstProcess);
+        var sizeChecks = probe.Log.Select((entry, index) => (entry, index)).Where(x => x.entry.Contains(": GetFileInfo objects/", StringComparison.Ordinal)).ToList();
+        Assert.NotEmpty(sizeChecks); // el barrido de los otros tests incluye esta operacion
+
+        foreach (var (entry, index) in sizeChecks)
+        {
+            foreach (var mode in new[] { FaultMode.Transient, FaultMode.Crash })
+            {
+                var fresh = new InMemoryRepositoryStorage();
+                var freshTime = new ManualTimeProvider();
+                await OpenOrInitializeAsync(fresh, freshTime, ct);
+                var faults = new FaultInjectingStorage(fresh) { FailAt = index + 1, Mode = mode };
+
+                var ex = await Record.ExceptionAsync(() => RunAsync(faults, freshTime, source, owner: FirstProcess));
+
+                Assert.True(ex is IOException or RepositoryException, $"{entry}, {mode}: {ex?.GetType().Name ?? "sin excepcion"}");
+                Assert.Empty(await ListSnapshotsAsync(fresh)); // nada publicado y no se convirtio en aviso de origen
+                await RepositoryInvariants.AssertConsistentAsync(fresh);
+                freshTime.Advance(TimeSpan.FromHours(1));
+                var next = await RunAsync(fresh, freshTime, source, owner: RestartedProcess);
+                Assert.Empty(next.Warnings);
+                AssertMatchesSource(await ReadEntriesAsync(fresh, next.Snapshot.Id), source);
+            }
+        }
+    }
+
     /// <summary>Repositorio y origen preparados igual en cada repetición.</summary>
     private sealed class Scenario(bool incremental)
     {
