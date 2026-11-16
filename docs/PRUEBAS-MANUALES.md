@@ -273,4 +273,33 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 
 **Resultado esperado:** rojo en menos de 15 s; recuperación automática.
 
+## PM-HU04-01 · Credencial guardada usada por una ejecución programada con la sesión cerrada
+
+**Cubre:** HU-04, criterio 5 (RF-60, ADR-07); y el criterio 3 sobre una instalación real.
+
+**Por qué es manual:** exige el servicio instalado como LocalSystem, un NAS real y cerrar la sesión de Windows. Las pruebas automáticas (`ShareCredentialProviderTests`) solo comprueban que otra instancia del almacén, sin cliente IPC ni perfil de usuario, obtiene la credencial con DPAPI de ámbito equipo y se la pasa a un doble de la conexión. La conexión SMB real es de HU-05 y la ejecución programada de HU-09/HU-13: este caso no se puede ejecutar completo hasta que existan.
+
+**Pasos**
+1. Instalar Backbone. Con la app, guardar usuario y contraseña del NAS para `\\<nas>\<recurso>` (usar una contraseña centinela reconocible, p. ej. `CENTINELA-hu04-<fecha>`).
+2. En PowerShell elevado, comprobar que existe un único archivo nuevo en `%ProgramData%\Backbone\credentials\` y que `Get-Acl` muestra propietario `BUILTIN\Administradores` y solo SYSTEM y Administradores con control total, sin herencia.
+3. Crear un trabajo con destino en ese recurso y programación diaria a dentro de 10 minutos. Reiniciar el equipo y **no iniciar sesión** (o cerrar la sesión de todos los usuarios).
+4. Pasada la hora, iniciar sesión y comprobar en el historial y en el Visor de eventos (origen `Backbone`) que la ejecución se conectó y terminó (2000 o 2001), sin 3001 (credenciales rechazadas) ni `CredentialRequired`.
+5. Borrar la credencial desde la app y repetir el paso 3: la ejecución debe fallar con `CredentialRequired` sin intentar conectar (en el NAS, ningún intento de inicio de sesión de la cuenta del equipo).
+6. Criterio 3: en PowerShell elevado, `Get-ChildItem $env:ProgramData\Backbone -Recurse -File | Select-String -SimpleMatch 'CENTINELA-hu04' -Encoding utf8` y lo mismo con `-Encoding unicode`: ninguna coincidencia (logs, configuración, historial, credenciales).
+
+**Resultado esperado:** la ejecución programada sin sesión usa la credencial guardada; sin credencial no se conecta; la contraseña no aparece en ningún archivo de `%ProgramData%\Backbone`.
+
+**Estado:** pendiente (requiere NAS, HU-05 y la ejecución programada).
+
+## PM-HU04-02 · Prueba automática de credenciales que requiere elevación
+
+**Cubre:** HU-04, criterios 1 y 3 con la política de producción: `CredentialStoreElevatedTests` (`Backbone.IntegrationTests`).
+
+**Por qué es manual:** sin elevar no se puede asignar Administradores como propietario; la prueba se omite (`Skip`).
+
+**Pasos** (PowerShell **elevado**, en la raíz del repositorio)
+1. `dotnet test tests\Backbone.IntegrationTests --filter "FullyQualifiedName~CredentialStoreElevatedTests"`.
+
+**Resultado esperado:** pasa y no aparece como omitida.
+
 **Estado:** pendiente.

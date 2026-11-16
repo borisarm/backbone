@@ -12,4 +12,7 @@ internal sealed class ServicePaths(string root)
     public string ConfigDirectory => Path.Combine(Root, "config");
 
     public string SettingsFile => Path.Combine(ConfigDirectory, "settings.json");
+
+    /// <summary><c>credentials\</c>: un archivo cifrado por recurso (§8.3, HU-04).</summary>
+    public string CredentialsDirectory => Path.Combine(Root, "credentials");
 }

@@ -133,11 +133,14 @@ Como Ana, quiero escribir una vez el usuario y la contraseña del NAS, para que 
 
 - **Fase** MVP · **Puntos** 5 · **Depende de** HT-03 · **Agente** backbone-service (backbone-app, backbone-security-review) · **Requisitos** RF-60, RF-62, ADR-07, RNF-06
 - **Criterios**
-  1. Dado un recurso `\\nas\Backups`, cuando guardo usuario y contraseña, entonces se crea un archivo en `credentials\` cifrado con DPAPI `LocalMachine` y entropía propia.
+  1. Dado un recurso `\\nas\Backups`, cuando guardo usuario y contraseña, entonces se crea un archivo en `credentials\` cifrado con DPAPI de ámbito equipo (`CryptProtectData` con `CRYPTPROTECT_LOCAL_MACHINE`, ADR-07) y entropía propia.
   2. `GetCredentialInfoAsync` devuelve el usuario y la fecha de actualización, nunca la contraseña.
   3. Una búsqueda de la contraseña en `%ProgramData%\Backbone` (logs, config, historial) no encuentra coincidencias.
   4. El campo de contraseña de la app usa `PasswordBox` y se vacía tras guardar.
   5. Con la sesión cerrada, una ejecución programada se conecta con esas credenciales.
+- **Decidido (revisión de seguridad de HU-04)**:
+  - INFORMATIVA-5: el archivo es `credentials\<hash-del-recurso>.bin`, con el SHA-256 en hexadecimal en minúsculas de la raíz del recurso normalizada (`\\servidor\recurso` en minúsculas, `UncPaths.TryParse`), una credencial por recurso (§8.3, RF-60).
+  - MEDIA-1: como la única protección de `credentials\*.bin` es la ACL local, la carpeta de datos nunca se copia al NAS (ADR-16, §8.3); se implementa en HU-07, HU-08 y HU-13.
 - **Decidido (nota de HT-04)**: el helper de saneado de textos no confiables compartido por servicio y app es `UntrustedText.Describe` de `Backbone.Contracts` (§6.1, §7.5), con el mismo comportamiento que `Untrusted.Describe` de Core. Todo nombre de recurso o de equipo, usuario del NAS o mensaje con valores leídos del NAS que el servicio registre o reenvíe, o que la app muestre, pasa por él.
 
 ### HU-05 · Probar la conexión al NAS
@@ -176,6 +179,8 @@ Como Ana, quiero elegir las carpetas que se copian y el destino en el NAS, para 
   3. Se rechazan: carpetas inexistentes, no NTFS, unidades de red; destinos no UNC, dentro de un origen o usados por otro trabajo. Cada error se muestra junto al campo.
   4. La validación vive en el servicio (`ValidateJobAsync`); la app no duplica reglas.
   5. `jobs.json` se escribe de forma atómica: matar el servicio a mitad no lo corrompe.
+  6. Dado un origen que es `%ProgramData%\Backbone`, una carpeta dentro de ella o un *junction* que apunta a ella o a su interior, cuando valido o guardo el trabajo, entonces `ValidateJobAsync`/`SaveJobAsync` lo rechazan con `SourceNotAllowed` en `Sources[i].Path` (comparando rutas finales, §8.3) y la app muestra el error junto al origen. Dado un origen que la contiene (`C:\`, `C:\ProgramData`), se guarda y la validación devuelve el aviso `SourceContainsDataFolder`.
+- **Decidido (revisión de seguridad de HU-04, MEDIA-1)**: la carpeta de datos nunca se copia al NAS (ADR-16, §8.3). backbone-service implementa la comprobación en la validación y su repetición al empezar cada ejecución; backbone-app muestra el error y el aviso. Requiere antes los códigos `SourceNotAllowed` y `SourceContainsDataFolder` en `Backbone.Contracts` (contrato 1.2, backbone-architect).
 
 ### HU-08 · Excluir archivos y carpetas
 Como Luis, quiero excluir archivos por patrones, para no copiar temporales ni carpetas enormes que no necesito.
@@ -187,6 +192,8 @@ Como Luis, quiero excluir archivos por patrones, para no copiar temporales ni ca
   3. Las *junctions* y los enlaces simbólicos no se siguen y se registran como omitidos.
   4. Los archivos de OneDrive solo en la nube se omiten sin descargarse (R4).
   5. La vista previa muestra cuántos archivos y bytes excluye cada patrón (F2).
+  6. Dado un trabajo con un origen que contiene `%ProgramData%\Backbone` (aviso `SourceContainsDataFolder`), cuando abro la sección Exclusiones, entonces veo una nota fija, que no se puede quitar, de que la carpeta de datos de Backbone se excluye siempre; la nota no forma parte de la lista de patrones (RF-04, §8.3).
+- **Decidido (revisión de seguridad de HU-04, MEDIA-1)**: la exclusión obligatoria la aplica el motor desde HU-13; esta historia solo añade su indicación en el editor (backbone-app).
 
 ### HU-09 · Programar un trabajo
 Como Ana, quiero que la copia se haga sola a la hora que elija, para no tener que acordarme.
@@ -245,6 +252,8 @@ Como Ana, quiero que cada copia guarde solo lo que ha cambiado y conserve las ve
   5. Un archivo ilegible se omite, aparece en `warnings` y la ejecución termina `CompletedWithWarnings`; si existía en el snapshot anterior, se conserva su versión anterior.
   6. El hash se calcula mientras se copia; si el contenido cambió, se usa el hash real (§6.4.2).
   7. Rutas de más de 260 caracteres funcionan en origen y destino (RNF-09).
+  8. Dado un origen que contiene la carpeta de datos (p. ej. `C:\`), cuando se ejecuta la copia, entonces ningún archivo de `%ProgramData%\Backbone` (en particular `credentials\*.bin`) aparece en el snapshot ni se sube como objeto, también leyendo desde la instantánea VSS, y la exclusión no genera avisos de ejecución. Dado un origen que tras guardarse se ha sustituido por un *junction* hacia la carpeta de datos, la ejecución termina `Failed` con `ValidationFailed` sin leer nada (§8.3).
+- **Decidido (revisión de seguridad de HU-04, MEDIA-1)**: exclusión obligatoria de la carpeta de datos (ADR-16, §8.3). El motor (backbone-core) acepta, aparte de los patrones del trabajo, rutas relativas al origen que no recorre nunca; el servicio (backbone-service, en `JobRunner`) calcula esa ruta a partir de las rutas finales y repite la comprobación de `SourceNotAllowed` al empezar cada ejecución.
 - **Pendiente de HT-04**: decidir cómo se traduce el fallo por manifiesto demasiado grande (más de 5 000 000 de entradas o más de 16 GiB, §6.3) a `BackboneErrorCode`/`RunIssueCode`, y si hace falta un código nuevo en el contrato (lo añadiría backbone-architect antes). Hoy Core lanza `InvalidOperationException`.
 
 ### HU-14 · Copiar ahora y cancelar
@@ -518,7 +527,7 @@ Las historias de una misma fila pueden desarrollarse en paralelo por agentes dis
 | HU-01 | MVP | 8 | backbone-installer | Pendiente |
 | HU-02 | MVP | 3 | backbone-installer | Pendiente |
 | HU-03 | F2 | 5 | backbone-app | Pendiente |
-| HU-04 | MVP | 5 | backbone-service | Pendiente |
+| HU-04 | MVP | 5 | backbone-service | Hecha (servicio; criterio 4 pendiente de la app; criterio 5 en PM-HU04-01) |
 | HU-05 | MVP | 3 | backbone-service | Pendiente |
 | HU-06 | MVP | 3 | backbone-service | Pendiente |
 | HU-07 | MVP | 5 | backbone-app | Pendiente |

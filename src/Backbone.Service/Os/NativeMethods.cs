@@ -4,7 +4,7 @@ namespace Backbone.Service.Os;
 
 /// <summary>
 /// Llamadas a la API de Windows del servicio (P/Invoke generado en compilación con <see cref="LibraryImportAttribute"/>).
-/// Firmas y códigos de error comprobados en Microsoft Learn (processthreadsapi.h, winbase.h, authz.h).
+/// Firmas y códigos de error comprobados en Microsoft Learn (processthreadsapi.h, winbase.h, authz.h, dpapi.h).
 /// </summary>
 internal static partial class NativeMethods
 {
@@ -152,7 +152,15 @@ internal static partial class NativeMethods
     internal const int FileRenameInfo = 3;
     internal const int FileDispositionInfo = 4;
     internal const int FileAttributeTagInfo = 9;
+    internal const int FileDispositionInfoEx = 21;
     internal const int FileRenameInfoEx = 22;
+
+    /// <summary>
+    /// Indicadores de <c>FILE_DISPOSITION_INFO_EX.Flags</c> (<c>FILE_DISPOSITION_FLAG_*</c>). Con semántica POSIX el nombre
+    /// desaparece al cerrar el handle que borra, aunque otros lo tengan abierto (sin quedar "pendiente de borrado").
+    /// </summary>
+    internal const uint FileDispositionFlagDelete = 0x1;
+    internal const uint FileDispositionFlagPosixSemantics = 0x2;
 
     /// <summary>Indicadores de <c>FILE_RENAME_INFO.Flags</c> con <see cref="FileRenameInfoEx"/> (ntifs.h, <c>FILE_RENAME_FLAG_*</c>).</summary>
     internal const uint FileRenameFlagReplaceIfExists = 0x1;
@@ -336,4 +344,50 @@ internal static partial class NativeMethods
 
     [LibraryImport("ntdll.dll")]
     internal static partial int RtlNtStatusToDosError(int status);
+
+    // ---- DPAPI (dpapi.h, crypt32.dll) ----
+
+    /// <summary><c>CRYPTPROTECT_UI_FORBIDDEN</c>: nunca se muestra interfaz (el servicio corre en la sesión 0).</summary>
+    internal const uint CryptProtectUiForbidden = 0x1;
+
+    /// <summary><c>CRYPTPROTECT_LOCAL_MACHINE</c>: clave del equipo, no del usuario (ADR-07).</summary>
+    internal const uint CryptProtectLocalMachine = 0x4;
+
+    /// <summary><c>DATA_BLOB</c> (<c>CRYPT_INTEGER_BLOB</c>): <c>DWORD cbData; BYTE *pbData;</c>.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct DataBlob
+    {
+        public uint Size;
+        public nint Data;
+    }
+
+    /// <summary>
+    /// <c>CryptProtectData</c>. <c>szDataDescr</c>, <c>pvReserved</c> y <c>pPromptStruct</c> se pasan siempre a NULL. El
+    /// <c>pbData</c> de salida se libera con <see cref="LocalFree"/>.
+    /// </summary>
+    [LibraryImport("crypt32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool CryptProtectData(
+        in DataBlob dataIn,
+        nint dataDescription,
+        in DataBlob optionalEntropy,
+        nint reserved,
+        nint promptStruct,
+        uint flags,
+        out DataBlob dataOut);
+
+    /// <summary>
+    /// <c>CryptUnprotectData</c>. <c>ppszDataDescr</c>, <c>pvReserved</c> y <c>pPromptStruct</c> se pasan siempre a NULL.
+    /// El <c>pbData</c> de salida (texto en claro) se pone a cero y se libera con <see cref="LocalFree"/>.
+    /// </summary>
+    [LibraryImport("crypt32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool CryptUnprotectData(
+        in DataBlob dataIn,
+        nint dataDescription,
+        in DataBlob optionalEntropy,
+        nint reserved,
+        nint promptStruct,
+        uint flags,
+        out DataBlob dataOut);
 }

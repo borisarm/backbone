@@ -147,6 +147,58 @@ public sealed class DataDirectoryGuardTests : IDisposable
     }
 
     [Fact]
+    [Trait("Story", "HU-04")]
+    public void A_conditional_callback_ACE_marked_inherited_is_not_compliant()
+    {
+        // B-1 (revisión de HT-03): "XA" = ACCESS_ALLOWED_CALLBACK_ACE condicional que concede control total a Todos, marcada
+        // como heredada (ID). La comprobación se hace sobre la DACL en bruto y solo admite ACE de tipo 0, así que se rechaza
+        // por su tipo, con independencia de cómo la represente FileSystemSecurity.GetAccessRules (que la lista como una regla
+        // de permiso sin la condición).
+        var sddl = "O:BAD:(A;ID;FA;;;SY)(A;ID;FA;;;BA)(XA;ID;FA;;;WD;(Member_of {SID(BU)}))";
+        var raw = new RawSecurityDescriptor(sddl);
+
+        Assert.Equal(AceType.AccessAllowedCallback, raw.DiscretionaryAcl![2].AceType);
+        Assert.Equal(AceFlags.Inherited, raw.DiscretionaryAcl[2].AceFlags);
+
+        Assert.False(DataDirectoryGuard.IsChildCompliant(raw));
+        Assert.False(DataDirectoryGuard.IsChildCompliant(raw, isDirectory: true));
+
+        // Se rechaza por el tipo, aunque sea de un SID fiable.
+        Assert.False(DataDirectoryGuard.IsChildCompliant(new RawSecurityDescriptor("O:BAD:(A;ID;FA;;;SY)(XA;ID;FA;;;BA;(Member_of {SID(BU)}))")));
+        Assert.True(DataDirectoryGuard.IsChildCompliant(new RawSecurityDescriptor("O:BAD:(A;ID;FA;;;SY)(A;ID;FA;;;BA)"))); // control
+    }
+
+    [Theory]
+    [Trait("Story", "HU-04")]
+    [InlineData("(XA;;FA;;;WD;(Member_of {SID(BU)}))")] // de callback condicional
+    [InlineData("(XD;;FA;;;WD;(Member_of {SID(BU)}))")] // de denegación con callback
+    [InlineData("(OA;;CC;bf967aba-0de6-11d0-a285-00aa003049e2;;WD)")] // de objeto
+    [InlineData("(A;;FA;;;WD)")] // de permiso normal para otro SID
+    public void A_root_or_canonical_file_DACL_with_any_extra_ACE_type_is_not_compliant(string extraAce)
+    {
+        var root = new RawSecurityDescriptor("O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" + extraAce);
+        var file = new RawSecurityDescriptor("O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)" + extraAce);
+
+        Assert.False(DataDirectoryGuard.IsRootCompliant(root));
+        Assert.False(DataDirectoryGuard.IsChildCompliant(file));
+        Assert.False(DataDirectoryGuard.IsCanonicalTrustedFileDacl(file, FileTrustPolicy.Default));
+
+        // Control: sin la ACE añadida, las dos son conformes.
+        Assert.True(DataDirectoryGuard.IsRootCompliant(new RawSecurityDescriptor("O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")));
+        Assert.True(DataDirectoryGuard.IsChildCompliant(new RawSecurityDescriptor("O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)")));
+    }
+
+    [Fact]
+    [Trait("Story", "HU-04")]
+    public void A_null_DACL_is_never_compliant()
+    {
+        var nullDacl = new RawSecurityDescriptor("O:BAD:NO_ACCESS_CONTROL");
+
+        Assert.False(DataDirectoryGuard.IsRootCompliant(nullDacl));
+        Assert.False(DataDirectoryGuard.IsChildCompliant(nullDacl));
+    }
+
+    [Fact]
     [Trait("Category", "Integration")]
     public void The_check_creates_the_missing_fixed_subdirectories_inheriting_from_the_root_when_elevated()
     {

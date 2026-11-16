@@ -31,8 +31,7 @@ public sealed partial class RpcDispatchTests : IAsyncLifetime
     [
         nameof(IBackboneService.GetStatusAsync), nameof(IBackboneService.GetJobsAsync), nameof(IBackboneService.SaveJobAsync),
         nameof(IBackboneService.DeleteJobAsync), nameof(IBackboneService.ValidateJobAsync), nameof(IBackboneService.RunNowAsync),
-        nameof(IBackboneService.CancelRunAsync), nameof(IBackboneService.SetPauseAsync), nameof(IBackboneService.SaveCredentialAsync),
-        nameof(IBackboneService.GetCredentialInfoAsync), nameof(IBackboneService.DeleteCredentialAsync),
+        nameof(IBackboneService.CancelRunAsync), nameof(IBackboneService.SetPauseAsync),
         nameof(IBackboneService.TestConnectionAsync), nameof(IBackboneService.GetStorageInfoAsync), nameof(IBackboneService.GetHistoryAsync),
         nameof(IBackboneService.GetRunDetailAsync), nameof(IBackboneService.GetSnapshotsAsync), nameof(IBackboneService.BrowseSnapshotAsync),
         nameof(IBackboneService.SearchSnapshotAsync), nameof(IBackboneService.GetFileVersionsAsync), nameof(IBackboneService.StartRestoreAsync),
@@ -49,12 +48,15 @@ public sealed partial class RpcDispatchTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Every_contract_method_is_covered_by_HT03_or_answers_NotSupported()
+    public async Task Every_contract_method_is_implemented_or_answers_NotSupported()
     {
         var implemented = new[]
         {
             nameof(IBackboneService.GetServiceInfoAsync), nameof(IBackboneService.GetAuthorizedUsersAsync),
             nameof(IBackboneService.AddAuthorizedUserAsync), nameof(IBackboneService.RemoveAuthorizedUserAsync),
+            // HU-04.
+            nameof(IBackboneService.SaveCredentialAsync), nameof(IBackboneService.GetCredentialInfoAsync),
+            nameof(IBackboneService.DeleteCredentialAsync),
         };
         var all = typeof(IBackboneService).GetMethods().Where(m => !m.IsSpecialName).Select(m => m.Name).ToHashSet();
 

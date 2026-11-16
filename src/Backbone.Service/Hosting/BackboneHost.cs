@@ -1,4 +1,5 @@
 using Backbone.Service.Ipc;
+using Backbone.Service.Nas;
 using Backbone.Service.Os;
 using Backbone.Service.Persistence;
 using Microsoft.Extensions.DependencyInjection;
@@ -81,6 +82,16 @@ internal static class BackboneHost
             sp.GetRequiredService<ILogger<SettingsStore>>(),
             sp.GetRequiredService<IAccountDirectory>()));
         services.AddSingleton<IAuthorizedUserList>(sp => sp.GetRequiredService<SettingsStore>());
+
+        // Credenciales del NAS (HU-04, ADR-07): DPAPI con ámbito equipo, un archivo por recurso en credentials\.
+        services.TryAddSingleton<IDataProtector, DpapiMachineProtector>();
+        services.TryAddSingleton<ICredentialStore>(sp => new CredentialStore(
+            sp.GetRequiredService<ServicePaths>().CredentialsDirectory,
+            sp.GetRequiredService<TrustedFile>(),
+            sp.GetRequiredService<IDataProtector>(),
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<ILogger<CredentialStore>>()));
+        services.AddSingleton<ShareCredentialProvider>();
 
         // IPC.
         services.AddSingleton<ServiceRuntimeInfo>();
