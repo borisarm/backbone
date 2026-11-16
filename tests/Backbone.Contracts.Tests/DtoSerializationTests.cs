@@ -89,6 +89,43 @@ public sealed class DtoSerializationTests
     }
 
     [Fact]
+    public void Snapshot_too_large_error_code_round_trips_in_a_run_record_with_its_stable_value()
+    {
+        // Contrato 1.2 (§6.3, §7.4): copia con demasiados archivos y carpetas para un solo snapshot.
+        var record = new RunRecord { RunId = 9, State = RunState.Failed, ErrorCode = BackboneErrorCode.SnapshotTooLarge, ErrorMessage = "Entry limit exceeded." };
+
+        var json = JsonSerializer.Serialize(record, ContractTypes.FormatterOptions);
+        var copy = JsonSerializer.Deserialize<RunRecord>(json, ContractTypes.FormatterOptions);
+
+        using var doc = JsonDocument.Parse(json);
+        Assert.Equal(1017, doc.RootElement.GetProperty("ErrorCode").GetInt32());
+        Assert.Null(ContractTypes.FindDifference(record, copy, nameof(RunRecord)));
+
+        var data = new BackboneErrorData { Code = BackboneErrorCode.SnapshotTooLarge, Message = "Entry limit exceeded." };
+        Assert.Equal(data, JsonSerializer.Deserialize<BackboneErrorData>(JsonSerializer.Serialize(data, ContractTypes.FormatterOptions), ContractTypes.FormatterOptions));
+    }
+
+    [Theory]
+    [InlineData(ValidationIssueCode.SourceNotAllowed, 26)]
+    [InlineData(ValidationIssueCode.SourceContainsDataFolder, 27)]
+    public void Data_folder_validation_codes_round_trip_with_their_stable_values(ValidationIssueCode code, int expected)
+    {
+        // Contrato 1.2 (ADR-16, §7.5): error y aviso de la carpeta de datos, en Sources[i].Path.
+        var result = code == ValidationIssueCode.SourceNotAllowed
+            ? new ValidationResult { Errors = [new ValidationIssue { Field = "Sources[0].Path", Code = code, Value = @"C:\ProgramData\Backbone" }] }
+            : new ValidationResult { Warnings = [new ValidationIssue { Field = "Sources[0].Path", Code = code, Value = @"C:\" }] };
+
+        var json = JsonSerializer.Serialize(result, ContractTypes.FormatterOptions);
+        var copy = JsonSerializer.Deserialize<ValidationResult>(json, ContractTypes.FormatterOptions);
+
+        using var doc = JsonDocument.Parse(json);
+        var list = code == ValidationIssueCode.SourceNotAllowed ? "Errors" : "Warnings";
+        Assert.Equal(expected, doc.RootElement.GetProperty(list)[0].GetProperty("Code").GetInt32());
+        Assert.Null(ContractTypes.FindDifference(result, copy, nameof(ValidationResult)));
+        Assert.Equal(code == ValidationIssueCode.SourceContainsDataFolder, copy?.IsValid);
+    }
+
+    [Fact]
     public void Dates_keep_UTC_and_100ns_precision()
     {
         var instant = new DateTimeOffset(2026, 1, 31, 10, 22, 1, TimeSpan.Zero).AddTicks(1_234_567);

@@ -310,4 +310,16 @@ public enum ValidationIssueCode
 
     /// <summary>Ruta o identificador de snapshot con formato no válido (<see cref="SnapshotPaths"/>).</summary>
     SnapshotPathInvalid = 25,
+
+    /// <summary>
+    /// Contrato 1.2. Error: el origen es la carpeta de datos <c>%ProgramData%\Backbone</c> o está dentro de ella, comparando
+    /// rutas finales tras resolver puntos de reanálisis (RF-03, ADR-16, §8.3). <c>Field</c> = <c>Sources[i].Path</c>.
+    /// </summary>
+    SourceNotAllowed = 26,
+
+    /// <summary>
+    /// Contrato 1.2. Aviso: el origen contiene la carpeta de datos <c>%ProgramData%\Backbone</c>, que se excluirá siempre
+    /// (exclusión obligatoria, ADR-16, §8.3). <c>Field</c> = <c>Sources[i].Path</c>. No impide guardar.
+    /// </summary>
+    SourceContainsDataFolder = 27,
 }

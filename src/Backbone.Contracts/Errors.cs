@@ -64,6 +64,13 @@ public enum BackboneErrorCode
 
     /// <summary>No hay credencial guardada para el recurso: el servicio nunca conecta al NAS sin credencial explícita.</summary>
     CredentialRequired = 1016,
+
+    /// <summary>
+    /// Contrato 1.2. La copia tiene demasiados archivos y carpetas para un solo snapshot: más de 5 000 000 de entradas o un
+    /// manifiesto (el listado, no el contenido copiado) de más de 16 GiB (§6.3). No se publica snapshot; el anterior sigue
+    /// siendo el último restaurable. Solución: dividir el trabajo en varios. Solo aparece en <see cref="RunRecord.ErrorCode"/>.
+    /// </summary>
+    SnapshotTooLarge = 1017,
 }
 
 /// <summary>

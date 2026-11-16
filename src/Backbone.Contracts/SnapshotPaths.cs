@@ -54,7 +54,7 @@ public static class SnapshotPaths
     /// <summary>
     /// Indica si <paramref name="segment"/> es un nombre de archivo o carpeta admitido: no vacío, como mucho
     /// <see cref="ContractLimits.MaxSegmentLength"/> caracteres, distinto de <c>.</c> y <c>..</c>, sin <c>\ / : * ? " &lt; &gt; |</c>
-    /// ni caracteres de control, sin punto ni espacio final y sin nombres de dispositivo reservados (<c>CON</c>, <c>NUL</c>,
+    /// ni caracteres de control, UTF-16 válido (sin suplentes sueltas), sin punto ni espacio final y sin nombres de dispositivo reservados (<c>CON</c>, <c>NUL</c>,
     /// <c>COM1</c>, <c>CONIN$</c>… también con extensión, como <c>CON.txt</c>).
     /// </summary>
     /// <param name="segment">Nombre.</param>
@@ -66,9 +66,21 @@ public static class SnapshotPaths
             return false;
         }
 
-        foreach (var c in segment)
+        for (var i = 0; i < segment.Length; i++)
         {
+            var c = segment[i];
             if (char.IsControl(c) || c is '\\' or '/' or ':' or '*' or '?' or '"' or '<' or '>' or '|')
+            {
+                return false;
+            }
+
+            // Una suplente suelta no se puede representar en UTF-8 (manifiesto, JSON del IPC) y daría nombres distintos al
+            // guardarlos y al leerlos (U+FFFD); se exige un par alto-bajo completo.
+            if (char.IsHighSurrogate(c) && i + 1 < segment.Length && char.IsLowSurrogate(segment[i + 1]))
+            {
+                i++;
+            }
+            else if (char.IsSurrogate(c))
             {
                 return false;
             }

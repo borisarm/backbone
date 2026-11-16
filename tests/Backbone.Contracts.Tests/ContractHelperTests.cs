@@ -88,6 +88,31 @@ public sealed class ContractHelperTests
         Assert.False(SnapshotPaths.IsValidSegment(new string('a', ContractLimits.MaxSegmentLength + 1)));
     }
 
+    [Fact]
+    public void Segments_with_lone_surrogates_are_rejected_and_complete_pairs_accepted()
+    {
+        // Contrato 1.2 (petición de backbone-service en HU-04): una suplente suelta no cabe en UTF-8 y se guardaría como U+FFFD.
+        // Se prueban en un Fact y no en InlineData para no depender de cómo serializa xUnit cadenas UTF-16 no válidas.
+        string[] invalid = ["a\uD800", "\uD800b", "a\uDC00b", "\uDC00\uD800", "x\uD83D", "\uDE00", "ok\U0001F4C1\uD800"];
+        foreach (var segment in invalid)
+        {
+            Assert.False(SnapshotPaths.IsValidSegment(segment), $"Aceptado: {UntrustedText.Describe(segment)}");
+            Assert.False(SnapshotPaths.IsValidPath("Documentos/" + segment));
+        }
+
+        Assert.True(SnapshotPaths.IsValidSegment("\U0001F4C1"));
+        Assert.True(SnapshotPaths.IsValidSegment("a\U0001F4C1b\U0001F600"));
+    }
+
+    [Fact]
+    public void A_UNC_share_with_a_lone_surrogate_is_not_allowed()
+    {
+        Assert.False(UncPaths.TryParse("\\\\nas\\copias\uD800", out _, out _, out var issue));
+        Assert.Equal(ValidationIssueCode.DestinationNotAllowed, issue);
+        Assert.False(UncPaths.TryParse("\\\\nas\\copias\\ruta\uDC00", out _, out _, out _));
+        Assert.True(UncPaths.TryParse("\\\\nas\\copias\\\U0001F4C1", out _, out _, out _));
+    }
+
     [Theory]
     [InlineData("Documentos", true)]
     [InlineData("Documentos/Facturas/2026/enero.pdf", true)]
