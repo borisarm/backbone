@@ -265,7 +265,8 @@ public sealed class ManifestLimitsTests
                 await overLimit.AddAsync(entry, Ct);
             }
 
-            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => overLimit.AddAsync(entries[3], Ct));
+            var ex = await Assert.ThrowsAsync<RepositoryException>(() => overLimit.AddAsync(entries[3], Ct));
+            Assert.Equal(RepositoryErrorKind.SnapshotTooLarge, ex.Kind);
             Assert.Contains("3 entradas", ex.Message, StringComparison.Ordinal);
             await Assert.ThrowsAsync<InvalidOperationException>(() => overLimit.CompleteAsync(new SnapshotCompletion { Status = SnapshotStatus.Completed }, Ct));
         }
@@ -307,7 +308,8 @@ public sealed class ManifestLimitsTests
                 await small.AddAsync(entry, Ct);
             }
 
-            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => small.CompleteAsync(new SnapshotCompletion { Status = SnapshotStatus.CompletedWithWarnings }, Ct));
+            var ex = await Assert.ThrowsAsync<RepositoryException>(() => small.CompleteAsync(new SnapshotCompletion { Status = SnapshotStatus.CompletedWithWarnings }, Ct));
+            Assert.Equal(RepositoryErrorKind.SnapshotTooLarge, ex.Kind);
             Assert.Contains("tamaño máximo", ex.Message, StringComparison.Ordinal);
         }
 
@@ -318,13 +320,14 @@ public sealed class ManifestLimitsTests
         var (_, _, earlyRepository, earlyLock) = await CreateAsync();
         await using var early = await earlyRepository.CreateSnapshotAsync(Start(), earlyLock, Ct);
         early.MaxManifestBytes = 500;
-        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        var earlyError = await Assert.ThrowsAsync<RepositoryException>(async () =>
         {
             foreach (var entry in Files(20))
             {
                 await early.AddAsync(entry, Ct);
             }
         });
+        Assert.Equal(RepositoryErrorKind.SnapshotTooLarge, earlyError.Kind);
         Assert.InRange(early.EntryCount, 1, 19);
     }
 
