@@ -12,9 +12,12 @@ namespace Backbone.Service.Tests.Ipc;
 /// a veces los datos que el cliente aún no había leído).
 /// </summary>
 /// <remarks>
-/// Prueba de estrés acotada (unos miles de conexiones, alrededor de un segundo): corre en la batería normal. La concurrencia se
-/// mantiene por debajo de <see cref="BackboneIpc.MaxConnections"/> para no mezclar el corte por servidor lleno (que sí
-/// desconecta sin respuesta, a propósito) con lo que se comprueba.
+/// Prueba de estrés acotada (unos miles de conexiones, alrededor de un segundo): corre en la batería normal. El servidor de
+/// esta prueba admite muchas más conexiones que clientes simultáneos para no mezclar el corte por servidor lleno (que sí
+/// desconecta sin respuesta, a propósito) con lo que se comprueba: el servidor quita cada conexión un poco después de que
+/// el cliente la cierre, y con carga en la máquina (toda la batería en paralelo) ese retraso bastaba para llegar a
+/// <see cref="BackboneIpc.MaxConnections"/> con solo 6 clientes. El límite de 4 por cuenta sí actúa (todas las conexiones
+/// son de la misma cuenta) y también debe responder <c>NotAuthorized</c>.
 /// </remarks>
 [Trait("Story", "HT-03")]
 public sealed class RejectionDeliveryStressTests
@@ -22,6 +25,7 @@ public sealed class RejectionDeliveryStressTests
     // Con el cierre anterior fallaban unas pocas por cada mil; 3000 conexiones tardan menos de un segundo.
     private const int Iterations = 3000;
     private const int Workers = 6;
+    private const int ServerMaxConnections = Workers * 8;
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -31,9 +35,7 @@ public sealed class RejectionDeliveryStressTests
     public async Task A_rejected_client_always_receives_NotAuthorized_before_the_connection_closes(bool notInList)
     {
         Assert.SkipWhen(notInList && WindowsTestEnvironment.IsElevated, "Elevado, el usuario está autorizado por ser administrador.");
-        Assert.True(Workers < BackboneIpc.MaxConnections);
-
-        await using var server = await PipeServerHarness.StartAsync(authorizeCurrentUser: false);
+        await using var server = await PipeServerHarness.StartAsync(authorizeCurrentUser: false, maxConnections: ServerMaxConnections);
         var level = notInList ? TokenImpersonationLevel.Impersonation : TokenImpersonationLevel.Identification;
         var failures = new ConcurrentQueue<string>();
         var remaining = Iterations;
@@ -60,7 +62,21 @@ public sealed class RejectionDeliveryStressTests
             },
             Ct)));
 
-        Assert.Empty(failures);
+        var log = server.Logs.AllText();
+        Assert.True(
+            failures.IsEmpty,
+            $"{failures.Count} fallos; servidor lleno {CountOf(log, "ya hay")} veces; demasiadas por cuenta {CountOf(log, "TooManyConnections")}; primero: {failures.FirstOrDefault()}");
         await server.WaitForConnectionCountAsync(0);
+    }
+
+    private static int CountOf(string text, string value)
+    {
+        var count = 0;
+        for (var i = text.IndexOf(value, StringComparison.Ordinal); i >= 0; i = text.IndexOf(value, i + value.Length, StringComparison.Ordinal))
+        {
+            count++;
+        }
+
+        return count;
     }
 }

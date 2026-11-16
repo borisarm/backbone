@@ -177,8 +177,14 @@ public sealed class ConnectionAuthorizationTests : IAsyncLifetime
 
         _server.Accounts.SetAdministrator(TestSids.Ana, false);
 
-        await RpcAssert.FailsWithAsync(BackboneErrorCode.NotAuthorized, () => client.Proxy.GetServiceInfoAsync(Ct));
-        await _server.WaitRejectedClosedAsync(client);
+        // Revocación (§7.3): cierre inmediato, sin el plazo del rechazo; la llamada recibe NotAuthorized o ve la conexión cerrada.
+        var ex = await Record.ExceptionAsync(() => client.Proxy.GetServiceInfoAsync(Ct));
+        Assert.True(
+            ex is StreamJsonRpc.ConnectionLostException
+            || (ex is StreamJsonRpc.RemoteInvocationException rpc && rpc.ErrorCode == (int)BackboneErrorCode.NotAuthorized),
+            ex?.ToString() ?? "La llamada no ha fallado.");
+        await client.WaitClosedAsync();
+        Assert.True(client.Channel.IsDisposed);
     }
 
     [Fact]

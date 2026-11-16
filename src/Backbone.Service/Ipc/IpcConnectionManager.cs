@@ -141,7 +141,12 @@ internal sealed partial class IpcConnectionManager : IAsyncDisposable
         }
     }
 
-    /// <summary>Contabiliza la conexión para su SID; <see langword="false"/> si la cuenta ya tiene el máximo.</summary>
+    /// <summary>
+    /// Contabiliza la conexión para su SID; <see langword="false"/> si la cuenta ya tenía el máximo. La conexión cuenta en
+    /// el SID también en ese caso, hasta que se cierre (<see cref="Remove"/>): una conexión rechazada por superar el límite
+    /// ocupa una instancia del pipe mientras espera a cerrarse, y si no contara una cuenta podría reconectar en bucle y
+    /// recuperar su hueco en cuanto se cerrase una de las suyas (§7.1, B-4).
+    /// </summary>
     internal bool TryCountConnection(IpcConnection connection, string sid)
     {
         lock (_gate)
@@ -152,14 +157,18 @@ internal sealed partial class IpcConnectionManager : IAsyncDisposable
             }
 
             _perSid.TryGetValue(sid, out var count);
-            if (count >= _options.MaxConnectionsPerSid)
-            {
-                return false;
-            }
-
             _perSid[sid] = count + 1;
             connection.CountedSid = sid;
-            return true;
+            return count < _options.MaxConnectionsPerSid;
+        }
+    }
+
+    /// <summary>Conexiones contabilizadas para <paramref name="sid"/> (autorizadas, pendientes o rechazadas sin cerrar).</summary>
+    internal int CountForSid(string sid)
+    {
+        lock (_gate)
+        {
+            return _perSid.GetValueOrDefault(sid);
         }
     }
 

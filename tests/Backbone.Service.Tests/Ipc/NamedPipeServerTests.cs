@@ -273,4 +273,75 @@ public sealed class NamedPipeServerTests
         Assert.Equal(TokenImpersonationLevel.Impersonation, connection.Identity.ImpersonationLevel);
         Assert.Equal(WindowsTestEnvironment.IsElevated, connection.Identity.IsElevated);
     }
+
+    /// <summary>
+    /// Un cliente rechazado que manda peticiones y nunca lee: con <c>outBufferSize: 0</c> las respuestas del servidor se quedan
+    /// bloqueadas en la escritura. Al vencer <see cref="IpcOptions.RejectionLinger"/> la conexión se cierra igualmente, se
+    /// quita del gestor y la instancia del pipe se libera (se pueden volver a abrir todas las conexiones).
+    /// </summary>
+    [Theory]
+    [InlineData(4, "Rejected")] // menos que el límite de peticiones simultáneas: cierra el plazo
+    [InlineData(500, "Rejected|TooManyRequests")] // en cadena: normalmente cierra antes el límite de peticiones simultáneas
+    public async Task A_rejected_client_that_sends_requests_and_never_reads_is_cut_and_its_instance_released(int requests, string reasons)
+    {
+        await using var server = await PipeServerHarness.StartAsync();
+        var pipe = await server.OpenAsync(TokenImpersonationLevel.Identification);
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        using var stopWriting = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        var writer = Task.Run(
+            async () =>
+            {
+                try
+                {
+                    for (var id = 1; id <= requests; id++)
+                    {
+                        await RawFraming.WriteAsync(pipe, $$"""{"jsonrpc":"2.0","id":{{id}},"method":"GetServiceInfoAsync","params":[]}""", stopWriting.Token);
+                    }
+                }
+                catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException)
+                {
+                    // El servidor ha cortado (o la prueba ha terminado).
+                }
+            },
+            CancellationToken.None);
+
+        while (!server.Logs.AllText().Contains("cerrada (", StringComparison.Ordinal))
+        {
+            Assert.True(watch.Elapsed < Wait, "La conexión rechazada no se ha cerrado.");
+            await Task.Delay(20, Ct);
+        }
+
+        await server.WaitForConnectionCountAsync(0);
+
+        Assert.True(
+            watch.Elapsed < server.Options.RejectionLinger + TimeSpan.FromSeconds(3),
+            $"La conexión se ha cerrado a los {watch.Elapsed}.");
+        Assert.Matches($@"cerrada \(({reasons})\)", server.Logs.AllText());
+        // El servidor ha cortado su extremo: el cliente ve el final del flujo (o el pipe roto) sin cerrar el suyo.
+        Assert.True(await RawFraming.WaitForEndOfStreamAsync(pipe, Wait, Ct));
+        await stopWriting.CancelAsync();
+        await writer.WaitAsync(Wait, Ct);
+
+        // Ninguna instancia queda retenida: caben otra vez todas las conexiones (el pipe admite MaxConnections + 1 instancias,
+        // la que sobra es la que escucha; una retenida haría fallar la última).
+        var pipes = new List<NamedPipeClientStream>();
+        try
+        {
+            for (var i = 0; i < BackboneIpc.MaxConnections; i++)
+            {
+                pipes.Add(await server.OpenAsync());
+            }
+
+            await server.WaitForConnectionCountAsync(BackboneIpc.MaxConnections);
+        }
+        finally
+        {
+            foreach (var p in pipes)
+            {
+                await p.DisposeAsync();
+            }
+
+            await pipe.DisposeAsync();
+        }
+    }
 }

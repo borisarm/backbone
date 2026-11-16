@@ -435,7 +435,7 @@ Objetos troceados (*content-defined chunking*, FastCDC, tamaño medio 1 MiB) emp
 ### 7.1 Transporte
 
 - Named pipe `Backbone.Service.v1` (`\\.\pipe\Backbone.Service.v1`), dúplex, asíncrono, mensajes con `HeaderDelimitedMessageHandler` y `SystemTextJsonFormatter`.
-- Una conexión por instancia de la app; el servidor admite hasta 8 conexiones simultáneas, y como mucho 4 por SID para que un usuario no agote las instancias (B-4).
+- Una conexión por instancia de la app; el servidor admite hasta 8 conexiones simultáneas, y como mucho 4 por SID para que un usuario no agote las instancias (B-4). Una conexión que supera el límite de su SID se rechaza con `NotAuthorized` (cierre ordenado, B-2) y **sigue contando** en ese SID mientras espera a cerrarse, para que una cuenta no pueda ocupar las instancias globales reconectando una y otra vez.
 - Versión: `GetServiceInfoAsync` devuelve la versión del contrato; la app muestra un aviso si no coincide en la versión mayor.
 - Constantes en `Backbone.Contracts`: `BackboneIpc.PipeName` (`Backbone.Service.v1`; el sufijo es la versión mayor del contrato), `BackboneIpc.MaxConnections` (8), `BackboneIpc.MaxRunProgressEventsPerSecond` (4), `BackboneIpc.MaxMessageBytes` (4 MiB) y `ContractVersion` (`Value = "1.2"`, `Major`, `Minor`, `IsCompatibleWith`). Los límites de las entradas están en `ContractLimits` (§7.5).
 - `ContractVersion` es semántica: un cambio incompatible (quitar o renombrar un método, propiedad o valor de enumerado, cambiar un tipo o un significado) sube la **mayor** y el nombre del pipe; añadir métodos, propiedades opcionales o valores de enumerado sube la **menor**.
@@ -444,6 +444,16 @@ Objetos troceados (*content-defined chunking*, FastCDC, tamaño medio 1 MiB) emp
 - Límites por conexión en el servidor (B-2):
   - **Identificación**: si el primer mensaje del cliente no llega en **5 s** desde la conexión, el servidor la cierra. Hasta ese mensaje no se puede suplantar al cliente ni conocer su identidad, y una conexión sin identificar ocupa una de las instancias del pipe.
   - **Peticiones simultáneas**: como máximo **16** peticiones leídas y aún sin respuesta por conexión. La petición número 17 no se atiende: el servidor **cierra la conexión** (no responde con un error). Las notificaciones del cliente no cuentan.
+  - **Cierre ordenado tras un rechazo**: cuando el servidor responde `NotAuthorized` a una conexión que **aún no estaba autorizada** (rechazo desde el estado pendiente: identidad no establecida, nivel de suplantación insuficiente, SID fuera de la lista o no administrador, o demasiadas conexiones del SID, B-4), la conexión pasa a estado **rechazado** y no se cierra en ese momento:
+    - toda llamada posterior recibe `NotAuthorized`;
+    - no recibe eventos;
+    - no puede pasar a autorizada, aunque entretanto el usuario se añada a `authorizedUsers` (tiene que abrir una conexión nueva);
+    - se cierra cuando la cierra el cliente o, como mucho, a los **2 s** (`RejectionLinger`), plazo menor que el de identificación (5 s) para que una conexión rechazada nunca ocupe una instancia más que una sin identificar.
+
+    Motivo: si el servidor cerrase el pipe justo después de escribir la respuesta, el cliente podría perderla y ver "conexión perdida" (y mostrar "Reconectando") en vez de "no autorizado" (§9.1).
+  - La revocación de una conexión **ya autorizada** no sigue este cierre ordenado: se cierra de inmediato (§7.3).
+  - **Mensaje único**: todo rechazo (cierre ordenado, incluido el exceso de conexiones del SID) y toda revocación (§7.3) usan el mismo error `NotAuthorized` con el mismo texto, `"The caller is not authorized to use the service."`, sin revelar el motivo. El motivo concreto solo va al log del servicio.
+  - **Sin tope global de conexiones sin identificar** (decisión, backbone-service): se descarta reservar instancias o limitar cuántas de las 8 pueden estar sin identificar o rechazadas. Con 8 instancias, cualquier tope (3 o 4) bloquearía también a clientes legítimos nuevos, que empiezan sin identificar, y no añade protección real: las conexiones sin identificar ya están acotadas por el plazo de identificación de 5 s y por la ACL del pipe (solo administradores y cuentas de `authorizedUsers`), y las rechazadas por los 2 s de `RejectionLinger`.
 - **Servidor auténtico (A-1)**:
   - El servidor crea la primera instancia del pipe con `PipeOptions.FirstPipeInstance` (`FILE_FLAG_FIRST_PIPE_INSTANCE`). Si falla porque ya existe un pipe con ese nombre, el servicio **no arranca**, lo registra en el Visor de eventos (1002, §8.5) y deja que el SCM aplique la recuperación.
   - El cliente, nada más conectar y **antes de enviar ningún mensaje**, comprueba, en este orden, sobre el handle de su extremo del pipe:
@@ -541,7 +551,8 @@ Todos los DTO son `record` inmutables en `Backbone.Contracts`. Las fechas viajan
   - La elevación se calcula del token del cliente (grupo Administradores habilitado), nunca de lo que diga el cliente.
   - La conexión se rechaza si el nivel de suplantación del cliente es `Anonymous` o `Identification`: hace falta `Impersonation` para §8.6 y §8.7.
   - Al quitar un SID de la lista, se cierran sus conexiones.
-  - Límite de 4 conexiones por SID (§7.1).
+  - **Revocación frente a rechazo**: si una conexión **ya autorizada** deja de estarlo (su SID se quita de la lista o deja de ser administrador), la conexión se **cierra de inmediato** (se libera el `JsonRpc` y se cancela lo que esté en curso en esa conexión). Por eso no se garantiza la respuesta: la llamada que detecta la revocación recibe `NotAuthorized` o ve la conexión cerrada; al reconectar, la nueva conexión recibe `NotAuthorized` (mismo mensaje único que el rechazo, §7.1). La app solo mira el código de error, nunca el texto. Una conexión que nunca llegó a autorizarse se rechaza con el cierre ordenado de §7.1 (B-2): queda rechazada hasta que el cliente cierra o pasan 2 s, y no puede pasar a autorizada aunque se añada su SID.
+  - Límite de 4 conexiones por SID (§7.1); las rechazadas por superarlo cuentan en el SID hasta que se cierran.
   - Cada operación de escritura se audita en el log con el SID, el nombre de la cuenta y el nombre del método, **sin argumentos**; ni rutas ni datos de credenciales.
 - **Propiedad de las restauraciones (A-2)**: cada restauración pertenece al SID que la inició. `ResolveRestoreConflictAsync` y `CancelRestoreAsync` desde otro SID → `NotAuthorized`. `RestoreProgress` y `RestoreConflict` solo se envían a las conexiones de ese SID. Para no perder eventos emitidos antes de que llegue la respuesta, el cliente puede proponer `RestoreRequest.RestoreId`; si está en uso → `ValidationFailed` con `IdAlreadyInUse`.
 

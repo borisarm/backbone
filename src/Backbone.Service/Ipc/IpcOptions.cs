@@ -13,6 +13,9 @@ internal sealed class IpcOptions
     /// <summary>Máximo de conexiones simultáneas de una misma cuenta (§7.1, B-4).</summary>
     public const int DefaultMaxConnectionsPerSid = 4;
 
+    private TimeSpan _identificationTimeout = TimeSpan.FromSeconds(5);
+    private TimeSpan _rejectionLinger = TimeSpan.FromSeconds(2);
+
     public string PipeName { get; init; } = BackboneIpc.PipeName;
 
     public int MaxConnections { get; init; } = BackboneIpc.MaxConnections;
@@ -25,14 +28,36 @@ internal sealed class IpcOptions
     /// Tiempo máximo entre la conexión y el primer mensaje (sin él no se conoce la identidad del cliente). Corto (B-2): una
     /// conexión sin identificar ocupa una de las <see cref="MaxConnections"/> instancias del pipe.
     /// </summary>
-    public TimeSpan IdentificationTimeout { get; init; } = TimeSpan.FromSeconds(5);
+    /// <remarks>Mayor que <see cref="RejectionLinger"/> (si se reducen los dos, se fija antes <see cref="RejectionLinger"/>).</remarks>
+    /// <exception cref="ArgumentOutOfRangeException">No es positivo o no es mayor que <see cref="RejectionLinger"/>.</exception>
+    public TimeSpan IdentificationTimeout
+    {
+        get => _identificationTimeout;
+        init
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(value, TimeSpan.Zero);
+            ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(value, _rejectionLinger);
+            _identificationTimeout = value;
+        }
+    }
 
     /// <summary>
     /// Tiempo máximo que una conexión rechazada (<c>NotAuthorized</c>) sigue abierta esperando a que el cliente cierre. Da
     /// tiempo a que el cliente procese la respuesta antes de que el servidor corte (cortar antes descarta lo que el cliente no
-    /// ha leído). Corto (B-2), como <see cref="IdentificationTimeout"/>: mientras tanto ocupa una instancia del pipe.
+    /// ha leído). Corto (B-2) y menor que <see cref="IdentificationTimeout"/>, para que una conexión rechazada nunca ocupe una
+    /// instancia del pipe más que una sin identificar.
     /// </summary>
-    public TimeSpan RejectionLinger { get; init; } = TimeSpan.FromSeconds(2);
+    /// <exception cref="ArgumentOutOfRangeException">Es negativo o no es menor que <see cref="IdentificationTimeout"/>.</exception>
+    public TimeSpan RejectionLinger
+    {
+        get => _rejectionLinger;
+        init
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(value, TimeSpan.Zero);
+            ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(value, _identificationTimeout);
+            _rejectionLinger = value;
+        }
+    }
 
     /// <summary>
     /// Máximo de peticiones simultáneas (leídas y sin responder) de una conexión (B-2). Al superarlo se cierra la conexión.

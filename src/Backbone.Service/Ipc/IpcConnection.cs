@@ -13,15 +13,20 @@ namespace Backbone.Service.Ipc;
 /// <list type="bullet">
 /// <item>La identidad se lee con el primer mensaje (antes no se puede suplantar). Si no llega en
 /// <see cref="IpcOptions.IdentificationTimeout"/>, se cierra la conexión.</item>
-/// <item>Cada llamada se autoriza de nuevo (<see cref="Authorize"/>). Un rechazo responde <c>NotAuthorized</c> y la conexión
-/// queda rechazada: se cierra en cuanto el cliente cierra su extremo o, como mucho, pasado
-/// <see cref="IpcOptions.RejectionLinger"/> (cierre ordenado: el cliente siempre llega a leer la respuesta).</item>
+/// <item>Cada llamada se autoriza de nuevo (<see cref="Authorize"/>). Un rechazo de una conexión aún no autorizada responde
+/// <c>NotAuthorized</c> y la conexión queda rechazada: se cierra en cuanto el cliente cierra su extremo o, como mucho, pasado
+/// <see cref="IpcOptions.RejectionLinger"/> (cierre ordenado: el cliente siempre llega a leer la respuesta). La revocación
+/// de una conexión ya autorizada (en una llamada o en <see cref="Revalidate"/>) la cierra de inmediato, cancelando lo que
+/// esté en curso (§7.3).</item>
 /// <item>Al cerrarse (por el cliente, de forma abrupta o no, o por el servidor) se cancelan las llamadas en curso, se
 /// liberan el <see cref="JsonRpc"/>, el pipe y los temporizadores, y se quita del <see cref="IpcConnectionManager"/>.</item>
 /// </list>
 /// </remarks>
 internal sealed partial class IpcConnection : IAsyncDisposable
 {
+    /// <summary>Texto de <c>NotAuthorized</c> para cualquier motivo de rechazo o revocación de la conexión.</summary>
+    internal const string NotAuthorizedMessage = "The caller is not authorized to use the service.";
+
     private readonly IClientChannel _channel;
     private readonly IpcConnectionManager _manager;
     private readonly CallerAuthorizer _authorizer;
@@ -117,22 +122,31 @@ internal sealed partial class IpcConnection : IAsyncDisposable
     /// <summary>
     /// Autoriza una llamada contra la lista y la pertenencia actuales (§7.3). La primera llamada identifica la conexión.
     /// </summary>
-    /// <exception cref="BackboneException"><see cref="BackboneErrorCode.NotAuthorized"/>; la conexión se cierra tras responder.</exception>
+    /// <exception cref="BackboneException"><see cref="BackboneErrorCode.NotAuthorized"/>. Si la conexión aún no estaba autorizada,
+    /// queda rechazada (cierre ordenado); si ya lo estaba (revocación), se cierra de inmediato.</exception>
     public CallerContext Authorize(string method, bool isWrite)
     {
         var identity = EnsureIdentified(method);
         var failure = _authorizer.Check(identity);
         if (failure != AuthorizationFailure.None)
         {
-            Reject(failure, method);
-            throw BackboneException.NotAuthorized("The caller is not authorized to use the service.");
+            if (RejectOrRevoke(failure, method))
+            {
+                // Revocación de una conexión ya autorizada (§7.3): cierre inmediato, sin el cierre ordenado del rechazo. Cierra
+                // el JsonRpc, que cancela las llamadas en curso de esta conexión y no deja salir ninguna respuesta más (tampoco
+                // la de esta llamada: el cliente ve la conexión cerrada y, al reconectar, recibe NotAuthorized).
+                LogRevoked(_logger, Id, identity.Sid.Value, failure);
+                Close(CloseReason.Revoked);
+            }
+
+            throw NotAuthorized();
         }
 
         lock (_gate)
         {
             if (_state is State.Rejected or State.Closed)
             {
-                throw BackboneException.NotAuthorized("The connection has been closed.");
+                throw NotAuthorized();
             }
 
             _state = State.Authorized;
@@ -268,7 +282,7 @@ internal sealed partial class IpcConnection : IAsyncDisposable
         {
             if (_state is State.Rejected or State.Closed)
             {
-                throw BackboneException.NotAuthorized("The connection has been rejected.");
+                throw NotAuthorized();
             }
 
             if (Identity is { } known)
@@ -286,17 +300,18 @@ internal sealed partial class IpcConnection : IAsyncDisposable
             {
                 LogIdentityFailed(_logger, Id, ex.GetType().Name);
                 RejectLocked(AuthorizationFailure.ImpersonationLevelTooLow, method);
-                throw BackboneException.NotAuthorized("The caller identity could not be established.");
+                throw NotAuthorized();
             }
 
             Identity = identity;
             AccountName = TryResolveAccountName(identity);
             LogIdentified(_logger, Id, identity.Sid.Value, identity.ImpersonationLevel, identity.IsElevated);
 
+            // Cuenta en su SID aunque supere el límite: la rechazada sigue contando mientras espera a cerrarse (§7.1, B-4).
             if (!_manager.TryCountConnection(this, identity.Sid.Value))
             {
                 RejectLocked(AuthorizationFailure.TooManyConnections, method);
-                throw BackboneException.NotAuthorized("Too many connections for this account.");
+                throw NotAuthorized();
             }
 
             return identity;
@@ -334,11 +349,28 @@ internal sealed partial class IpcConnection : IAsyncDisposable
         }
     }
 
-    private void Reject(AuthorizationFailure failure, string method)
+    /// <summary>
+    /// Mismo texto para todos los motivos (el motivo solo va al log): el cliente no aprende por qué se le rechaza.
+    /// </summary>
+    private static BackboneException NotAuthorized() => BackboneException.NotAuthorized(NotAuthorizedMessage);
+
+    /// <summary>
+    /// Rechaza la conexión si aún no estaba autorizada (cierre ordenado) y devuelve <see langword="true"/> si ya lo estaba
+    /// (revocación: quien llama la cierra de inmediato). En ambos casos deja de estar autorizada antes de salir del cerrojo,
+    /// así ninguna otra llamada ni evento la ve autorizada.
+    /// </summary>
+    private bool RejectOrRevoke(AuthorizationFailure failure, string method)
     {
         lock (_gate)
         {
+            if (_state == State.Authorized)
+            {
+                _state = State.Closed;
+                return true;
+            }
+
             RejectLocked(failure, method);
+            return false;
         }
     }
 

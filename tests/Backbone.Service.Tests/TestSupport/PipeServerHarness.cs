@@ -60,12 +60,13 @@ internal sealed class PipeServerHarness : IAsyncDisposable
     public static string NewPipeName() => "Backbone.Tests." + Guid.NewGuid().ToString("N");
 
     /// <summary>Crea el servidor sin arrancarlo; con <paramref name="authorizeCurrentUser"/> el usuario de las pruebas está en la lista.</summary>
-    public static async Task<PipeServerHarness> CreateAsync(bool authorizeCurrentUser = true, string? pipeName = null)
+    public static async Task<PipeServerHarness> CreateAsync(bool authorizeCurrentUser = true, string? pipeName = null, int maxConnections = Contracts.BackboneIpc.MaxConnections)
     {
         var harness = new PipeServerHarness(new IpcOptions
         {
             PipeName = pipeName ?? NewPipeName(),
             AdditionalServerSid = CurrentUser,
+            MaxConnections = maxConnections,
         });
         if (authorizeCurrentUser)
         {
@@ -76,9 +77,9 @@ internal sealed class PipeServerHarness : IAsyncDisposable
     }
 
     /// <summary>Crea y arranca el servidor.</summary>
-    public static async Task<PipeServerHarness> StartAsync(bool authorizeCurrentUser = true, string? pipeName = null)
+    public static async Task<PipeServerHarness> StartAsync(bool authorizeCurrentUser = true, string? pipeName = null, int maxConnections = Contracts.BackboneIpc.MaxConnections)
     {
-        var harness = await CreateAsync(authorizeCurrentUser, pipeName);
+        var harness = await CreateAsync(authorizeCurrentUser, pipeName, maxConnections);
         try
         {
             await harness.Server.StartAsync(CancellationToken.None);
