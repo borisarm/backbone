@@ -303,3 +303,21 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 **Resultado esperado:** pasa y no aparece como omitida.
 
 **Estado:** pendiente.
+
+## PM-HU13-01 · Copia real a un recurso SMB con rutas largas y exclusión de la carpeta de datos
+
+**Cubre:** HU-13, criterios 7 (RNF-09) y 8 (ADR-16, §8.3).
+
+**Por qué es manual:** exige el servicio instalado, un NAS real con SMB y la instantánea VSS de un volumen real. Las pruebas automáticas usan un origen y un repositorio simulados (`BackupEngineLongPathTests`, `BackupEngineSecurityReviewTests`); la lectura real por handle sin seguir puntos de reanálisis es de `SourceFileSystem` (HU-08/HU-15). No se puede ejecutar hasta que existan el servicio y la conexión SMB (HU-05, HU-08, HU-14).
+
+**Pasos**
+1. En un disco local crear `C:\PruebaBackbone` con una ruta de más de 260 caracteres (p. ej. 12 carpetas anidadas de 25 caracteres, con acentos y `ñ`) y un archivo de 0 bytes y otro de unos 10 MiB al final.
+2. Con la app, crear un trabajo con origen `C:\PruebaBackbone` y destino en un recurso SMB del NAS. Pulsar "Copiar ahora". Comprobar que termina en `Completed` sin avisos y que en el NAS existe `objects\` con los archivos (la ruta larga no hace falta que exista en el NAS: los objetos se guardan por hash).
+3. Restaurar el árbol a otra carpeta (cuando exista HU-30) o inspeccionar el snapshot y comprobar que la ruta larga y los nombres Unicode están intactos.
+4. Crear un segundo trabajo con origen `C:\` (o un volumen que contenga `%ProgramData%`) con una contraseña centinela guardada para el NAS. Ejecutarlo hasta el final con la instantánea VSS habilitada.
+5. En el repositorio, comprobar que ningún snapshot contiene entradas `ProgramData/Backbone/...` ni `ProgramData/Backbone.untrusted-*`, que no hay avisos por ello, y que `Select-String -SimpleMatch` de la contraseña centinela sobre `objects\` no da coincidencias.
+6. Crear un *junction* `mklink /J C:\Datos %ProgramData%\Backbone`, editar la configuración para que un trabajo apunte a `C:\Datos` (sustituyendo el origen tras guardarlo) y lanzar la copia: debe terminar `Failed` con `ValidationFailed` sin copiar nada.
+
+**Resultado esperado:** copias correctas con rutas largas; nada de la carpeta de datos en el NAS; el *junction* se rechaza.
+
+**Estado:** pendiente (requiere servicio, NAS y HU-05, HU-08, HU-14).

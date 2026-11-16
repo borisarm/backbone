@@ -252,6 +252,15 @@ public enum RunIssueCode
     /// (§6.3); los sobrantes se cuentan en <see cref="RunIssue.Message"/> de este aviso, que es el último.
     /// </summary>
     WarningsTruncated = 12,
+
+    /// <summary>
+    /// Contrato 1.2. No se pudo recorrer la <b>raíz</b> de un origen (sin permiso, error de lectura o más elementos de los
+    /// que caben en el presupuesto de listado del motor, §8.4 "Memoria del motor"): no se ha actualizado nada de ese origen
+    /// y el snapshot conserva lo que tenía en el anterior (RF-25). <see cref="RunIssue.Path"/> es el alias del origen y
+    /// <see cref="RunIssue.Message"/> indica la causa. Sustituye, solo para la raíz, al aviso con la causa
+    /// (<see cref="ReadError"/>, <see cref="AccessDenied"/>…), para que la app lo destaque (§13, R11).
+    /// </summary>
+    SourceRootUnreadable = 13,
 }
 
 /// <summary>

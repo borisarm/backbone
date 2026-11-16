@@ -85,6 +85,12 @@ public sealed record SnapshotCompletion
 
     /// <summary>Avisos de la ejecución.</summary>
     public IReadOnlyList<SnapshotWarning> Warnings { get; init; } = [];
+
+    /// <summary>
+    /// Avisos de la ejecución que no se pasan en <see cref="Warnings"/> porque el llamante no los guarda en memoria (van
+    /// detrás de ellos). Cuentan para el límite de avisos y para el aviso resumen <c>WarningsTruncated</c> (§6.3).
+    /// </summary>
+    public long OmittedWarnings { get; init; }
 }
 
 /// <summary>Cabecera de un snapshot: todo menos las entradas.</summary>

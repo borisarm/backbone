@@ -25,9 +25,9 @@ namespace Backbone.Core.Repository.Snapshots;
 /// <para>
 /// Nunca publica un manifiesto que <see cref="SnapshotReader"/> rechace (§6.3 "Límites"): rechaza al empezar los datos de
 /// cabecera fuera de límite, recorta los textos de los avisos y guarda como mucho los que caben (con un aviso resumen
-/// <see cref="RunIssueCode.WarningsTruncated"/>), y falla con <see cref="InvalidOperationException"/>, sin publicar, si
-/// se superan <see cref="RepositoryLayout.MaxSnapshotEntries"/> entradas o <see cref="RepositoryLayout.MaxSnapshotManifestBytes"/>
-/// bytes.
+/// <see cref="RunIssueCode.WarningsTruncated"/>), y falla con <see cref="RepositoryException"/>
+/// (<see cref="RepositoryErrorKind.SnapshotTooLarge"/>), sin publicar, si se superan
+/// <see cref="RepositoryLayout.MaxSnapshotEntries"/> entradas o <see cref="RepositoryLayout.MaxSnapshotManifestBytes"/> bytes.
 /// </para>
 /// </remarks>
 public sealed class SnapshotWriter : IAsyncDisposable
@@ -100,9 +100,9 @@ public sealed class SnapshotWriter : IAsyncDisposable
     /// <exception cref="ArgumentException">
     /// La ruta no pertenece a ningún origen del snapshot o ya se había añadido.
     /// </exception>
-    /// <exception cref="InvalidOperationException">
-    /// Se supera <see cref="RepositoryLayout.MaxSnapshotEntries"/> o el tamaño máximo del manifiesto: el escritor queda
-    /// fallido y no publicará nada (§6.3).
+    /// <exception cref="RepositoryException">
+    /// <see cref="RepositoryErrorKind.SnapshotTooLarge"/>: se supera <see cref="RepositoryLayout.MaxSnapshotEntries"/> o el
+    /// tamaño máximo del manifiesto; el escritor queda fallido y no publicará nada (§6.3).
     /// </exception>
     public async Task AddAsync(SnapshotEntry entry, CancellationToken cancellationToken)
     {
@@ -168,7 +168,8 @@ public sealed class SnapshotWriter : IAsyncDisposable
     /// <returns>Cabecera del snapshot publicado.</returns>
     /// <exception cref="RepositoryException">
     /// <see cref="RepositoryErrorKind.LockLost"/> si el bloqueo se perdió;
-    /// <see cref="RepositoryErrorKind.SnapshotIdConflict"/> si ya existía un snapshot con el mismo identificador.
+    /// <see cref="RepositoryErrorKind.SnapshotIdConflict"/> si ya existía un snapshot con el mismo identificador;
+    /// <see cref="RepositoryErrorKind.SnapshotTooLarge"/> si el manifiesto superaría su tamaño máximo.
     /// </exception>
     public async Task<SnapshotHeader> CompleteAsync(SnapshotCompletion completion, CancellationToken cancellationToken)
     {
@@ -179,7 +180,7 @@ public sealed class SnapshotWriter : IAsyncDisposable
             var (header, headerBytes) = BuildHeader(completion);
             if (headerBytes.Length + entryBytes + ManifestEnd.Length > MaxManifestBytes)
             {
-                throw new InvalidOperationException(ManifestTooLargeMessage());
+                throw new RepositoryException(RepositoryErrorKind.SnapshotTooLarge, ManifestTooLargeMessage());
             }
 
             await FlushPendingAsync(cancellationToken).ConfigureAwait(false);
@@ -380,15 +381,23 @@ public sealed class SnapshotWriter : IAsyncDisposable
     /// </summary>
     /// <param name="warnings">Avisos de la ejecución, en orden.</param>
     /// <param name="fixedHeaderBytes">Bytes de la cabecera sin ningún aviso (incluido <c>],"entries":[</c>).</param>
-    internal static List<SnapshotWarning> SelectWarnings(IReadOnlyList<SnapshotWarning> warnings, long fixedHeaderBytes)
+    /// <param name="omitted">
+    /// Avisos de la ejecución que el llamante ya no conserva en memoria (van detrás de <paramref name="warnings"/>); cuentan
+    /// para el límite y para el aviso resumen.
+    /// </param>
+    internal static List<SnapshotWarning> SelectWarnings(IReadOnlyList<SnapshotWarning> warnings, long fixedHeaderBytes, long omitted = 0)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(omitted);
         var measure = new ArrayBufferWriter<byte>(4096);
         using var measureWriter = new Utf8JsonWriter(measure, JsonFormat.WriterOptions(indented: false));
 
         // Como mucho se examinan MaxWarnings avisos: con más ya se sabe que no caben todos.
         var limit = Math.Min(warnings.Count, SnapshotLimits.MaxWarnings);
         var normalized = new List<SnapshotWarning>(limit);
-        var allFit = warnings.Count <= SnapshotLimits.MaxWarnings;
+        var total = warnings.Count + omitted;
+        // Si el llamante ya ha descartado avisos (p. ej. el motor por su presupuesto de bytes, §8.4), no caben todos aunque
+        // sean pocos: siempre hace falta el resumen.
+        var allFit = omitted == 0 && total <= SnapshotLimits.MaxWarnings;
         var kept = 0;
         var keptStopped = false;
         var headerBytes = fixedHeaderBytes;
@@ -421,7 +430,7 @@ public sealed class SnapshotWriter : IAsyncDisposable
         }
 
         normalized.RemoveRange(kept, normalized.Count - kept);
-        normalized.Add(TruncationSummary(warnings.Count - kept));
+        normalized.Add(TruncationSummary(total - kept));
         return normalized;
     }
 
@@ -485,6 +494,11 @@ public sealed class SnapshotWriter : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(completion.Stats);
         ArgumentNullException.ThrowIfNull(completion.Warnings);
+        if (completion.OmittedWarnings < 0)
+        {
+            throw new ArgumentException("El número de avisos omitidos no puede ser negativo.", nameof(completion));
+        }
+
         var stats = completion.Stats with { Files = files, Bytes = bytes };
         if (stats.NewFiles < 0 || stats.ChangedFiles < 0 || stats.NewObjects < 0 || stats.NewBytes < 0 || stats.Skipped < 0)
         {
@@ -514,7 +528,7 @@ public sealed class SnapshotWriter : IAsyncDisposable
         WriteHeaderStart(writer, header);
         writer.Flush();
 
-        var warnings = SelectWarnings(completion.Warnings, buffer.WrittenCount + HeaderSuffixBytes);
+        var warnings = SelectWarnings(completion.Warnings, buffer.WrittenCount + HeaderSuffixBytes, completion.OmittedWarnings);
         foreach (var warning in warnings)
         {
             WriteWarning(writer, warning);
@@ -527,7 +541,7 @@ public sealed class SnapshotWriter : IAsyncDisposable
         // Defensa: con los límites de inicio y la selección de avisos no puede pasar, y el lector lo rechazaría.
         if (buffer.WrittenCount > SnapshotLimits.MaxHeaderBytes)
         {
-            throw new InvalidOperationException($"La cabecera del snapshot supera {SnapshotLimits.MaxHeaderBytes} bytes; no se publica el snapshot.");
+            throw new RepositoryException(RepositoryErrorKind.SnapshotTooLarge, $"La cabecera del snapshot supera {SnapshotLimits.MaxHeaderBytes} bytes; no se publica el snapshot.");
         }
 
         return (header with { Warnings = warnings }, buffer.WrittenMemory);
@@ -551,10 +565,10 @@ public sealed class SnapshotWriter : IAsyncDisposable
         $"El manifiesto del snapshot superaría el tamaño máximo de {MaxManifestBytes} bytes; no se publica el snapshot.";
 
     /// <summary>Deja el escritor fallido (no publicará nada) y devuelve la excepción que se debe lanzar.</summary>
-    private InvalidOperationException Fail(string message)
+    private RepositoryException Fail(string message)
     {
         state = State.Failed;
-        return new InvalidOperationException(message);
+        return new RepositoryException(RepositoryErrorKind.SnapshotTooLarge, message);
     }
 
     private async Task FlushPendingAsync(CancellationToken cancellationToken)

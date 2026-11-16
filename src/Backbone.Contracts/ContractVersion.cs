@@ -19,10 +19,10 @@ public static class ContractVersion
     public const int Major = 1;
 
     /// <summary>Versión menor actual.</summary>
-    public const int Minor = 1;
+    public const int Minor = 2;
 
     /// <summary>Versión actual en texto, <c>"Mayor.Menor"</c>.</summary>
-    public const string Value = "1.1";
+    public const string Value = "1.2";
 
     /// <summary>
     /// Indica si una versión de contrato recibida del otro extremo es compatible con esta (misma versión mayor).

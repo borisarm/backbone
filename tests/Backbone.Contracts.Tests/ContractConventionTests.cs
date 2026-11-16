@@ -142,13 +142,13 @@ public sealed class ContractConventionTests
     // ---- Criterio 3 y transporte (§7.1) ----
 
     [Fact]
-    public void Contract_version_is_semantic_1_1()
+    public void Contract_version_is_semantic_1_2()
     {
-        const string expected = "1.1";
+        const string expected = "1.2";
         Assert.Equal(expected, ContractVersion.Value);
         Assert.Equal(ContractVersion.Value, string.Create(CultureInfo.InvariantCulture, $"{ContractVersion.Major}.{ContractVersion.Minor}"));
         Assert.True(ContractVersion.TryParse(ContractVersion.Value, out var major, out var minor));
-        Assert.Equal((1, 1), (major, minor));
+        Assert.Equal((1, 2), (major, minor));
     }
 
     [Theory]
@@ -187,6 +187,7 @@ public sealed class ContractConventionTests
             "ValidationFailed", "JobNotFound", "JobAlreadyRunning", "NasUnreachable", "CredentialsRejected", "ShareNotFound",
             "AccessDenied", "RepositoryLocked", "RepositoryIncompatible", "RepositoryCorrupt", "SnapshotNotFound",
             "RestoreTargetNotWritable", "Interrupted", "NotAuthorized", "NotSupported", "Internal", "CredentialRequired",
+            "SnapshotTooLarge",
         ];
 
         Assert.Equal(spec, Enum.GetNames<BackboneErrorCode>());
@@ -215,6 +216,27 @@ public sealed class ContractConventionTests
         Assert.Equal(1014, (int)BackboneErrorCode.NotSupported);
         Assert.Equal(1015, (int)BackboneErrorCode.Internal);
         Assert.Equal(1016, (int)BackboneErrorCode.CredentialRequired);
+        Assert.Equal(1017, (int)BackboneErrorCode.SnapshotTooLarge); // contrato 1.2
+    }
+
+    [Fact]
+    public void Validation_issue_code_values_are_stable()
+    {
+        // Contrato 1.2 (ADR-16): los dos códigos de la carpeta de datos se añaden al final, sin renumerar los anteriores.
+        Assert.Equal(25, (int)ValidationIssueCode.SnapshotPathInvalid);
+        Assert.Equal(26, (int)ValidationIssueCode.SourceNotAllowed);
+        Assert.Equal(27, (int)ValidationIssueCode.SourceContainsDataFolder);
+        Assert.Equal(27, Enum.GetValues<ValidationIssueCode>().Max(v => (int)v));
+    }
+
+    [Fact]
+    public void Run_issue_code_values_are_stable()
+    {
+        // Viajan por el cable y se guardan por nombre en los avisos del snapshot (§6.3): se añaden al final sin renumerar.
+        Assert.Equal(9, (int)RunIssueCode.ReadError);
+        Assert.Equal(12, (int)RunIssueCode.WarningsTruncated); // contrato 1.1
+        Assert.Equal(13, (int)RunIssueCode.SourceRootUnreadable); // contrato 1.2
+        Assert.Equal(13, Enum.GetValues<RunIssueCode>().Max(v => (int)v));
     }
 
     [Fact]

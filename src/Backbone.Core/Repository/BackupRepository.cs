@@ -193,8 +193,12 @@ public sealed class BackupRepository
     /// <summary>
     /// Guarda un objeto: copia <paramref name="content"/> a <c>tmp/</c> calculando el SHA-256 sobre los bytes
     /// que se escriben (§6.4.2), lo vacía al disco y lo renombra a <c>objects/ab/&lt;hash&gt;</c>.
-    /// Si el objeto ya existe, el temporal se descarta (deduplicación).
+    /// Si el objeto ya existe, el temporal se descarta (deduplicación), después de comprobar sin leerlo que el existente
+    /// tiene el tamaño esperado.
     /// </summary>
+    /// <exception cref="RepositoryException">
+    /// <see cref="RepositoryErrorKind.Corrupt"/> si el objeto ya existía con otro tamaño (está dañado); no se toca.
+    /// </exception>
     /// <param name="content">Contenido; se lee hasta el final.</param>
     /// <param name="expectedHash">Hash calculado al inspeccionar el archivo, si se conoce.</param>
     /// <param name="repositoryLock">Bloqueo vigente sobre este repositorio.</param>
@@ -234,8 +238,13 @@ public sealed class BackupRepository
             }
 
             var hash = ContentHash.FromBytes(sha256.GetHashAndReset());
+            var objectPath = RepositoryLayout.ObjectPath(hash);
             await storage.CreateDirectoryAsync(RepositoryLayout.ObjectDirectory(hash), cancellationToken).ConfigureAwait(false);
-            moved = await storage.TryMoveAsync(tempPath, RepositoryLayout.ObjectPath(hash), overwrite: false, cancellationToken).ConfigureAwait(false);
+            moved = await storage.TryMoveAsync(tempPath, objectPath, overwrite: false, cancellationToken).ConfigureAwait(false);
+            if (!moved)
+            {
+                moved = await CheckExistingObjectAsync(tempPath, objectPath, hash, length, cancellationToken).ConfigureAwait(false);
+            }
 
             return new ObjectWriteResult(
                 hash,
@@ -251,6 +260,43 @@ public sealed class BackupRepository
                 await AtomicFile.TryDeleteAsync(storage, tempPath).ConfigureAwait(false);
             }
         }
+    }
+
+    /// <summary>
+    /// Deduplicación (§6.4.2): el objeto ya existía y el temporal no se ha movido. Antes de reutilizarlo se comprueba, sin
+    /// leerlo, que su tamaño es el de los bytes que se acaban de escribir. Como el nombre es el hash, un objeto existente
+    /// con otro tamaño está dañado: no se puede sobrescribir (los objetos son inmutables, §6.3, y se renombran sin
+    /// sobrescribir, §6.4.1) ni subir con otro nombre, y referenciarlo publicaría un snapshot que no se puede restaurar.
+    /// La copia falla con <see cref="RepositoryErrorKind.Corrupt"/> hasta que el repositorio se verifique o repare
+    /// (HU-26, HU-29), como un snapshot padre dañado (ADR-17).
+    /// </summary>
+    /// <returns>
+    /// <see langword="true"/> si el objeto había desaparecido entre medias y el temporal se ha movido en un segundo intento
+    /// (lo que solo puede pasar si otro proceso lo borra sin respetar los bloqueos); <see langword="false"/> si el
+    /// objeto existente es válido.
+    /// </returns>
+    private async Task<bool> CheckExistingObjectAsync(string tempPath, string objectPath, ContentHash hash, long length, CancellationToken cancellationToken)
+    {
+        var existing = await storage.GetFileInfoAsync(objectPath, cancellationToken).ConfigureAwait(false);
+        if (existing is null)
+        {
+            if (await storage.TryMoveAsync(tempPath, objectPath, overwrite: false, cancellationToken).ConfigureAwait(false))
+            {
+                return true;
+            }
+
+            existing = await storage.GetFileInfoAsync(objectPath, cancellationToken).ConfigureAwait(false)
+                ?? throw new IOException($"No se pudo guardar el objeto {hash}: el almacenamiento dice que existe pero no se encuentra.");
+        }
+
+        if (existing.Length != length)
+        {
+            throw new RepositoryException(
+                RepositoryErrorKind.Corrupt,
+                $"El objeto {hash} ya existe en el repositorio con {existing.Length} bytes en lugar de {length}: está dañado. Verifique o repare el repositorio.");
+        }
+
+        return false;
     }
 
     /// <summary>Abre un objeto para lectura.</summary>

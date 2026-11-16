@@ -17,7 +17,10 @@ internal sealed class EntryPathSet
 
     public int Count => digests.Count;
 
-    public bool Add(string path)
+    public bool Add(string path) => digests.Add(Digest(path));
+
+    /// <summary>Resumen de 128 bits de una ruta (SHA-256 truncado de su UTF-8); también lo usa el índice del snapshot padre.</summary>
+    public static UInt128 Digest(string path)
     {
         var byteCount = Encoding.UTF8.GetByteCount(path);
         var rented = byteCount <= 1024 ? null : new byte[byteCount];
@@ -26,6 +29,6 @@ internal sealed class EntryPathSet
 
         Span<byte> hash = stackalloc byte[SHA256.HashSizeInBytes];
         SHA256.HashData(utf8, hash);
-        return digests.Add(System.Buffers.Binary.BinaryPrimitives.ReadUInt128LittleEndian(hash));
+        return System.Buffers.Binary.BinaryPrimitives.ReadUInt128LittleEndian(hash);
     }
 }

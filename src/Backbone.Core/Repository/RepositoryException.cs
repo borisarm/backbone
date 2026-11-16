@@ -6,7 +6,10 @@ namespace Backbone.Core.Repository;
 /// <see cref="Incompatible"/> → <c>RepositoryIncompatible</c>; <see cref="Locked"/> y <see cref="LockLost"/> →
 /// <c>RepositoryLocked</c>; <see cref="Corrupt"/> y <see cref="ObjectNotFound"/> → <c>RepositoryCorrupt</c>;
 /// <see cref="SnapshotNotFound"/> → <c>SnapshotNotFound</c>; <see cref="NotARepository"/>, <see cref="NotEmpty"/>
-/// y <see cref="AlreadyInitialized"/> → <c>ValidationFailed</c>.
+/// y <see cref="AlreadyInitialized"/> → <c>ValidationFailed</c>; <see cref="SnapshotTooLarge"/> →
+/// <c>SnapshotTooLarge</c> (código propio desde el contrato 1.2, ADR-17, §8.4). En una copia, <see cref="Corrupt"/>
+/// incluye un snapshot padre o una cabecera de snapshot dañados y un objeto existente con un tamaño que no coincide
+/// (ADR-17): la ejecución termina <c>Failed</c> con <c>RepositoryCorrupt</c>.
 /// </remarks>
 public enum RepositoryErrorKind
 {
@@ -39,6 +42,14 @@ public enum RepositoryErrorKind
 
     /// <summary>No existe el objeto pedido.</summary>
     ObjectNotFound,
+
+    /// <summary>
+    /// La copia supera el máximo de entradas (<see cref="RepositoryLayout.MaxSnapshotEntries"/>) o el manifiesto superaría
+    /// su tamaño máximo (<see cref="RepositoryLayout.MaxSnapshotManifestBytes"/>) (§6.3): la copia falla y no se publica
+    /// ningún snapshot; el anterior sigue siendo el último restaurable. El servicio lo traduce a
+    /// <c>BackboneErrorCode.SnapshotTooLarge</c> (1017, contrato 1.2) en <c>RunRecord.ErrorCode</c>.
+    /// </summary>
+    SnapshotTooLarge,
 }
 
 /// <summary>Error del repositorio con un motivo tipado.</summary>
