@@ -3,7 +3,6 @@ using Backbone.Service.Os;
 using Backbone.Service.Persistence;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
-using Nerdbank.Streams;
 
 namespace Backbone.Service.Tests.TestSupport;
 
@@ -81,7 +80,7 @@ internal sealed class IpcTestHarness : IAsyncDisposable
 
     public TestConnection Connect(Func<ClientIdentity> identity)
     {
-        var (serverStream, clientStream) = FullDuplexStream.CreatePair();
+        var (serverStream, clientStream) = DrainingStreamPair.Create();
         var channel = new InMemoryChannel(serverStream, identity);
         var connection = Manager.Accept(channel);
         var client = new TestRpcClient(clientStream);

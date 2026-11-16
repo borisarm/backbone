@@ -88,8 +88,10 @@ public sealed class TrayServiceStoppedTests
 
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
+            // Se cuenta después de registrar el temporizador: si no, Advance podría ejecutarse entre ambos pasos y no dispararlo.
+            var timer = base.CreateTimer(callback, state, dueTime, period);
             Interlocked.Increment(ref _timers);
-            return base.CreateTimer(callback, state, dueTime, period);
+            return timer;
         }
 
         public Task WaitForTimersAsync(int count) => Eventually(() => Volatile.Read(ref _timers) >= count);
