@@ -56,6 +56,13 @@ namespace Backbone.Core.Engine;
 /// carpetas abiertas (<see cref="DefaultListingBudgetBytes"/>; una carpeta que no cabe se trata como ilegible con aviso
 /// <see cref="RunIssueCode.ReadError"/> y conserva lo que tenía en el padre).
 /// </para>
+/// <para>
+/// <b>Raíz de un origen ilegible</b> (§8.4, R11, contrato 1.2): si lo que no se puede recorrer es la raíz de un origen, por
+/// el presupuesto de listado o por cualquier error (sin permiso, error de lectura, punto de reanálisis o ruta final que no es
+/// la esperada, §8.2), el aviso es <see cref="RunIssueCode.SourceRootUnreadable"/> con el alias como ruta y la causa en el
+/// mensaje, y todo el origen conserva lo que tenía en el padre. A diferencia de una carpeta interior que pasa a ser un punto
+/// de reanálisis (que se omite sin conservar nada, RF-06), la raíz conserva lo del padre también en ese caso.
+/// </para>
 /// </remarks>
 public sealed class BackupEngine
 {
@@ -399,7 +406,9 @@ public sealed class BackupEngine
         public async Task CopySourceAsync(BackupSource backupSource, CancellationToken cancellationToken)
         {
             var stack = new Stack<DirectoryFrame>();
-            stack.Push(NewFrame(backupSource.ReadPath, backupSource.Alias));
+            var root = NewFrame(backupSource.ReadPath, backupSource.Alias);
+            root.IsRoot = true;
+            stack.Push(root);
             while (stack.TryPeek(out var frame))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -552,7 +561,7 @@ public sealed class BackupEngine
                     }
                 }
             }
-            catch (Exception ex) when (IsReparsePointError(ex))
+            catch (Exception ex) when (IsReparsePointError(ex) && !frame.IsRoot)
             {
                 // §8.2: la carpeta se ha convertido en un punto de reanálisis después de enumerar a su padre; no se sigue.
                 Skip(frame.SnapshotPath, RunIssueCode.ReparsePointSkipped, "La carpeta es un punto de reanálisis (junction o enlace simbólico); no se sigue.");
@@ -560,6 +569,8 @@ public sealed class BackupEngine
             }
             catch (Exception ex) when (IsSourceError(ex))
             {
+                // En la raíz, también un punto de reanálisis (o una ruta final que no es la esperada, §8.2) conserva lo del
+                // padre: su sustitución a mitad de ejecución es un ataque o una carrera, no un cambio del usuario (§8.4).
                 MarkUnreadable(
                     frame,
                     IssueCode(ex),
@@ -594,13 +605,27 @@ public sealed class BackupEngine
             return children;
         }
 
-        /// <summary>RF-25: carpeta que no se recorre; se conserva después lo que tenía debajo en el padre.</summary>
+        /// <summary>
+        /// RF-25: carpeta que no se recorre; se conserva después lo que tenía debajo en el padre. Si es la raíz de un origen
+        /// (§8.4, R11), el aviso es <see cref="RunIssueCode.SourceRootUnreadable"/> con el alias como ruta y la causa
+        /// (<paramref name="code"/> y <paramref name="message"/>) en el mensaje, en lugar del aviso con la causa.
+        /// </summary>
         private void MarkUnreadable(DirectoryFrame frame, RunIssueCode code, string message)
         {
             frame.KeptFromParent = true;
             unreadableDirectories.Add(frame.SnapshotPath + "/");
             skipped++;
-            Warn(new SnapshotWarning(frame.SnapshotPath, code.ToString(), message));
+            if (frame.IsRoot)
+            {
+                Warn(new SnapshotWarning(
+                    frame.SnapshotPath,
+                    nameof(RunIssueCode.SourceRootUnreadable),
+                    $"No se pudo recorrer la raíz del origen; no se ha copiado nada nuevo de él y se conserva lo que tenía en el snapshot anterior. Causa ({code}): {message}"));
+            }
+            else
+            {
+                Warn(new SnapshotWarning(frame.SnapshotPath, code.ToString(), message));
+            }
         }
 
         /// <summary>Copia (o reutiliza) un archivo. Devuelve si ha añadido una entrada al snapshot.</summary>
@@ -790,6 +815,9 @@ public sealed class BackupEngine
 
         /// <summary>Bytes estimados de esta carpeta y su listado que cuentan en el presupuesto (§8.4).</summary>
         public long ListingBytes { get; set; }
+
+        /// <summary>Es la raíz de un origen (<see cref="BackupSource.ReadPath"/>; su ruta en el snapshot es el alias).</summary>
+        public bool IsRoot { get; set; }
 
         /// <summary>No se pudo recorrer y lo que tenía debajo se conserva del snapshot padre (RF-25).</summary>
         public bool KeptFromParent { get; set; }

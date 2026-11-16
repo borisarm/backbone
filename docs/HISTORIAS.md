@@ -551,7 +551,7 @@ Las historias de una misma fila pueden desarrollarse en paralelo por agentes dis
 | HU-10 | MVP | 3 | backbone-app | Pendiente |
 | HU-11 | F2 | 2 | backbone-service | Pendiente |
 | HU-12 | F2 | 3 | backbone-service | Pendiente |
-| HU-13 | MVP | 8 | backbone-core | Pendiente |
+| HU-13 | MVP | 8 | backbone-core | Hecha (motor; JobRunner, SourceFileSystem y traducción de errores pendientes del servicio; PM-HU13-01) |
 | HU-14 | MVP | 3 | backbone-service | Pendiente |
 | HU-15 | MVP | 8 | backbone-service | Pendiente |
 | HU-16 | MVP | 5 | backbone-service | Pendiente |

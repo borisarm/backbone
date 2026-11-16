@@ -1,3 +1,5 @@
+using Backbone.Contracts;
+
 namespace Backbone.Core.Engine;
 
 /// <summary>
@@ -49,7 +51,10 @@ internal sealed class MandatoryExclusionSet
     /// <summary>
     /// Segmentos de una ruta relativa al origen (<c>\</c> o <c>/</c> como separador). Se rechazan la cadena vacía, las
     /// rutas con raíz o unidad, los segmentos vacíos, <c>.</c> y <c>..</c>: una exclusión siempre está debajo del origen
-    /// (el propio origen, o algo fuera de él, es <c>SourceNotAllowed</c> en la validación del servicio, §8.3).
+    /// (el propio origen, o algo fuera de él, es <c>SourceNotAllowed</c> en la validación del servicio, §8.3). Como defensa
+    /// en profundidad, cada segmento debe ser además un segmento válido de un snapshot
+    /// (<see cref="SnapshotPaths.IsValidSegment"/>): una exclusión que no lo fuera no coincidiría nunca con una ruta del
+    /// recorrido y la carpeta protegida se copiaría sin que nadie lo notara.
     /// </summary>
     internal static string[] ParseRelative(string? relative)
     {
@@ -61,10 +66,11 @@ internal sealed class MandatoryExclusionSet
         var segments = relative.Split(['\\', '/']);
         foreach (var segment in segments)
         {
-            if (segment.Length == 0 || segment is "." or ".." || segment.Contains(':', StringComparison.Ordinal))
+            if (segment.Length == 0 || segment is "." or ".." || segment.Contains(':', StringComparison.Ordinal)
+                || !SnapshotPaths.IsValidSegment(segment))
             {
                 throw new ArgumentException(
-                    "Una exclusión obligatoria debe ser una ruta relativa al origen, sin segmentos vacíos, '.', '..' ni ':'.",
+                    "Una exclusión obligatoria debe ser una ruta relativa al origen, sin segmentos vacíos, '.', '..' ni ':', y con segmentos válidos en un snapshot (§7.5).",
                     nameof(relative));
             }
         }

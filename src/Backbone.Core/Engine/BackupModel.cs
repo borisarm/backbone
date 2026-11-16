@@ -23,8 +23,8 @@ public sealed record BackupSource(string Alias, string Path, string ReadPath)
 {
     /// <summary>
     /// Exclusiones obligatorias del origen (ADR-16): rutas relativas a su raíz, no vacías, sin segmentos vacíos, <c>.</c>,
-    /// <c>..</c> ni <c>:</c>. Una ruta no válida hace que la copia se rechace con <see cref="ArgumentException"/> antes
-    /// de leer nada.
+    /// <c>..</c> ni <c>:</c>, y con cada segmento válido en un snapshot (<c>SnapshotPaths.IsValidSegment</c>). Una ruta no
+    /// válida hace que la copia se rechace con <see cref="ArgumentException"/> antes de leer nada.
     /// </summary>
     public IReadOnlyList<string> MandatoryExclusions { get; init; } = [];
 }

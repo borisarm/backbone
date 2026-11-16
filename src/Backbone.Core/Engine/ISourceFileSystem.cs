@@ -42,7 +42,37 @@ namespace Backbone.Core.Engine;
 /// Los elementos que la enumeración devuelve como punto de reanálisis llevan <see cref="FileAttributes.ReparsePoint"/> en
 /// <see cref="SourceEntry.Attributes"/>; el motor no los abre ni los enumera.
 /// </description></item>
+/// <item><description>
+/// <b>Ruta final sobre el mismo handle</b> (ADR-18, revisión de seguridad final de HU-13, M-A).
+/// <c>FILE_FLAG_OPEN_REPARSE_POINT</c> solo afecta al último componente: en una copia en vivo (sin VSS, RF-22) una carpeta
+/// <b>intermedia</b> ya enumerada se puede sustituir por un <i>junction</i> y la ruta se resolvería a través de él. Por eso,
+/// en las tres operaciones, tras abrir el elemento y antes de leer nada, la implementación obtiene sobre ese mismo handle su
+/// ruta final (<c>GetFinalPathNameByHandle</c> con <c>FILE_NAME_NORMALIZED | VOLUME_NAME_NT</c>, que vale igual dentro de
+/// una instantánea VSS sin letra de unidad) y comprueba (1) que es <b>exactamente</b> la ruta final de la raíz del origen
+/// más la ruta relativa del elemento (ordinal sin distinguir mayúsculas, por segmentos completos; la ruta final de la raíz
+/// se obtiene una vez al empezar abriendo <see cref="BackupSource.ReadPath"/> por handle con las mismas marcas) y (2) que la
+/// ruta relativa no es ni empieza por ninguna exclusión obligatoria del origen (<see cref="BackupSource.MandatoryExclusions"/>,
+/// §8.3; defensa en profundidad, el motor no las pide nunca). Si no se cumple cualquiera de las dos, lanza
+/// <see cref="SourceAccessException"/> con <see cref="RunIssueCode.ReparsePointSkipped"/> y no lee nada del handle.
+/// <b>Alternativa válida</b>: abrir cada elemento relativo al handle de su carpeta padre (<c>NtCreateFile</c> con
+/// <c>OBJECT_ATTRIBUTES.RootDirectory</c> = handle del padre, un solo componente y <c>OBJ_DONT_REPARSE</c>), manteniendo
+/// abiertos los handles de las carpetas en recorrido; la comprobación de la ruta final se mantiene igualmente como defensa
+/// en profundidad.
+/// </description></item>
+/// <item><description>
+/// <b>Rutas y raíces</b>: la firma no cambia y las rutas siguen siendo opacas para el motor. La implementación se crea
+/// <b>por ejecución</b> con la lista de orígenes (<see cref="BackupSource"/>: <see cref="BackupSource.ReadPath"/> y
+/// exclusiones obligatorias) y deduce la ruta relativa de cada ruta recibida quitando el prefijo <c>ReadPath\</c> de su
+/// origen. Rechaza con <see cref="SourceAccessException"/> y <see cref="RunIssueCode.PathInvalid"/> una ruta que no sea la
+/// raíz de un origen de la ejecución ni empiece por ella, o que tenga segmentos vacíos, <c>.</c> o <c>..</c>. Las rutas que
+/// recibe son la raíz <see cref="BackupSource.ReadPath"/> de un origen o las que devolvió ella misma
+/// (<see cref="SourceEntry.FullPath"/>: raíz, <c>\</c> y nombre enumerado), así que esto no rechaza nada legítimo.
+/// </description></item>
 /// </list>
+/// <para>
+/// Si lo que falla es la <b>raíz</b> de un origen (cualquier error, también <see cref="RunIssueCode.ReparsePointSkipped"/>),
+/// el motor emite <see cref="RunIssueCode.SourceRootUnreadable"/> y conserva todo el origen del snapshot padre (§8.4, R11).
+/// </para>
 /// <para>
 /// <b>Errores</b>: un error de un archivo o de una carpeta se lanza como <see cref="IOException"/> (o una derivada) o
 /// <see cref="UnauthorizedAccessException"/>; el motor omite ese elemento con un aviso y sigue (RF-25). Para indicar el
@@ -54,14 +84,19 @@ public interface ISourceFileSystem
 {
     /// <summary>
     /// Enumera, sin recursión, los archivos y carpetas contenidos directamente en <paramref name="directoryPath"/>
-    /// (una raíz de origen o el <see cref="SourceEntry.FullPath"/> de una carpeta). El orden no está definido.
+    /// (la raíz <see cref="BackupSource.ReadPath"/> de un origen o el <see cref="SourceEntry.FullPath"/> de una carpeta).
+    /// El orden no está definido.
     /// </summary>
     /// <remarks>
-    /// Abre la carpeta por handle sin seguir puntos de reanálisis y enumera desde ese handle (ver el contrato de la
-    /// interfaz). El error puede llegar al pedir el primer elemento o en cualquier momento de la enumeración.
+    /// Abre la carpeta por handle sin seguir puntos de reanálisis, comprueba sobre ese handle que no es un punto de
+    /// reanálisis y que su ruta final es la esperada, y enumera desde ese handle (ver el contrato de la interfaz). El error
+    /// puede llegar al pedir el primer elemento o en cualquier momento de la enumeración.
     /// </remarks>
     /// <exception cref="SourceAccessException">
-    /// Con <see cref="RunIssueCode.ReparsePointSkipped"/> si la carpeta es (o ha pasado a ser) un punto de reanálisis.
+    /// Con <see cref="RunIssueCode.ReparsePointSkipped"/> si la carpeta es (o ha pasado a ser) un punto de reanálisis, o si
+    /// su ruta final no es la ruta final de la raíz del origen más su ruta relativa o cae en una exclusión obligatoria; con
+    /// <see cref="RunIssueCode.PathInvalid"/> si la ruta no es de un origen de la ejecución o tiene segmentos vacíos,
+    /// <c>.</c> o <c>..</c>.
     /// </exception>
     /// <exception cref="IOException">La carpeta no existe o no se puede leer.</exception>
     /// <exception cref="UnauthorizedAccessException">Sin permiso para leer la carpeta.</exception>
@@ -69,11 +104,13 @@ public interface ISourceFileSystem
 
     /// <summary>Abre un archivo (<see cref="SourceEntry.FullPath"/>) para lectura secuencial.</summary>
     /// <remarks>
-    /// Abre por handle sin seguir puntos de reanálisis y devuelve un flujo sobre ese handle (ver el contrato de la
-    /// interfaz).
+    /// Abre por handle sin seguir puntos de reanálisis, comprueba sobre ese handle que no es un punto de reanálisis y que
+    /// su ruta final es la esperada, y devuelve un flujo sobre ese handle (ver el contrato de la interfaz).
     /// </remarks>
     /// <exception cref="SourceAccessException">
-    /// Con <see cref="RunIssueCode.ReparsePointSkipped"/> si el archivo es (o ha pasado a ser) un punto de reanálisis; con
+    /// Con <see cref="RunIssueCode.ReparsePointSkipped"/> si el archivo es (o ha pasado a ser) un punto de reanálisis, o si
+    /// su ruta final no es la esperada o cae en una exclusión obligatoria; con <see cref="RunIssueCode.PathInvalid"/> si la
+    /// ruta no es de un origen de la ejecución o tiene segmentos vacíos, <c>.</c> o <c>..</c>; con
     /// <see cref="RunIssueCode.FileLocked"/> si está bloqueado.
     /// </exception>
     /// <exception cref="IOException">El archivo no existe, está bloqueado o no se puede leer.</exception>
@@ -86,11 +123,15 @@ public interface ISourceFileSystem
     /// (§6.4.2).
     /// </summary>
     /// <remarks>
-    /// Abre por handle sin seguir puntos de reanálisis y lee los metadatos de ese handle (ver el contrato de la interfaz).
-    /// Para el motor, cualquier error o un punto de reanálisis significa que el archivo cambió durante la copia.
+    /// Abre por handle sin seguir puntos de reanálisis, hace sobre ese handle las mismas comprobaciones (punto de
+    /// reanálisis, ruta final) y lee sus metadatos (ver el contrato de la interfaz). Para el motor,
+    /// <see cref="RunIssueCode.ReparsePointSkipped"/> hace que el archivo se omita y cualquier otro error, que cambió
+    /// durante la copia.
     /// </remarks>
     /// <exception cref="SourceAccessException">
-    /// Con <see cref="RunIssueCode.ReparsePointSkipped"/> si el archivo ha pasado a ser un punto de reanálisis.
+    /// Con <see cref="RunIssueCode.ReparsePointSkipped"/> si el archivo ha pasado a ser un punto de reanálisis, o si su ruta
+    /// final no es la esperada o cae en una exclusión obligatoria; con <see cref="RunIssueCode.PathInvalid"/> si la ruta no
+    /// es de un origen de la ejecución o tiene segmentos vacíos, <c>.</c> o <c>..</c>.
     /// </exception>
     /// <exception cref="IOException">No se pueden leer los metadatos.</exception>
     /// <exception cref="UnauthorizedAccessException">Sin permiso.</exception>

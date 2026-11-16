@@ -140,7 +140,12 @@ public sealed class BackupEngineSecurityReviewTests
     }
 
     public static TheoryData<string> InvalidExclusions =>
-        ["", @"..\Backbone", @"ProgramData\..\Backbone", @"C:\ProgramData\Backbone", @"\ProgramData", @"ProgramData\\Backbone", @"ProgramData\.\Backbone", @"ProgramData\Backbone\", "a:b"];
+        ["", @"..\Backbone", @"ProgramData\..\Backbone", @"C:\ProgramData\Backbone", @"\ProgramData", @"ProgramData\\Backbone", @"ProgramData\.\Backbone", @"ProgramData\Backbone\", "a:b",
+
+            // I-1: segmentos que no son válidos en un snapshot (SnapshotPaths.IsValidSegment), defensa en profundidad.
+            @"ProgramData\Back*bone", @"ProgramData\Back?bone", @"ProgramData\<Backbone>", @"ProgramData\Back|bone",
+            "ProgramData\\Back\"bone", @"ProgramData\Backbone.", @"ProgramData\Backbone ", "ProgramData\\Back\tbone",
+            "ProgramData\\" + new string('x', ContractLimits.MaxSegmentLength + 1)];
 
     [Theory]
     [MemberData(nameof(InvalidExclusions))]
@@ -155,6 +160,16 @@ public sealed class BackupEngineSecurityReviewTests
 
         Assert.Equal(0, source.EnumerationCount);
         Assert.Empty(await ListSnapshotsAsync(storage));
+    }
+
+    [Fact]
+    [Trait("Requirement", "ADR-16")]
+    public void HU13_8_Exclusion_segments_must_be_valid_snapshot_segments()
+    {
+        // I-1 (defensa en profundidad). Una suplente suelta no sobrevive a la serialización de los datos de [Theory].
+        Assert.Throws<ArgumentException>(() => MandatoryExclusionSet.ParseRelative("ProgramData/Back\uD800bone"));
+        Assert.Throws<ArgumentException>(() => MandatoryExclusionSet.ParseRelative("ProgramData\\Back\uDC00"));
+        Assert.Equal(["ProgramData", "Backbone.untrusted-x \U0001F600"], MandatoryExclusionSet.ParseRelative("ProgramData\\Backbone.untrusted-x \U0001F600"));
     }
 
     [Fact]
@@ -508,7 +523,10 @@ public sealed class BackupEngineSecurityReviewTests
         var source = ListingSource(5);
 
         var noParent = await RunAsync(storage, time, source, Request([DefaultSources[0]]), configure: e => e.ListingBudgetBytes = 100);
-        Assert.Equal("Documentos", Assert.Single(noParent.Warnings).Path);
+        var rootWarning = Assert.Single(noParent.Warnings);
+        Assert.Equal("Documentos", rootWarning.Path);
+        Assert.Equal(nameof(RunIssueCode.SourceRootUnreadable), rootWarning.Code); // B-1, §8.4: no ReadError
+        Assert.Contains("demasiados elementos", rootWarning.Message, StringComparison.Ordinal);
         Assert.Empty(await ReadEntriesAsync(storage, noParent.Snapshot.Id));
 
         time.Advance(TimeSpan.FromDays(1));
@@ -519,7 +537,7 @@ public sealed class BackupEngineSecurityReviewTests
         Assert.Equal(
             (await ReadEntriesAsync(storage, full.Snapshot.Id)).OrderBy(e => e.Path, StringComparer.Ordinal),
             (await ReadEntriesAsync(storage, kept.Snapshot.Id)).OrderBy(e => e.Path, StringComparer.Ordinal));
-        Assert.Equal(nameof(RunIssueCode.ReadError), Assert.Single(kept.Warnings).Code);
+        Assert.Equal(nameof(RunIssueCode.SourceRootUnreadable), Assert.Single(kept.Warnings).Code);
     }
 
     [Fact]
@@ -541,7 +559,10 @@ public sealed class BackupEngineSecurityReviewTests
             Assert.NotNull(engine);
             Assert.True(engine.PeakListingBytes <= budget, $"Ronda {round}: {engine.PeakListingBytes} > {budget}");
             var stored = (await ReadEntriesAsync(storage, result.Snapshot.Id)).Select(e => e.Path).ToHashSet(StringComparer.Ordinal);
-            var unreadable = result.Warnings.Where(w => w.Code == nameof(RunIssueCode.ReadError)).Select(w => w.Path + "/").ToList();
+            var unreadable = result.Warnings
+                .Where(w => w.Code is nameof(RunIssueCode.ReadError) or nameof(RunIssueCode.SourceRootUnreadable))
+                .Select(w => w.Path + "/")
+                .ToList();
             Assert.Equal(result.WarningCount, result.Warnings.Count);
             foreach (var file in files)
             {
@@ -605,7 +626,8 @@ public sealed class BackupEngineSecurityReviewTests
 
     [Fact]
     [Trait("Requirement", "RF-06")]
-    public async Task HU13_Reparse_A_source_root_that_becomes_a_junction_is_skipped_and_the_other_sources_are_copied()
+    [Trait("Requirement", "R11")]
+    public async Task HU13_Reparse_A_source_root_that_becomes_a_junction_without_parent_gives_SourceRootUnreadable_and_the_other_sources_are_copied()
     {
         var storage = new InMemoryRepositoryStorage();
         var inner = SampleSource();
@@ -614,10 +636,199 @@ public sealed class BackupEngineSecurityReviewTests
 
         var result = await RunAsync(storage, new ManualTimeProvider(), source);
 
-        Assert.Equal(("Documentos", nameof(RunIssueCode.ReparsePointSkipped)), (Assert.Single(result.Warnings).Path, result.Warnings[0].Code));
+        var warning = Assert.Single(result.Warnings);
+        Assert.Equal(("Documentos", nameof(RunIssueCode.SourceRootUnreadable)), (warning.Path, warning.Code));
+        Assert.Contains("(ReparsePointSkipped)", warning.Message, StringComparison.Ordinal);
+        Assert.Equal(RunState.CompletedWithWarnings, result.State);
         var entries = await ReadEntriesAsync(storage, result.Snapshot.Id);
         Assert.DoesNotContain(entries, e => e.Path.StartsWith("Documentos", StringComparison.Ordinal));
         Assert.Contains(entries, e => e.Path == "Fotos/año 2026/playa ñ.jpg");
+        Assert.DoesNotContain(inner.Opened, p => p.StartsWith(DocumentsRoot, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    [Trait("Requirement", "RF-25")]
+    [Trait("Requirement", "R11")]
+    public async Task HU13_RootUnreadable_A_source_root_that_becomes_a_junction_keeps_everything_it_had_in_the_parent()
+    {
+        // B-1 (§8.4): a diferencia de una carpeta interior (RF-06, sin conservar), la raíz conserva lo del padre.
+        var storage = new InMemoryRepositoryStorage();
+        var time = new ManualTimeProvider();
+        var inner = SampleSource();
+        var first = await RunAsync(storage, time, inner);
+        time.Advance(TimeSpan.FromDays(1));
+        inner.Modify(DocumentsRoot + @"\notas.txt", "cambiado"u8.ToArray());
+        inner.AddFile(PhotosRoot + @"\nueva.jpg", [1, 2, 3]);
+        inner.ResetCounters();
+        var source = new ReparseSwitchingSource(inner);
+        source.EnumerateBecomesLink.Add(DocumentsRoot);
+
+        var result = await RunAsync(storage, time, source);
+
+        var warning = Assert.Single(result.Warnings);
+        Assert.Equal(("Documentos", nameof(RunIssueCode.SourceRootUnreadable)), (warning.Path, warning.Code));
+        Assert.Equal(RunState.CompletedWithWarnings, result.State);
+        var before = await ReadEntriesAsync(storage, first.Snapshot.Id);
+        var after = await ReadEntriesAsync(storage, result.Snapshot.Id);
+        Assert.Equal(
+            before.Where(e => e.Alias == "Documentos").OrderBy(e => e.Path, StringComparer.Ordinal),
+            after.Where(e => e.Alias == "Documentos").OrderBy(e => e.Path, StringComparer.Ordinal));
+        Assert.Contains(after, e => e.Path == "Fotos/nueva.jpg");
+        Assert.DoesNotContain(inner.Opened, p => p.StartsWith(DocumentsRoot, StringComparison.Ordinal));
+        Assert.Equal(1, result.Snapshot.Stats.Skipped);
+        await RepositoryInvariants.AssertConsistentAsync(storage);
+    }
+
+    public static TheoryData<string, string> RootCauses => new()
+    {
+        { "AccessDenied", nameof(RunIssueCode.AccessDenied) },
+        { "IO", nameof(RunIssueCode.ReadError) },
+        { "PathInvalid", nameof(RunIssueCode.PathInvalid) },
+        { "FinalPath", nameof(RunIssueCode.ReparsePointSkipped) },
+    };
+
+    [Theory]
+    [MemberData(nameof(RootCauses))]
+    [Trait("Requirement", "RF-25")]
+    [Trait("Requirement", "R11")]
+    public async Task HU13_RootUnreadable_Any_cause_on_the_root_gives_SourceRootUnreadable_with_the_alias_and_the_cause_and_keeps_the_parent(string cause, string causeCode)
+    {
+        var storage = new InMemoryRepositoryStorage();
+        var time = new ManualTimeProvider();
+        var source = SampleSource();
+        var first = await RunAsync(storage, time, source);
+        time.Advance(TimeSpan.FromDays(1));
+        Exception error = cause switch
+        {
+            "AccessDenied" => new UnauthorizedAccessException("Acceso denegado."),
+            "IO" => new IOException("Error de E/S en la raíz."),
+            "PathInvalid" => new SourceAccessException(RunIssueCode.PathInvalid, "La ruta no es de un origen de la ejecución."),
+            _ => new SourceAccessException(RunIssueCode.ReparsePointSkipped, "La ruta final no es la esperada."),
+        };
+        source.FailEnumerate(PhotosRoot, error);
+
+        var result = await RunAsync(storage, time, source);
+
+        var warning = Assert.Single(result.Warnings);
+        Assert.Equal("Fotos", warning.Path);
+        Assert.Equal(nameof(RunIssueCode.SourceRootUnreadable), warning.Code);
+        Assert.Contains($"({causeCode})", warning.Message, StringComparison.Ordinal);
+        Assert.Contains(error.Message, warning.Message, StringComparison.Ordinal);
+        Assert.Equal(RunState.CompletedWithWarnings, result.State);
+        Assert.Equal(
+            (await ReadEntriesAsync(storage, first.Snapshot.Id)).Where(e => e.Alias == "Fotos"),
+            (await ReadEntriesAsync(storage, result.Snapshot.Id)).Where(e => e.Alias == "Fotos"));
+
+        // El aviso llega igual al lector del snapshot (lo que verá el servicio y la app).
+        var repository = await OpenOrInitializeAsync(storage, time, Ct);
+        var header = await repository.ReadSnapshotHeaderAsync(result.Snapshot.Id, Ct);
+        Assert.Equal(nameof(RunIssueCode.SourceRootUnreadable), Assert.Single(header.Warnings).Code);
+    }
+
+    [Fact]
+    [Trait("Requirement", "RF-25")]
+    public async Task HU13_RootUnreadable_An_unreadable_inner_folder_keeps_the_code_of_its_cause()
+    {
+        var storage = new InMemoryRepositoryStorage();
+        var source = SampleSource();
+        source.FailEnumerate(DocumentsRoot + @"\Facturas", new UnauthorizedAccessException("Acceso denegado."));
+
+        var result = await RunAsync(storage, new ManualTimeProvider(), source);
+
+        var warning = Assert.Single(result.Warnings);
+        Assert.Equal(("Documentos/Facturas", nameof(RunIssueCode.AccessDenied)), (warning.Path, warning.Code));
+    }
+
+    // ================================================================== Ruta final sobre el mismo handle (M-A, ADR-18, §8.2)
+
+    [Fact]
+    [Trait("Requirement", "ADR-18")]
+    public async Task HU13_FinalPath_A_contract_compliant_source_accepts_every_path_the_engine_asks_for_including_the_roots()
+    {
+        var storage = new InMemoryRepositoryStorage();
+        var inner = SampleSource();
+        var source = new FinalPathCheckingSource(inner, DefaultSources);
+
+        var result = await RunAsync(storage, new ManualTimeProvider(), source);
+
+        Assert.Equal(RunState.Completed, result.State);
+        Assert.Empty(result.Warnings);
+        Assert.Empty(source.Rejected);
+        Assert.Contains(DocumentsRoot, source.Checked);
+        Assert.Contains(PhotosRoot, source.Checked);
+    }
+
+    [Fact]
+    [Trait("Requirement", "ADR-18")]
+    public async Task HU13_FinalPath_An_intermediate_folder_replaced_by_a_junction_after_listing_is_never_read_through_the_link()
+    {
+        // M-A: Documentos\A se enumera y después se sustituye por un junction hacia la carpeta de datos. Al abrir
+        // Documentos\A\x.bin, la ruta final ya no es raíz + ruta relativa: ReparsePointSkipped y no se lee nada.
+        var storage = new InMemoryRepositoryStorage();
+        var inner = new InMemorySourceFileSystem();
+        inner.AddFile(DocumentsRoot + @"\A\x.bin", "normal"u8.ToArray());
+        inner.AddFile(DocumentsRoot + @"\b.txt", "b"u8.ToArray());
+        inner.AddFile(@"C:\ProgramData\Backbone\credentials\x.bin", "SECRETO"u8.ToArray());
+        var source = new FinalPathCheckingSource(inner, [DefaultSources[0]]);
+        source.SwapAfterListing(DocumentsRoot + @"\A", @"C:\ProgramData\Backbone\credentials");
+
+        var result = await RunAsync(storage, new ManualTimeProvider(), source, Request([DefaultSources[0]]));
+
+        var warning = Assert.Single(result.Warnings);
+        Assert.Equal(("Documentos/A/x.bin", nameof(RunIssueCode.ReparsePointSkipped)), (warning.Path, warning.Code));
+        Assert.DoesNotContain(inner.Opened, p => p.StartsWith(@"C:\ProgramData", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(Sha256("SECRETO"u8.ToArray()), string.Join('\n', ObjectPaths(storage)), StringComparison.Ordinal);
+        Assert.DoesNotContain(await ReadEntriesAsync(storage, result.Snapshot.Id), e => e.Path == "Documentos/A/x.bin");
+        Assert.Contains(await ReadEntriesAsync(storage, result.Snapshot.Id), e => e.Path == "Documentos/b.txt");
+    }
+
+    [Fact]
+    [Trait("Requirement", "ADR-18")]
+    public async Task HU13_FinalPath_Contract_rejects_paths_outside_the_sources_dot_segments_and_mandatory_exclusions()
+    {
+        // Referencia ejecutable del contrato de §8.2 para la implementación real (backbone-service).
+        var inner = SystemDrive(SystemRoot);
+        var source = new FinalPathCheckingSource(inner, [SystemSource(SystemRoot)]);
+
+        async Task<RunIssueCode> CodeOf(string path) =>
+            (await Assert.ThrowsAsync<SourceAccessException>(() => source.OpenReadAsync(path, Ct))).Code;
+
+        Assert.Equal(RunIssueCode.PathInvalid, await CodeOf(@"F:\Otro\a.txt"));
+        Assert.Equal(RunIssueCode.PathInvalid, await CodeOf(SystemRoot + "Otro\\a.txt")); // prefijo sin '\'
+        Assert.Equal(RunIssueCode.PathInvalid, await CodeOf(SystemRoot + @"\Users\..\ProgramData\Backbone\config\jobs.json"));
+        Assert.Equal(RunIssueCode.PathInvalid, await CodeOf(SystemRoot + @"\Users\.\ana\doc.txt"));
+        Assert.Equal(RunIssueCode.PathInvalid, await CodeOf(SystemRoot + @"\Users\\ana\doc.txt"));
+        Assert.Equal(RunIssueCode.ReparsePointSkipped, await CodeOf(SystemRoot + @"\ProgramData\Backbone\credentials\0123abcd.bin"));
+        Assert.Equal(RunIssueCode.ReparsePointSkipped, await CodeOf(SystemRoot + @"\programdata\" + UntrustedName.ToUpperInvariant() + @"\credentials\viejo.bin"));
+        Assert.Empty(inner.Opened);
+
+        await using var stream = await source.OpenReadAsync(SystemRoot + @"\Users\ana\doc.txt", Ct);
+        Assert.Equal([SystemRoot + @"\Users\ana\doc.txt"], inner.Opened);
+    }
+
+    [Fact]
+    [Trait("Requirement", "ADR-18")]
+    [Trait("Requirement", "R11")]
+    public async Task HU13_FinalPath_A_root_whose_final_path_changed_gives_SourceRootUnreadable_and_keeps_the_parent()
+    {
+        var storage = new InMemoryRepositoryStorage();
+        var time = new ManualTimeProvider();
+        var inner = SampleSource();
+        inner.AddFile(@"C:\ProgramData\Backbone\credentials\x.bin", "SECRETO"u8.ToArray());
+        var first = await RunAsync(storage, time, inner);
+        time.Advance(TimeSpan.FromDays(1));
+        inner.ResetCounters();
+        var source = new FinalPathCheckingSource(inner, DefaultSources);
+        source.Swap(DocumentsRoot, @"C:\ProgramData\Backbone\credentials");
+
+        var result = await RunAsync(storage, time, source);
+
+        var warning = Assert.Single(result.Warnings);
+        Assert.Equal(("Documentos", nameof(RunIssueCode.SourceRootUnreadable)), (warning.Path, warning.Code));
+        Assert.Empty(inner.Opened);
+        Assert.Equal(
+            (await ReadEntriesAsync(storage, first.Snapshot.Id)).Where(e => e.Alias == "Documentos"),
+            (await ReadEntriesAsync(storage, result.Snapshot.Id)).Where(e => e.Alias == "Documentos"));
     }
 
     [Fact]
@@ -799,6 +1010,123 @@ public sealed class BackupEngineSecurityReviewTests
 
             var info = await inner.GetFileInfoAsync(filePath, cancellationToken);
             return info is not null && InfoReportsLink.Contains(filePath) ? info with { Attributes = info.Attributes | FileAttributes.ReparsePoint } : info;
+        }
+    }
+
+    /// <summary>
+    /// Simulador del contrato de ADR-18 (§8.2 "Lectura de los orígenes"): se crea por ejecución con los orígenes, deduce la
+    /// ruta relativa quitando <c>ReadPath\</c> (rechaza con <see cref="RunIssueCode.PathInvalid"/> lo que no es de un origen
+    /// o tiene segmentos vacíos, <c>.</c> o <c>..</c>) y, sobre el "handle" ya abierto (la ruta resuelta a través de los
+    /// enlaces que haya en ese momento), exige que la ruta final sea la raíz final más la ruta relativa y que no caiga en
+    /// una exclusión obligatoria; si no, <see cref="RunIssueCode.ReparsePointSkipped"/> sin leer nada.
+    /// </summary>
+    private sealed class FinalPathCheckingSource : ISourceFileSystem
+    {
+        private readonly InMemorySourceFileSystem inner;
+        private readonly IReadOnlyList<BackupSource> sources;
+        private readonly Dictionary<string, string> rootFinalPaths = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> links = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> pendingAfterListing = new(StringComparer.OrdinalIgnoreCase);
+
+        public FinalPathCheckingSource(InMemorySourceFileSystem inner, IReadOnlyList<BackupSource> sources)
+        {
+            this.inner = inner;
+            this.sources = sources;
+
+            // La ruta final de cada raíz se obtiene una vez al crear la implementación (al empezar la ejecución).
+            foreach (var source in sources)
+            {
+                rootFinalPaths[source.ReadPath] = Resolve(source.ReadPath);
+            }
+        }
+
+        public List<string> Checked { get; } = [];
+
+        public List<(string Path, RunIssueCode Code)> Rejected { get; } = [];
+
+        /// <summary>Sustituye ya la carpeta por un enlace hacia <paramref name="target"/>.</summary>
+        public void Swap(string folder, string target) => links[folder] = target;
+
+        /// <summary>Sustituye la carpeta por un enlace en cuanto termina de enumerarse (carrera de una copia en vivo).</summary>
+        public void SwapAfterListing(string folder, string target) => pendingAfterListing[folder] = target;
+
+        public async IAsyncEnumerable<SourceEntry> EnumerateAsync(string directoryPath, [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            var final = Check(directoryPath);
+            await foreach (var entry in inner.EnumerateAsync(final, cancellationToken))
+            {
+                // Como la implementación real: raíz recibida + '\' + nombre enumerado.
+                yield return entry with { FullPath = directoryPath + @"\" + entry.Name };
+            }
+
+            if (pendingAfterListing.Remove(directoryPath, out var target))
+            {
+                links[directoryPath] = target;
+            }
+        }
+
+        public Task<Stream> OpenReadAsync(string filePath, CancellationToken cancellationToken) =>
+            inner.OpenReadAsync(Check(filePath), cancellationToken);
+
+        public async Task<SourceEntry?> GetFileInfoAsync(string filePath, CancellationToken cancellationToken)
+        {
+            var info = await inner.GetFileInfoAsync(Check(filePath), cancellationToken);
+            return info is null ? null : info with { FullPath = filePath };
+        }
+
+        private string Resolve(string path)
+        {
+            foreach (var (folder, target) in links)
+            {
+                if (string.Equals(path, folder, StringComparison.OrdinalIgnoreCase)
+                    || path.StartsWith(folder + @"\", StringComparison.OrdinalIgnoreCase))
+                {
+                    return target + path[folder.Length..];
+                }
+            }
+
+            return path;
+        }
+
+        private string Check(string path)
+        {
+            Checked.Add(path);
+            var source = sources.FirstOrDefault(s =>
+                string.Equals(path, s.ReadPath, StringComparison.Ordinal) || path.StartsWith(s.ReadPath + @"\", StringComparison.Ordinal));
+            if (source is null)
+            {
+                throw Reject(path, RunIssueCode.PathInvalid);
+            }
+
+            var relative = path.Length == source.ReadPath.Length ? string.Empty : path[(source.ReadPath.Length + 1)..];
+            if (relative.Length > 0 && relative.Split('\\').Any(s => s is "" or "." or ".."))
+            {
+                throw Reject(path, RunIssueCode.PathInvalid);
+            }
+
+            var final = Resolve(path);
+            var expected = relative.Length == 0 ? rootFinalPaths[source.ReadPath] : rootFinalPaths[source.ReadPath] + @"\" + relative;
+            if (!string.Equals(final, expected, StringComparison.OrdinalIgnoreCase))
+            {
+                throw Reject(path, RunIssueCode.ReparsePointSkipped);
+            }
+
+            foreach (var exclusion in source.MandatoryExclusions.Select(e => e.Replace('/', '\\')))
+            {
+                if (string.Equals(relative, exclusion, StringComparison.OrdinalIgnoreCase)
+                    || relative.StartsWith(exclusion + @"\", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw Reject(path, RunIssueCode.ReparsePointSkipped);
+                }
+            }
+
+            return final;
+        }
+
+        private SourceAccessException Reject(string path, RunIssueCode code)
+        {
+            Rejected.Add((path, code));
+            return new SourceAccessException(code, $"{path} no supera la comprobación de la ruta final ({code}).");
         }
     }
 

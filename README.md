@@ -83,7 +83,7 @@ Las convenciones de código, la propiedad de cada carpeta y el flujo de trabajo 
 El MVP está en desarrollo; el detalle por historia está en [docs/HISTORIAS.md](docs/HISTORIAS.md#seguimiento).
 
 - **Hecho**: estructura de la solución y CI (HT-01, HT-02); canal IPC seguro entre app y servicio (HT-03); formato del repositorio endurecido (HT-04); icono de la bandeja con estado y menú (HU-18); credenciales del NAS guardadas con DPAPI de ámbito equipo (HU-04, parte del servicio).
-- **En curso**: motor de copia incremental con deduplicación (HU-13).
+- **Motor de copia** de copia incremental con versiones y deduplicación (HU-13): solo relee lo que cambia, omite con aviso lo ilegible conservando la versión anterior y nunca copia la carpeta de datos de Backbone. Todavía no lo ejecuta el servicio.
 - **Todavía no**: conexión real al NAS, programación, VSS, restauración e instalador; el servicio aún no hace copias de extremo a extremo.
 
 ## Licencia

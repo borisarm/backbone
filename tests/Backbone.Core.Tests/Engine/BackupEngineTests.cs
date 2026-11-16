@@ -449,7 +449,11 @@ public sealed class BackupEngineTests
         var second = await RunAsync(storage, time, source);
 
         Assert.Equal(RunState.CompletedWithWarnings, second.State);
-        Assert.Equal("Fotos", Assert.Single(second.Warnings).Path);
+        var warning = Assert.Single(second.Warnings);
+        Assert.Equal("Fotos", warning.Path);
+        Assert.Equal(nameof(RunIssueCode.SourceRootUnreadable), warning.Code); // §8.4, R11: no el de la causa
+        Assert.Contains("(ReadError)", warning.Message, StringComparison.Ordinal);
+        Assert.Contains("La unidad no está disponible.", warning.Message, StringComparison.Ordinal);
         var before = await ReadEntriesAsync(storage, first.Snapshot.Id);
         var after = await ReadEntriesAsync(storage, second.Snapshot.Id);
         Assert.Equal(
