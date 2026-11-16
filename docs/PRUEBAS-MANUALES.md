@@ -302,7 +302,7 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 
 **Resultado esperado:** pasa y no aparece como omitida.
 
-**Estado:** pendiente.
+**Estado:** superada el 2026-11-16 en PowerShell elevado (1 prueba correcta, 0 omitidas).
 
 ## PM-HU13-01 · Copia real a un recurso SMB con rutas largas y exclusión de la carpeta de datos
 
