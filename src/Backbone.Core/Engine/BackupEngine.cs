@@ -1,3 +1,4 @@
+using System.Text;
 using Backbone.Contracts;
 using Backbone.Core.Repository;
 using Backbone.Core.Repository.Locking;
@@ -19,8 +20,17 @@ namespace Backbone.Core.Engine;
 /// </para>
 /// <para>
 /// <b>Detección incremental</b> (RF-23): un archivo cuyo tamaño, fecha de modificación y atributos guardados coinciden con
-/// los del snapshot padre no se abre; su entrada reutiliza el hash del padre. El padre es el último snapshot del
-/// repositorio con el mismo <see cref="BackupRequest.JobId"/>.
+/// los del snapshot padre no se abre; su entrada reutiliza el hash del padre. El padre (ADR-17, §6.3 "Snapshot padre") es
+/// el último snapshot del repositorio con el mismo <see cref="BackupRequest.JobId"/> cuya fecha (la de su identificador y
+/// su <c>startedUtc</c>) no pasa del inicio de la copia más la tolerancia de reloj
+/// (<see cref="RepositoryLockPolicy.StaleAfter"/>); los de fecha futura se descartan y se devuelven en
+/// <see cref="BackupResult.IgnoredParents"/> para que el servicio los registre. Una cabecera ilegible, o un padre cuyo
+/// manifiesto es corrupto, hacen fallar la copia con <see cref="RepositoryErrorKind.Corrupt"/>; un error de E/S al leerlos
+/// se propaga como tal.
+/// </para>
+/// <para>
+/// <b>Exclusiones obligatorias</b> (ADR-16, §8.3): las rutas de <see cref="BackupSource.MandatoryExclusions"/> no se
+/// recorren, no generan avisos y no aparecen en el snapshot (tampoco lo que hubiera debajo en el padre).
 /// </para>
 /// <para>
 /// <b>Archivos ilegibles</b> (RF-25): un archivo o carpeta que no se puede leer se omite con un aviso y la ejecución termina
@@ -39,9 +49,12 @@ namespace Backbone.Core.Engine;
 /// cancelación se propagan; un snapshot padre corrupto también (el motor no adivina qué versión conservar).
 /// </para>
 /// <para>
-/// <b>Memoria</b> (RNF-05): el manifiesto padre se lee en streaming a un índice compacto (<see cref="ParentIndex"/>), las
-/// entradas nuevas van directas al escritor del snapshot, en memoria solo hay los hijos de las carpetas que se están
-/// recorriendo y como mucho <see cref="SnapshotLimits.MaxWarnings"/> avisos.
+/// <b>Memoria</b> (RNF-05, §8.4 "Memoria del motor"): el manifiesto padre se lee en streaming a un índice compacto
+/// (<see cref="ParentIndex"/>) y las entradas nuevas van directas al escritor del snapshot. Lo demás se acota por bytes:
+/// los avisos retenidos (como mucho <see cref="SnapshotLimits.MaxWarnings"/> y
+/// <see cref="SnapshotLimits.TruncatedWarningsHeaderBytes"/> en UTF-8; los demás solo se cuentan) y los listados de las
+/// carpetas abiertas (<see cref="DefaultListingBudgetBytes"/>; una carpeta que no cabe se trata como ilegible con aviso
+/// <see cref="RunIssueCode.ReadError"/> y conserva lo que tenía en el padre).
 /// </para>
 /// </remarks>
 public sealed class BackupEngine
@@ -55,8 +68,46 @@ public sealed class BackupEngine
         this.timeProvider = timeProvider;
     }
 
+    /// <summary>
+    /// Presupuesto de los listados de carpetas abiertas a la vez (§8.4 "Memoria del motor"): 128 MiB, estimados con
+    /// 2 bytes por carácter de nombre y ruta más 64 bytes por elemento.
+    /// </summary>
+    public const long DefaultListingBudgetBytes = 128L * 1024 * 1024;
+
+    /// <summary>Máximo de snapshots descartados por fecha futura que se devuelven en <see cref="BackupResult.IgnoredParents"/>.</summary>
+    public const int MaxReportedIgnoredParents = 100;
+
+    /// <summary>Bytes estimados por elemento de un listado, aparte de sus textos (§8.4).</summary>
+    private const long ListingOverheadBytes = 64;
+
     /// <summary>Máximo de entradas del snapshot (las pruebas lo reducen); por defecto el de §6.3.</summary>
     internal long MaxSnapshotEntries { get; set; } = RepositoryLayout.MaxSnapshotEntries;
+
+    /// <summary>Presupuesto de los listados abiertos (las pruebas lo reducen); por defecto <see cref="DefaultListingBudgetBytes"/>.</summary>
+    internal long ListingBudgetBytes { get; set; } = DefaultListingBudgetBytes;
+
+    /// <summary>Máximo de avisos retenidos en memoria (las pruebas lo reducen); por defecto <see cref="SnapshotLimits.MaxWarnings"/>.</summary>
+    internal int MaxRetainedWarnings { get; set; } = SnapshotLimits.MaxWarnings;
+
+    /// <summary>
+    /// Máximo de la suma de los textos de los avisos retenidos en UTF-8 (las pruebas lo reducen); por defecto
+    /// <see cref="SnapshotLimits.TruncatedWarningsHeaderBytes"/>.
+    /// </summary>
+    internal long MaxRetainedWarningBytes { get; set; } = SnapshotLimits.TruncatedWarningsHeaderBytes;
+
+    /// <summary>Máximo de la estimación de los listados abiertos alcanzado en las ejecuciones de esta instancia (pruebas).</summary>
+    internal long PeakListingBytes { get; private set; }
+
+    /// <summary>
+    /// Bytes que se cuentan por un elemento de un listado (§8.4): 2 por carácter de <see cref="SourceEntry.Name"/> y
+    /// <see cref="SourceEntry.FullPath"/> más 64.
+    /// </summary>
+    internal static long EstimateListingBytes(SourceEntry entry) =>
+        (2L * ((long)entry.Name.Length + entry.FullPath.Length)) + ListingOverheadBytes;
+
+    /// <summary>Bytes que se cuentan por una carpeta de la pila (sus rutas), con la misma estimación.</summary>
+    private static long EstimateFrameBytes(DirectoryFrame frame) =>
+        (2L * ((long)frame.FullPath.Length + frame.SnapshotPath.Length)) + ListingOverheadBytes;
 
     /// <summary>Hace una copia y publica su snapshot.</summary>
     /// <param name="repository">Repositorio abierto.</param>
@@ -66,9 +117,12 @@ public sealed class BackupEngine
     /// <param name="progress">Progreso, después de cada archivo; opcional.</param>
     /// <param name="cancellationToken">Se comprueba entre archivos y en cada bloque de 1 MiB dentro de un archivo.</param>
     /// <returns>El snapshot publicado y los avisos.</returns>
-    /// <exception cref="ArgumentException">Datos del trabajo no válidos (§6.3 "Límites").</exception>
+    /// <exception cref="ArgumentException">
+    /// Datos del trabajo no válidos (§6.3 "Límites") o exclusión obligatoria que no es una ruta relativa válida.
+    /// </exception>
     /// <exception cref="RepositoryException">
-    /// Bloqueo perdido, snapshot padre ilegible o corrupto, conflicto de identificador o snapshot demasiado grande
+    /// Bloqueo perdido, cabecera de snapshot o snapshot padre ilegibles o corruptos, objeto existente que no coincide en
+    /// tamaño (<see cref="RepositoryErrorKind.Corrupt"/>), conflicto de identificador o snapshot demasiado grande
     /// (<see cref="RepositoryErrorKind.SnapshotTooLarge"/>); no se publica nada.
     /// </exception>
     /// <exception cref="IOException">Error del almacenamiento del repositorio; no se publica nada.</exception>
@@ -85,12 +139,14 @@ public sealed class BackupEngine
         ArgumentNullException.ThrowIfNull(repositoryLock);
         ArgumentNullException.ThrowIfNull(source);
         Validate(request);
+        var exclusions = MandatoryExclusionSet.Create(request.Sources);
 
         repositoryLock.ThrowIfLost();
         var startedUtc = request.StartedUtc is { } started ? ToUtc(started) : timeProvider.GetUtcNow().UtcDateTime;
 
         // Con el bloqueo ya adquirido: ni la retención ni la limpieza pueden borrar el padre ni sus objetos (§6.4.4–5).
-        var parentId = await FindParentAsync(repository, request.JobId, cancellationToken).ConfigureAwait(false);
+        var search = await FindParentAsync(repository, request.JobId, startedUtc, cancellationToken).ConfigureAwait(false);
+        var parentId = search.ParentId;
         var parent = parentId is null
             ? ParentIndex.Empty
             : await ParentIndex.LoadAsync(repository, parentId, cancellationToken).ConfigureAwait(false);
@@ -110,7 +166,7 @@ public sealed class BackupEngine
         await using (writer.ConfigureAwait(false))
         {
             writer.MaxEntries = MaxSnapshotEntries;
-            var run = new Run(repository, repositoryLock, source, writer, parent, progress);
+            var run = new Run(this, repository, repositoryLock, source, writer, parent, exclusions, progress);
             foreach (var warning in request.AdditionalWarnings)
             {
                 run.Warn(warning);
@@ -143,6 +199,8 @@ public sealed class BackupEngine
                 State = status == SnapshotStatus.CompletedWithWarnings ? RunState.CompletedWithWarnings : RunState.Completed,
                 Warnings = run.Warnings,
                 WarningCount = run.WarningCount,
+                IgnoredParents = search.Ignored,
+                IgnoredParentCount = search.IgnoredCount,
             };
         }
     }
@@ -152,6 +210,13 @@ public sealed class BackupEngine
     /// </summary>
     internal static bool IsSourceError(Exception exception) =>
         exception is IOException or UnauthorizedAccessException;
+
+    /// <summary>
+    /// El elemento es (o se ha convertido en) un punto de reanálisis (§8.2): se omite como los que devuelve la enumeración
+    /// (RF-06), sin conservar su versión anterior.
+    /// </summary>
+    internal static bool IsReparsePointError(Exception? exception) =>
+        exception is SourceAccessException { Code: RunIssueCode.ReparsePointSkipped };
 
     /// <summary>Motivo del aviso de un elemento de origen ilegible.</summary>
     internal static RunIssueCode IssueCode(Exception exception) => exception switch
@@ -169,20 +234,59 @@ public sealed class BackupEngine
         _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
     };
 
-    /// <summary>Último snapshot del repositorio del mismo trabajo, o <see langword="null"/> si no hay ninguno.</summary>
-    private static async Task<string?> FindParentAsync(BackupRepository repository, string jobId, CancellationToken cancellationToken)
+    /// <summary>
+    /// Snapshot padre (ADR-17, §6.3 "Snapshot padre"): el más reciente del mismo trabajo cuya fecha no pasa de
+    /// <paramref name="startedUtc"/> más <see cref="RepositoryLockPolicy.StaleAfter"/>. Los de fecha posterior se descartan
+    /// y se sigue hacia atrás; si ya la fecha del identificador la supera, sin leer su cabecera.
+    /// </summary>
+    /// <exception cref="RepositoryException">
+    /// Una cabecera que hay que leer no es válida (<see cref="RepositoryErrorKind.Corrupt"/>) o es de un formato posterior.
+    /// No se salta: no se puede descartar que sea del trabajo.
+    /// </exception>
+    /// <exception cref="IOException">Error del almacenamiento al leer una cabecera (no se convierte en corrupción).</exception>
+    private static async Task<ParentSearch> FindParentAsync(BackupRepository repository, string jobId, DateTime startedUtc, CancellationToken cancellationToken)
     {
-        var ids = await repository.ListSnapshotIdsAsync(cancellationToken).ConfigureAwait(false);
-        for (var i = ids.Count - 1; i >= 0; i--)
+        var limitUtc = startedUtc + RepositoryLockPolicy.StaleAfter;
+        var ignored = new List<IgnoredParentCandidate>();
+        long ignoredCount = 0;
+
+        void Ignore(string id, DateTime dateUtc, bool headerRead)
         {
-            var header = await repository.ReadSnapshotHeaderAsync(ids[i], cancellationToken).ConfigureAwait(false);
-            if (string.Equals(header.JobId, jobId, StringComparison.Ordinal))
+            ignoredCount++;
+            if (ignored.Count < MaxReportedIgnoredParents)
             {
-                return ids[i];
+                ignored.Add(new IgnoredParentCandidate(id, dateUtc, limitUtc, headerRead));
             }
         }
 
-        return null;
+        var ids = await repository.ListSnapshotIdsAsync(cancellationToken).ConfigureAwait(false);
+        for (var i = ids.Count - 1; i >= 0; i--)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var id = ids[i];
+            if (SnapshotId.TryGetTimestamp(id, out var idDateUtc) && idDateUtc > limitUtc)
+            {
+                Ignore(id, idDateUtc, headerRead: false);
+                continue;
+            }
+
+            var header = await repository.ReadSnapshotHeaderAsync(id, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(header.JobId, jobId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var headerStartedUtc = ToUtc(header.StartedUtc);
+            if (headerStartedUtc > limitUtc)
+            {
+                Ignore(id, headerStartedUtc, headerRead: true);
+                continue;
+            }
+
+            return new ParentSearch(id, ignored, ignoredCount);
+        }
+
+        return new ParentSearch(null, ignored, ignoredCount);
     }
 
     private static void Validate(BackupRequest request)
@@ -194,21 +298,39 @@ public sealed class BackupEngine
         {
             ArgumentNullException.ThrowIfNull(source);
             ArgumentException.ThrowIfNullOrEmpty(source.ReadPath);
+            ArgumentNullException.ThrowIfNull(source.MandatoryExclusions);
         }
 
         // El resto (alias, rutas, textos de cabecera) lo valida el escritor del snapshot al empezar.
     }
 
+    /// <summary>Resultado de la búsqueda del snapshot padre.</summary>
+    private sealed record ParentSearch(string? ParentId, IReadOnlyList<IgnoredParentCandidate> Ignored, long IgnoredCount);
+
     /// <summary>Estado de una ejecución.</summary>
     private sealed class Run(
+        BackupEngine engine,
         BackupRepository repository,
         RepositoryLock repositoryLock,
         ISourceFileSystem source,
         SnapshotWriter writer,
         ParentIndex parent,
+        MandatoryExclusionSet exclusions,
         IProgress<BackupProgress>? progress)
     {
         private readonly List<SnapshotWarning> warnings = [];
+        private readonly int maxRetainedWarnings = engine.MaxRetainedWarnings;
+        private readonly long maxRetainedWarningBytes = engine.MaxRetainedWarningBytes;
+        private readonly long listingBudgetBytes = engine.ListingBudgetBytes;
+
+        /// <summary>Suma de los textos de los avisos retenidos, en UTF-8.</summary>
+        private long warningBytes;
+
+        /// <summary>Un aviso ya no cupo: los siguientes solo se cuentan (para no desordenarlos respecto al resumen).</summary>
+        private bool warningsFull;
+
+        /// <summary>Estimación de lo que ocupan los listados y las carpetas de la pila (§8.4).</summary>
+        private long listingBytes;
 
         /// <summary>Prefijos (<c>alias/…/</c>) de las carpetas que no se han podido leer.</summary>
         private readonly HashSet<string> unreadableDirectories = new(StringComparer.Ordinal);
@@ -234,15 +356,39 @@ public sealed class BackupEngine
             Skipped = skipped,
         };
 
-        /// <summary>Registra un aviso; en memoria se guardan como mucho <see cref="SnapshotLimits.MaxWarnings"/>.</summary>
+        /// <summary>
+        /// Registra un aviso (§8.4 "Memoria del motor"). Se retiene ya normalizado (textos recortados a sus límites de §6.3)
+        /// mientras haya menos de <see cref="MaxRetainedWarnings"/> y la suma de sus textos en UTF-8 no pase de
+        /// <see cref="MaxRetainedWarningBytes"/>; desde el primero que no cabe, los demás solo se cuentan. El escritor
+        /// serializa con escapes, que solo agrandan el texto, así que nunca habría guardado uno que aquí se descarta.
+        /// </summary>
         public void Warn(SnapshotWarning warning)
         {
             ArgumentNullException.ThrowIfNull(warning);
             WarningCount++;
-            if (warnings.Count < SnapshotLimits.MaxWarnings)
+            if (warningsFull)
             {
-                warnings.Add(SnapshotWriter.NormalizeWarning(warning));
+                return;
             }
+
+            if (warnings.Count >= maxRetainedWarnings)
+            {
+                warningsFull = true;
+                return;
+            }
+
+            var normalized = SnapshotWriter.NormalizeWarning(warning);
+            var bytes = (long)Encoding.UTF8.GetByteCount(normalized.Path)
+                + Encoding.UTF8.GetByteCount(normalized.Code)
+                + Encoding.UTF8.GetByteCount(normalized.Message);
+            if (warningBytes + bytes > maxRetainedWarningBytes)
+            {
+                warningsFull = true;
+                return;
+            }
+
+            warnings.Add(normalized);
+            warningBytes += bytes;
         }
 
         /// <summary>
@@ -253,7 +399,7 @@ public sealed class BackupEngine
         public async Task CopySourceAsync(BackupSource backupSource, CancellationToken cancellationToken)
         {
             var stack = new Stack<DirectoryFrame>();
-            stack.Push(new DirectoryFrame(backupSource.ReadPath, backupSource.Alias));
+            stack.Push(NewFrame(backupSource.ReadPath, backupSource.Alias));
             while (stack.TryPeek(out var frame))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -262,9 +408,11 @@ public sealed class BackupEngine
                     frame.Children = await ListAsync(frame, cancellationToken).ConfigureAwait(false);
                     if (frame.Children is null)
                     {
-                        // Ilegible: lo que tuviera en el padre se conserva después; no se guarda como carpeta vacía.
+                        // Ilegible (o demasiado grande, §8.4): lo que tuviera en el padre se conserva después; no se guarda
+                        // como carpeta vacía. Su listado no ha llegado a contar. Si resultó ser un punto de reanálisis, se
+                        // omite como los que devuelve la enumeración (RF-06), sin conservar nada.
                         stack.Pop();
-                        if (stack.TryPeek(out var owner))
+                        if (frame.KeptFromParent && stack.TryPeek(out var owner))
                         {
                             owner.Added++;
                         }
@@ -277,16 +425,22 @@ public sealed class BackupEngine
                 {
                     var child = frame.Children[frame.Next++];
                     var childPath = frame.SnapshotPath + "/" + child.Name;
-                    if (child.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                    if (frame.HasExclusions && exclusions.IsExcluded(childPath))
                     {
-                        // RF-06: no se siguen (el tratamiento completo, con exclusiones, es de HU-08).
+                        // ADR-16: exclusión obligatoria. Ni se recorre, ni se avisa, ni cuenta como omitido.
+                    }
+                    else if (child.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                    {
+                        // RF-06: no se siguen (el tratamiento completo, con exclusiones, es de HU-08). Si un elemento se
+                        // convierte en enlace después de enumerarlo, la implementación lo detecta sobre el handle y lanza
+                        // SourceAccessException(ReparsePointSkipped) (§8.2): se omite con ese aviso.
                         Skip(childPath, RunIssueCode.ReparsePointSkipped, "Punto de reanálisis (junction o enlace simbólico) no seguido.");
                     }
                     else if (child.IsDirectory)
                     {
                         if (IsValidName(child.Name) && EntryPath.IsValidDirectoryPath(childPath + "/"))
                         {
-                            stack.Push(new DirectoryFrame(child.FullPath, childPath));
+                            stack.Push(NewFrame(child.FullPath, childPath));
                         }
                         else
                         {
@@ -307,6 +461,7 @@ public sealed class BackupEngine
                 }
 
                 stack.Pop();
+                listingBytes -= frame.ListingBytes;
                 if (frame.Added == 0)
                 {
                     await writer.AddAsync(SnapshotEntry.Directory(frame.SnapshotPath + "/"), cancellationToken).ConfigureAwait(false);
@@ -321,7 +476,8 @@ public sealed class BackupEngine
 
         /// <summary>
         /// Conserva del snapshot padre todo lo que había debajo de las carpetas que no se han podido leer (RF-25). Es una
-        /// segunda lectura en streaming del padre, solo si hubo alguna.
+        /// segunda lectura en streaming del padre, solo si hubo alguna. Lo que cae bajo una exclusión obligatoria no se
+        /// conserva (ADR-16): un snapshot anterior a la exclusión no la puede reintroducir.
         /// </summary>
         public async Task PreserveUnreadableDirectoriesAsync(string parentId, CancellationToken cancellationToken)
         {
@@ -336,7 +492,7 @@ public sealed class BackupEngine
             {
                 await foreach (var entry in reader.ReadEntriesAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    if (IsUnder(entry.Path, lookup))
+                    if (IsUnder(entry.Path, lookup) && !exclusions.CoversEntry(entry.Path))
                     {
                         await writer.AddAsync(entry, cancellationToken).ConfigureAwait(false);
                     }
@@ -364,28 +520,65 @@ public sealed class BackupEngine
             return false;
         }
 
-        /// <summary>Hijos de una carpeta, ordenados; <see langword="null"/> si no se puede leer (con aviso).</summary>
+        private DirectoryFrame NewFrame(string fullPath, string snapshotPath) =>
+            new(fullPath, snapshotPath, exclusions.HasExclusionsIn(snapshotPath));
+
+        /// <summary>
+        /// Hijos de una carpeta, ordenados; <see langword="null"/> si no se puede leer o si su listado no cabe en el
+        /// presupuesto de §8.4 (en los dos casos, con aviso y conservando después lo que tenía en el padre).
+        /// </summary>
         private async Task<List<SourceEntry>?> ListAsync(DirectoryFrame frame, CancellationToken cancellationToken)
         {
             var children = new List<SourceEntry>();
+            var cost = EstimateFrameBytes(frame);
+            var tooLarge = listingBytes + cost > listingBudgetBytes;
             try
             {
-                await foreach (var child in source.EnumerateAsync(frame.FullPath, cancellationToken).ConfigureAwait(false))
+                if (!tooLarge)
                 {
-                    ArgumentNullException.ThrowIfNull(child);
-                    children.Add(child);
+                    await foreach (var child in source.EnumerateAsync(frame.FullPath, cancellationToken).ConfigureAwait(false))
+                    {
+                        ArgumentNullException.ThrowIfNull(child);
+                        var childCost = EstimateListingBytes(child);
+                        if (listingBytes + cost + childCost > listingBudgetBytes)
+                        {
+                            // Se deja de enumerar (el enumerador se libera al salir) y se descarta la lista.
+                            tooLarge = true;
+                            break;
+                        }
+
+                        cost += childCost;
+                        children.Add(child);
+                    }
                 }
+            }
+            catch (Exception ex) when (IsReparsePointError(ex))
+            {
+                // §8.2: la carpeta se ha convertido en un punto de reanálisis después de enumerar a su padre; no se sigue.
+                Skip(frame.SnapshotPath, RunIssueCode.ReparsePointSkipped, "La carpeta es un punto de reanálisis (junction o enlace simbólico); no se sigue.");
+                return null;
             }
             catch (Exception ex) when (IsSourceError(ex))
             {
-                unreadableDirectories.Add(frame.SnapshotPath + "/");
-                skipped++;
-                Warn(new SnapshotWarning(
-                    frame.SnapshotPath,
-                    IssueCode(ex).ToString(),
-                    $"No se pudo leer la carpeta; se conserva lo que tenía en el snapshot anterior: {Untrusted.Describe(ex.Message)}"));
+                MarkUnreadable(
+                    frame,
+                    IssueCode(ex),
+                    $"No se pudo leer la carpeta; se conserva lo que tenía en el snapshot anterior: {Untrusted.Describe(ex.Message)}");
                 return null;
             }
+
+            if (tooLarge)
+            {
+                MarkUnreadable(
+                    frame,
+                    RunIssueCode.ReadError,
+                    "La carpeta tiene demasiados elementos (o rutas demasiado largas) para recorrerla con la memoria reservada a la copia; se conserva lo que tenía en el snapshot anterior.");
+                return null;
+            }
+
+            listingBytes += cost;
+            frame.ListingBytes = cost;
+            engine.PeakListingBytes = Math.Max(engine.PeakListingBytes, listingBytes);
 
             children.Sort(static (a, b) => string.CompareOrdinal(a.Name, b.Name));
 
@@ -399,6 +592,15 @@ public sealed class BackupEngine
             }
 
             return children;
+        }
+
+        /// <summary>RF-25: carpeta que no se recorre; se conserva después lo que tenía debajo en el padre.</summary>
+        private void MarkUnreadable(DirectoryFrame frame, RunIssueCode code, string message)
+        {
+            frame.KeptFromParent = true;
+            unreadableDirectories.Add(frame.SnapshotPath + "/");
+            skipped++;
+            Warn(new SnapshotWarning(frame.SnapshotPath, code.ToString(), message));
         }
 
         /// <summary>Copia (o reutiliza) un archivo. Devuelve si ha añadido una entrada al snapshot.</summary>
@@ -418,6 +620,14 @@ public sealed class BackupEngine
             }
 
             var (written, sourceError) = await WriteObjectAsync(file, cancellationToken).ConfigureAwait(false);
+            if (written is null && IsReparsePointError(sourceError))
+            {
+                // §8.2: se convirtió en un punto de reanálisis después de enumerarlo; se omite como en la enumeración (RF-06).
+                Skip(path, RunIssueCode.ReparsePointSkipped, "El archivo es un punto de reanálisis (junction o enlace simbólico); no se sigue.");
+                Report(file.Length, path);
+                return false;
+            }
+
             if (written is null)
             {
                 return await SkipUnreadableAsync(path, sourceError ?? new SourceAccessException(), inParent ? previous : null, file.Length, cancellationToken).ConfigureAwait(false);
@@ -429,7 +639,17 @@ public sealed class BackupEngine
                 newBytes += written.Length;
             }
 
-            if (await ChangedDuringCopyAsync(file, modifiedUtc, written.Length, cancellationToken).ConfigureAwait(false))
+            var check = await ChangedDuringCopyAsync(file, modifiedUtc, written.Length, cancellationToken).ConfigureAwait(false);
+            if (check == AfterCopy.BecameReparsePoint)
+            {
+                // Se leyó del handle abierto antes del cambio, pero ahora es un enlace: se omite (RF-06, §8.2). El objeto
+                // subido queda sin referencia hasta la limpieza.
+                Skip(path, RunIssueCode.ReparsePointSkipped, "El archivo se ha convertido en un punto de reanálisis (junction o enlace simbólico) durante la copia; no se guarda.");
+                Report(written.Length, path);
+                return false;
+            }
+
+            if (check == AfterCopy.Changed)
             {
                 Warn(new SnapshotWarning(
                     path,
@@ -496,22 +716,30 @@ public sealed class BackupEngine
         /// §6.4.2: el archivo cambió durante la copia si se leyó un número de bytes distinto del tamaño visto al recorrer, o si
         /// después de copiarlo su tamaño o su fecha ya no son los de entonces (o no se pueden leer).
         /// </summary>
-        private async Task<bool> ChangedDuringCopyAsync(SourceEntry file, DateTime modifiedUtc, long length, CancellationToken cancellationToken)
+        private async Task<AfterCopy> ChangedDuringCopyAsync(SourceEntry file, DateTime modifiedUtc, long length, CancellationToken cancellationToken)
         {
-            if (length != file.Length)
-            {
-                return true;
-            }
-
+            SourceEntry? after;
             try
             {
-                var after = await source.GetFileInfoAsync(file.FullPath, cancellationToken).ConfigureAwait(false);
-                return after is null || after.Length != length || ToUtc(after.LastWriteTimeUtc) != modifiedUtc;
+                after = await source.GetFileInfoAsync(file.FullPath, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (IsReparsePointError(ex))
+            {
+                return AfterCopy.BecameReparsePoint;
             }
             catch (Exception ex) when (IsSourceError(ex))
             {
-                return true;
+                return AfterCopy.Changed;
             }
+
+            if (after is not null && after.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                return AfterCopy.BecameReparsePoint;
+            }
+
+            return length != file.Length || after is null || after.Length != length || ToUtc(after.LastWriteTimeUtc) != modifiedUtc
+                ? AfterCopy.Changed
+                : AfterCopy.Unchanged;
         }
 
         /// <summary>RF-25: omite un archivo ilegible con aviso y conserva su versión anterior si la había.</summary>
@@ -546,9 +774,26 @@ public sealed class BackupEngine
         }
     }
 
-    /// <summary>Carpeta en recorrido.</summary>
-    private sealed class DirectoryFrame(string fullPath, string snapshotPath)
+    /// <summary>Resultado de volver a mirar un archivo después de copiarlo (§6.4.2).</summary>
+    private enum AfterCopy
     {
+        Unchanged,
+        Changed,
+        BecameReparsePoint,
+    }
+
+    /// <summary>Carpeta en recorrido.</summary>
+    private sealed class DirectoryFrame(string fullPath, string snapshotPath, bool hasExclusions)
+    {
+        /// <summary>Si contiene directamente alguna exclusión obligatoria (ADR-16).</summary>
+        public bool HasExclusions { get; } = hasExclusions;
+
+        /// <summary>Bytes estimados de esta carpeta y su listado que cuentan en el presupuesto (§8.4).</summary>
+        public long ListingBytes { get; set; }
+
+        /// <summary>No se pudo recorrer y lo que tenía debajo se conserva del snapshot padre (RF-25).</summary>
+        public bool KeptFromParent { get; set; }
+
         /// <summary>Ruta opaca en <see cref="ISourceFileSystem"/>.</summary>
         public string FullPath { get; } = fullPath;
 

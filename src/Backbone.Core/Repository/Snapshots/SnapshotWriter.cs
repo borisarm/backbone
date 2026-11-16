@@ -395,7 +395,9 @@ public sealed class SnapshotWriter : IAsyncDisposable
         var limit = Math.Min(warnings.Count, SnapshotLimits.MaxWarnings);
         var normalized = new List<SnapshotWarning>(limit);
         var total = warnings.Count + omitted;
-        var allFit = total <= SnapshotLimits.MaxWarnings;
+        // Si el llamante ya ha descartado avisos (p. ej. el motor por su presupuesto de bytes, §8.4), no caben todos aunque
+        // sean pocos: siempre hace falta el resumen.
+        var allFit = omitted == 0 && total <= SnapshotLimits.MaxWarnings;
         var kept = 0;
         var keptStopped = false;
         var headerBytes = fixedHeaderBytes;

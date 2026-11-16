@@ -16,9 +16,33 @@ namespace Backbone.Core.Engine;
 /// solo de la implementación.
 /// </para>
 /// <para>
-/// <b>Puntos de reanálisis</b> (RF-06): la implementación no los sigue; los devuelve con
-/// <see cref="FileAttributes.ReparsePoint"/> en <see cref="SourceEntry.Attributes"/> y el motor los omite.
+/// <b>Contrato de seguridad</b> (§8.2 "Lectura de los orígenes", revisión de seguridad de HU-13, MEDIA-2). El servicio lee
+/// como SYSTEM con semántica de copia de seguridad, así que la implementación nunca debe llevar la lectura fuera del
+/// origen siguiendo un punto de reanálisis (<i>junction</i>, enlace simbólico u otro), tampoco si un elemento se sustituye
+/// por uno después de enumerarlo (p. ej. hacia <c>%ProgramData%\Backbone</c>, §8.3):
 /// </para>
+/// <list type="bullet">
+/// <item><description>
+/// <see cref="EnumerateAsync"/>, <see cref="OpenReadAsync"/> y <see cref="GetFileInfoAsync"/> abren el elemento por handle
+/// <b>sin seguir puntos de reanálisis</b> (<c>CreateFile</c> con <c>FILE_FLAG_OPEN_REPARSE_POINT</c>, más
+/// <c>FILE_FLAG_BACKUP_SEMANTICS</c> en carpetas y, para leer como SYSTEM, en archivos).
+/// </description></item>
+/// <item><description>
+/// Sobre <b>ese mismo handle</b>, antes de leer nada, comprueban (<c>GetFileInformationByHandleEx</c>,
+/// <c>FileAttributeTagInfo</c>) que no es un punto de reanálisis y que es carpeta o archivo según lo pedido. Si es un
+/// punto de reanálisis lanzan <see cref="SourceAccessException"/> con <see cref="RunIssueCode.ReparsePointSkipped"/> y no
+/// lo siguen; el motor omite el elemento con ese aviso (RF-06).
+/// </description></item>
+/// <item><description>
+/// La enumeración se hace <b>desde ese handle</b> (<c>FileIdBothDirectoryInfo</c> o <c>FileFullDirectoryInfo</c>), sin
+/// volver a abrir la ruta; el contenido se lee del handle de <see cref="OpenReadAsync"/> y los metadatos de
+/// <see cref="GetFileInfoAsync"/>, del suyo.
+/// </description></item>
+/// <item><description>
+/// Los elementos que la enumeración devuelve como punto de reanálisis llevan <see cref="FileAttributes.ReparsePoint"/> en
+/// <see cref="SourceEntry.Attributes"/>; el motor no los abre ni los enumera.
+/// </description></item>
+/// </list>
 /// <para>
 /// <b>Errores</b>: un error de un archivo o de una carpeta se lanza como <see cref="IOException"/> (o una derivada) o
 /// <see cref="UnauthorizedAccessException"/>; el motor omite ese elemento con un aviso y sigue (RF-25). Para indicar el
@@ -32,11 +56,26 @@ public interface ISourceFileSystem
     /// Enumera, sin recursión, los archivos y carpetas contenidos directamente en <paramref name="directoryPath"/>
     /// (una raíz de origen o el <see cref="SourceEntry.FullPath"/> de una carpeta). El orden no está definido.
     /// </summary>
+    /// <remarks>
+    /// Abre la carpeta por handle sin seguir puntos de reanálisis y enumera desde ese handle (ver el contrato de la
+    /// interfaz). El error puede llegar al pedir el primer elemento o en cualquier momento de la enumeración.
+    /// </remarks>
+    /// <exception cref="SourceAccessException">
+    /// Con <see cref="RunIssueCode.ReparsePointSkipped"/> si la carpeta es (o ha pasado a ser) un punto de reanálisis.
+    /// </exception>
     /// <exception cref="IOException">La carpeta no existe o no se puede leer.</exception>
     /// <exception cref="UnauthorizedAccessException">Sin permiso para leer la carpeta.</exception>
     IAsyncEnumerable<SourceEntry> EnumerateAsync(string directoryPath, CancellationToken cancellationToken);
 
     /// <summary>Abre un archivo (<see cref="SourceEntry.FullPath"/>) para lectura secuencial.</summary>
+    /// <remarks>
+    /// Abre por handle sin seguir puntos de reanálisis y devuelve un flujo sobre ese handle (ver el contrato de la
+    /// interfaz).
+    /// </remarks>
+    /// <exception cref="SourceAccessException">
+    /// Con <see cref="RunIssueCode.ReparsePointSkipped"/> si el archivo es (o ha pasado a ser) un punto de reanálisis; con
+    /// <see cref="RunIssueCode.FileLocked"/> si está bloqueado.
+    /// </exception>
     /// <exception cref="IOException">El archivo no existe, está bloqueado o no se puede leer.</exception>
     /// <exception cref="UnauthorizedAccessException">Sin permiso de lectura.</exception>
     Task<Stream> OpenReadAsync(string filePath, CancellationToken cancellationToken);
@@ -46,6 +85,15 @@ public interface ISourceFileSystem
     /// <see langword="null"/> si ya no existe. El motor lo usa después de copiarlo para saber si cambió durante la copia
     /// (§6.4.2).
     /// </summary>
+    /// <remarks>
+    /// Abre por handle sin seguir puntos de reanálisis y lee los metadatos de ese handle (ver el contrato de la interfaz).
+    /// Para el motor, cualquier error o un punto de reanálisis significa que el archivo cambió durante la copia.
+    /// </remarks>
+    /// <exception cref="SourceAccessException">
+    /// Con <see cref="RunIssueCode.ReparsePointSkipped"/> si el archivo ha pasado a ser un punto de reanálisis.
+    /// </exception>
+    /// <exception cref="IOException">No se pueden leer los metadatos.</exception>
+    /// <exception cref="UnauthorizedAccessException">Sin permiso.</exception>
     Task<SourceEntry?> GetFileInfoAsync(string filePath, CancellationToken cancellationToken);
 }
 
