@@ -78,6 +78,14 @@ Las convenciones de código, la propiedad de cada carpeta y el flujo de trabajo 
 | **F2 — Uso diario** | Retención, limpieza y verificación, condiciones de red y energía, notificaciones completas, versiones de un archivo, asistente de primer uso, diagnóstico. |
 | **F3 — Pulido y rendimiento** | USN Journal, formato v2 (troceado, compresión, cifrado), límite de ancho de banda, integración con el Explorador. |
 
+### Estado actual
+
+El MVP está en desarrollo; el detalle por historia está en [docs/HISTORIAS.md](docs/HISTORIAS.md#seguimiento).
+
+- **Hecho**: estructura de la solución y CI (HT-01, HT-02); canal IPC seguro entre app y servicio (HT-03); formato del repositorio endurecido (HT-04); icono de la bandeja con estado y menú (HU-18); credenciales del NAS guardadas con DPAPI de ámbito equipo (HU-04, parte del servicio).
+- **En curso**: motor de copia incremental con deduplicación (HU-13).
+- **Todavía no**: conexión real al NAS, programación, VSS, restauración e instalador; el servicio aún no hace copias de extremo a extremo.
+
 ## Licencia
 
 [MIT](LICENSE)
