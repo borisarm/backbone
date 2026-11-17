@@ -44,6 +44,15 @@ public sealed record BackupRequest
     /// <summary>Orígenes (al menos uno; alias únicos sin distinguir mayúsculas).</summary>
     public required IReadOnlyList<BackupSource> Sources { get; init; }
 
+    /// <summary>
+    /// Patrones <i>glob</i> de exclusión del trabajo (RF-04, HU-08; sintaxis en <see cref="ExclusionPattern"/>), como mucho
+    /// <see cref="ContractLimits.MaxExclusions"/>. Lo excluido no se recorre, no se abre, no genera avisos y no aparece en el
+    /// snapshot. Es independiente de <see cref="BackupSource.MandatoryExclusions"/>, que se aplican siempre, también con
+    /// esta lista vacía. Un patrón no válido hace que la copia se rechace con <see cref="ArgumentException"/> antes de leer
+    /// nada.
+    /// </summary>
+    public IReadOnlyList<string> Exclusions { get; init; } = [];
+
     /// <summary>Si los orígenes se leen desde instantáneas VSS (RF-22).</summary>
     public bool UsedVss { get; init; }
 

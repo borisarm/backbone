@@ -70,6 +70,14 @@ namespace Backbone.Core.Engine;
 /// </description></item>
 /// </list>
 /// <para>
+/// <b>Archivos solo en la nube</b> (R4, RF-06, HU-08): la enumeración devuelve en <see cref="SourceEntry.Attributes"/> los
+/// atributos <c>FILE_ATTRIBUTE_RECALL_ON_OPEN</c>, <c>FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS</c> y
+/// <c>FILE_ATTRIBUTE_OFFLINE</c> tal como los da el sistema (<see cref="SourceAttributes"/>); el motor no abre los archivos
+/// que los tienen. Si, al abrir un archivo, la implementación ve sobre el handle que ha pasado a estar solo en la nube,
+/// lanza <see cref="SourceAccessException"/> con <see cref="RunIssueCode.CloudOnlySkipped"/> sin leer nada, y el motor lo
+/// omite igual.
+/// </para>
+/// <para>
 /// Si lo que falla es la <b>raíz</b> de un origen (cualquier error, también <see cref="RunIssueCode.ReparsePointSkipped"/>),
 /// el motor emite <see cref="RunIssueCode.SourceRootUnreadable"/> y conserva todo el origen del snapshot padre (§8.4, R11).
 /// </para>

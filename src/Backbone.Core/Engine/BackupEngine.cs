@@ -33,6 +33,20 @@ namespace Backbone.Core.Engine;
 /// recorren, no generan avisos y no aparecen en el snapshot (tampoco lo que hubiera debajo en el padre).
 /// </para>
 /// <para>
+/// <b>Exclusiones por patrones</b> (RF-04, HU-08): lo que excluye <see cref="BackupRequest.Exclusions"/> se quita del
+/// listado de su carpeta al enumerarla: no se recorre, no se abre, no genera avisos, no cuenta como omitido y no aparece en
+/// el snapshot (tampoco al conservar del padre lo de una carpeta ilegible). Se evalúa con <see cref="ExclusionMatcher"/>, un
+/// segmento cada vez; las exclusiones obligatorias no dependen de esa lista.
+/// </para>
+/// <para>
+/// <b>Puntos de reanálisis y archivos solo en la nube</b> (RF-06, R4): un elemento enumerado con
+/// <see cref="FileAttributes.ReparsePoint"/> no se sigue ni se abre (aviso <see cref="RunIssueCode.ReparsePointSkipped"/>,
+/// sin conservar nada). Un archivo con algún atributo de <see cref="SourceAttributes.CloudOnlyMask"/> no se abre (aviso
+/// <see cref="RunIssueCode.CloudOnlySkipped"/>) y conserva su versión anterior si la tenía; esta comprobación va antes que la
+/// de punto de reanálisis, porque un marcador de OneDrive también puede serlo. Las carpetas se recorren aunque tengan esos
+/// atributos: lo que se omite es cada archivo no descargado.
+/// </para>
+/// <para>
 /// <b>Archivos ilegibles</b> (RF-25): un archivo o carpeta que no se puede leer se omite con un aviso y la ejecución termina
 /// con avisos; si estaba en el snapshot padre, se conserva su versión anterior (en una carpeta ilegible, todo lo que tenía
 /// debajo en el padre).
@@ -112,9 +126,12 @@ public sealed class BackupEngine
     internal static long EstimateListingBytes(SourceEntry entry) =>
         (2L * ((long)entry.Name.Length + entry.FullPath.Length)) + ListingOverheadBytes;
 
-    /// <summary>Bytes que se cuentan por una carpeta de la pila (sus rutas), con la misma estimación.</summary>
+    /// <summary>
+    /// Bytes que se cuentan por una carpeta de la pila (sus rutas, con la misma estimación, y el estado de los patrones de
+    /// exclusión, 8 bytes por palabra).
+    /// </summary>
     private static long EstimateFrameBytes(DirectoryFrame frame) =>
-        (2L * ((long)frame.FullPath.Length + frame.SnapshotPath.Length)) + ListingOverheadBytes;
+        (2L * ((long)frame.FullPath.Length + frame.SnapshotPath.Length)) + (8L * frame.PatternState.Length) + ListingOverheadBytes;
 
     /// <summary>Hace una copia y publica su snapshot.</summary>
     /// <param name="repository">Repositorio abierto.</param>
@@ -147,6 +164,7 @@ public sealed class BackupEngine
         ArgumentNullException.ThrowIfNull(source);
         Validate(request);
         var exclusions = MandatoryExclusionSet.Create(request.Sources);
+        var patterns = ExclusionMatcher.Create(request.Exclusions);
 
         repositoryLock.ThrowIfLost();
         var startedUtc = request.StartedUtc is { } started ? ToUtc(started) : timeProvider.GetUtcNow().UtcDateTime;
@@ -173,7 +191,7 @@ public sealed class BackupEngine
         await using (writer.ConfigureAwait(false))
         {
             writer.MaxEntries = MaxSnapshotEntries;
-            var run = new Run(this, repository, repositoryLock, source, writer, parent, exclusions, progress);
+            var run = new Run(this, repository, repositoryLock, source, writer, parent, exclusions, patterns, progress);
             foreach (var warning in request.AdditionalWarnings)
             {
                 run.Warn(warning);
@@ -308,6 +326,8 @@ public sealed class BackupEngine
             ArgumentNullException.ThrowIfNull(source.MandatoryExclusions);
         }
 
+        ArgumentNullException.ThrowIfNull(request.Exclusions);
+
         // El resto (alias, rutas, textos de cabecera) lo valida el escritor del snapshot al empezar.
     }
 
@@ -323,9 +343,13 @@ public sealed class BackupEngine
         SnapshotWriter writer,
         ParentIndex parent,
         MandatoryExclusionSet exclusions,
+        ExclusionMatcher patterns,
         IProgress<BackupProgress>? progress)
     {
         private readonly List<SnapshotWarning> warnings = [];
+
+        /// <summary>Estado de los patrones de un archivo (se descarta tras mirar si está excluido).</summary>
+        private readonly ulong[] scratchState = new ulong[patterns.StateWords];
         private readonly int maxRetainedWarnings = engine.MaxRetainedWarnings;
         private readonly long maxRetainedWarningBytes = engine.MaxRetainedWarningBytes;
         private readonly long listingBudgetBytes = engine.ListingBudgetBytes;
@@ -406,7 +430,7 @@ public sealed class BackupEngine
         public async Task CopySourceAsync(BackupSource backupSource, CancellationToken cancellationToken)
         {
             var stack = new Stack<DirectoryFrame>();
-            var root = NewFrame(backupSource.ReadPath, backupSource.Alias);
+            var root = NewFrame(backupSource.ReadPath, backupSource.Alias, patterns.RootState(backupSource.Alias));
             root.IsRoot = true;
             stack.Push(root);
             while (stack.TryPeek(out var frame))
@@ -434,14 +458,29 @@ public sealed class BackupEngine
                 {
                     var child = frame.Children[frame.Next++];
                     var childPath = frame.SnapshotPath + "/" + child.Name;
+                    // Los excluidos por patrones (RF-04) ya se han quitado del listado (ListAsync).
                     if (frame.HasExclusions && exclusions.IsExcluded(childPath))
                     {
                         // ADR-16: exclusión obligatoria. Ni se recorre, ni se avisa, ni cuenta como omitido.
                     }
+                    else if (!child.IsDirectory && SourceAttributes.IsCloudOnly(child.Attributes))
+                    {
+                        // R4: solo en la nube. Se mira antes que el punto de reanálisis porque un marcador de OneDrive
+                        // también puede serlo; no se abre nada (ni siquiera los metadatos).
+                        if (!IsValidName(child.Name) || !EntryPath.IsValidFilePath(childPath))
+                        {
+                            Skip(childPath, RunIssueCode.PathInvalid, "El nombre del archivo no es válido en un snapshot (§7.5); no se copia.");
+                            Report(child.Length, childPath);
+                        }
+                        else if (await SkipCloudOnlyAsync(child, childPath, detail: null, cancellationToken).ConfigureAwait(false))
+                        {
+                            frame.Added++;
+                        }
+                    }
                     else if (child.Attributes.HasFlag(FileAttributes.ReparsePoint))
                     {
-                        // RF-06: no se siguen (el tratamiento completo, con exclusiones, es de HU-08). Si un elemento se
-                        // convierte en enlace después de enumerarlo, la implementación lo detecta sobre el handle y lanza
+                        // RF-06: no se siguen ni se conserva su versión anterior. Si un elemento se convierte en enlace
+                        // después de enumerarlo, la implementación lo detecta sobre el handle y lanza
                         // SourceAccessException(ReparsePointSkipped) (§8.2): se omite con ese aviso.
                         Skip(childPath, RunIssueCode.ReparsePointSkipped, "Punto de reanálisis (junction o enlace simbólico) no seguido.");
                     }
@@ -449,7 +488,7 @@ public sealed class BackupEngine
                     {
                         if (IsValidName(child.Name) && EntryPath.IsValidDirectoryPath(childPath + "/"))
                         {
-                            stack.Push(NewFrame(child.FullPath, childPath));
+                            stack.Push(NewFrame(child.FullPath, childPath, ChildState(frame, child)));
                         }
                         else
                         {
@@ -486,7 +525,8 @@ public sealed class BackupEngine
         /// <summary>
         /// Conserva del snapshot padre todo lo que había debajo de las carpetas que no se han podido leer (RF-25). Es una
         /// segunda lectura en streaming del padre, solo si hubo alguna. Lo que cae bajo una exclusión obligatoria no se
-        /// conserva (ADR-16): un snapshot anterior a la exclusión no la puede reintroducir.
+        /// conserva (ADR-16): un snapshot anterior a la exclusión no la puede reintroducir. Tampoco lo que excluyen ahora los
+        /// patrones del trabajo (RF-04), para que añadir un patrón tenga efecto aunque la carpeta no se pueda leer.
         /// </summary>
         public async Task PreserveUnreadableDirectoriesAsync(string parentId, CancellationToken cancellationToken)
         {
@@ -501,7 +541,7 @@ public sealed class BackupEngine
             {
                 await foreach (var entry in reader.ReadEntriesAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    if (IsUnder(entry.Path, lookup) && !exclusions.CoversEntry(entry.Path))
+                    if (IsUnder(entry.Path, lookup) && !exclusions.CoversEntry(entry.Path) && !patterns.IsExcluded(entry.Path))
                     {
                         await writer.AddAsync(entry, cancellationToken).ConfigureAwait(false);
                     }
@@ -529,8 +569,25 @@ public sealed class BackupEngine
             return false;
         }
 
-        private DirectoryFrame NewFrame(string fullPath, string snapshotPath) =>
-            new(fullPath, snapshotPath, exclusions.HasExclusionsIn(snapshotPath));
+        private DirectoryFrame NewFrame(string fullPath, string snapshotPath, ulong[] patternState) =>
+            new(fullPath, snapshotPath, exclusions.HasExclusionsIn(snapshotPath), patternState);
+
+        /// <summary>Estado de los patrones de una subcarpeta que se va a recorrer.</summary>
+        private ulong[] ChildState(DirectoryFrame frame, SourceEntry child)
+        {
+            if (patterns.IsEmpty)
+            {
+                return [];
+            }
+
+            var state = new ulong[patterns.StateWords];
+            _ = patterns.Step(frame.PatternState, child.Name, child.IsDirectory, state);
+            return state;
+        }
+
+        /// <summary>Si un patrón del trabajo excluye el elemento (RF-04).</summary>
+        private bool IsExcludedByPattern(DirectoryFrame frame, SourceEntry child) =>
+            !patterns.IsEmpty && patterns.Step(frame.PatternState, child.Name, child.IsDirectory, scratchState) >= 0;
 
         /// <summary>
         /// Hijos de una carpeta, ordenados; <see langword="null"/> si no se puede leer o si su listado no cabe en el
@@ -548,6 +605,12 @@ public sealed class BackupEngine
                     await foreach (var child in source.EnumerateAsync(frame.FullPath, cancellationToken).ConfigureAwait(false))
                     {
                         ArgumentNullException.ThrowIfNull(child);
+                        if (IsExcludedByPattern(frame, child))
+                        {
+                            // RF-04: ni se guarda en el listado (no ocupa presupuesto), ni se recorre, ni se avisa.
+                            continue;
+                        }
+
                         var childCost = EstimateListingBytes(child);
                         if (listingBytes + cost + childCost > listingBudgetBytes)
                         {
@@ -651,6 +714,13 @@ public sealed class BackupEngine
                 Skip(path, RunIssueCode.ReparsePointSkipped, "El archivo es un punto de reanálisis (junction o enlace simbólico); no se sigue.");
                 Report(file.Length, path);
                 return false;
+            }
+
+            if (written is null && sourceError is SourceAccessException { Code: RunIssueCode.CloudOnlySkipped })
+            {
+                // R4: la implementación ha visto sobre el handle que está solo en la nube (pasó a estarlo después de
+                // enumerarlo) y no ha leído nada.
+                return await SkipCloudOnlyAsync(file, path, sourceError.Message, cancellationToken).ConfigureAwait(false);
             }
 
             if (written is null)
@@ -785,6 +855,34 @@ public sealed class BackupEngine
             return preserved;
         }
 
+        /// <summary>
+        /// R4, RF-06: archivo solo en la nube (OneDrive u otro almacenamiento remoto). No se abre, para no desencadenar la
+        /// descarga; se omite con el aviso <see cref="RunIssueCode.CloudOnlySkipped"/>. Si estaba en el snapshot padre se
+        /// conserva su versión anterior, como con un archivo ilegible (RF-25): el archivo sigue existiendo, solo que no está
+        /// en el disco, y una copia no debe perderlo por haberse liberado espacio.
+        /// </summary>
+        /// <returns>Si ha añadido una entrada al snapshot (la versión anterior).</returns>
+        private async Task<bool> SkipCloudOnlyAsync(SourceEntry file, string path, string? detail, CancellationToken cancellationToken)
+        {
+            var inParent = parent.TryGet(EntryPathSet.Digest(path), out var previous);
+            var message = inParent
+                ? "Archivo solo en la nube; no se descarga y se conserva su versión anterior."
+                : "Archivo solo en la nube; no se descarga ni se copia.";
+            if (detail is not null)
+            {
+                message += " " + Untrusted.Describe(detail);
+            }
+
+            Skip(path, RunIssueCode.CloudOnlySkipped, message);
+            Report(file.Length, path);
+            if (inParent)
+            {
+                await writer.AddAsync(SnapshotEntry.File(path, previous.Hash, previous.Size, previous.ModifiedUtc, previous.Attributes), cancellationToken).ConfigureAwait(false);
+            }
+
+            return inParent;
+        }
+
         private void Skip(string path, RunIssueCode code, string message)
         {
             skipped++;
@@ -808,8 +906,11 @@ public sealed class BackupEngine
     }
 
     /// <summary>Carpeta en recorrido.</summary>
-    private sealed class DirectoryFrame(string fullPath, string snapshotPath, bool hasExclusions)
+    private sealed class DirectoryFrame(string fullPath, string snapshotPath, bool hasExclusions, ulong[] patternState)
     {
+        /// <summary>Estado de los patrones de exclusión del trabajo en esta carpeta (<see cref="ExclusionMatcher"/>).</summary>
+        public ulong[] PatternState { get; } = patternState;
+
         /// <summary>Si contiene directamente alguna exclusión obligatoria (ADR-16).</summary>
         public bool HasExclusions { get; } = hasExclusions;
 
