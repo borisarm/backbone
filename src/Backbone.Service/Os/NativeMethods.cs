@@ -4,7 +4,7 @@ namespace Backbone.Service.Os;
 
 /// <summary>
 /// Llamadas a la API de Windows del servicio (P/Invoke generado en compilación con <see cref="LibraryImportAttribute"/>).
-/// Firmas y códigos de error comprobados en Microsoft Learn (processthreadsapi.h, winbase.h, authz.h, dpapi.h).
+/// Firmas y códigos de error comprobados en Microsoft Learn (processthreadsapi.h, winbase.h, authz.h, dpapi.h, winnetwk.h, fileapi.h).
 /// </summary>
 internal static partial class NativeMethods
 {
@@ -344,6 +344,64 @@ internal static partial class NativeMethods
 
     [LibraryImport("ntdll.dll")]
     internal static partial int RtlNtStatusToDosError(int status);
+
+    // ---- Conexión a recursos de red (winnetwk.h, mpr.dll; HU-05) ----
+
+    /// <summary><c>RESOURCETYPE_DISK</c> de <c>NETRESOURCEW.dwType</c>.</summary>
+    internal const uint ResourceTypeDisk = 0x1;
+
+    /// <summary><c>CONNECT_TEMPORARY</c>: la conexión no se recuerda (sin letra de unidad tampoco se recordaría).</summary>
+    internal const uint ConnectTemporary = 0x4;
+
+    /// <summary><c>NETRESOURCEW</c>: cuatro <c>DWORD</c> y cuatro <c>LPWSTR</c>.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal unsafe struct NetResource
+    {
+        public uint Scope;
+        public uint Type;
+        public uint DisplayType;
+        public uint Usage;
+        public char* LocalName;
+        public char* RemoteName;
+        public char* Comment;
+        public char* Provider;
+    }
+
+    /// <summary>
+    /// <c>WNetAddConnection2W</c>. Devuelve un código Win32 (no usa <c>SetLastError</c>). <paramref name="password"/> y
+    /// <paramref name="userName"/> nunca son NULL: con NULL se usarían la contraseña o el usuario por defecto (la cuenta del
+    /// equipo), y el servicio nunca conecta sin credencial explícita (§7.5).
+    /// </summary>
+    [LibraryImport("mpr.dll", EntryPoint = "WNetAddConnection2W")]
+    internal static unsafe partial int WNetAddConnection2(in NetResource netResource, char* password, char* userName, uint flags);
+
+    /// <summary><c>WNetCancelConnection2W</c>. Devuelve un código Win32 (no usa <c>SetLastError</c>).</summary>
+    [LibraryImport("mpr.dll", EntryPoint = "WNetCancelConnection2W", StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial int WNetCancelConnection2(string name, uint flags, [MarshalAs(UnmanagedType.Bool)] bool force);
+
+    /// <summary><c>GetDiskFreeSpaceExW</c>. Con una ruta UNC, la ruta debe acabar en barra invertida.</summary>
+    [LibraryImport("kernel32.dll", EntryPoint = "GetDiskFreeSpaceExW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetDiskFreeSpaceEx(
+        string directoryName,
+        out ulong freeBytesAvailableToCaller,
+        out ulong totalNumberOfBytes,
+        out ulong totalNumberOfFreeBytes);
+
+    /// <summary><c>FileRemoteProtocolInfo</c> de <c>FILE_INFO_BY_HANDLE_CLASS</c>: devuelve <c>FILE_REMOTE_PROTOCOL_INFO</c>.</summary>
+    internal const int FileRemoteProtocolInfo = 13;
+
+    /// <summary><c>WNNC_NET_SMB</c> de <c>FILE_REMOTE_PROTOCOL_INFO.Protocol</c>.</summary>
+    internal const uint WnncNetSmb = 0x0002_0000;
+
+    /// <summary><see cref="GetFileInformationByHandleEx(SafeHandle, int, out FileAttributeTagInformation, uint)"/> con un búfer de bytes.</summary>
+    [LibraryImport("kernel32.dll", EntryPoint = "GetFileInformationByHandleEx", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetFileInformationByHandleExBuffer(
+        SafeHandle file,
+        int fileInformationClass,
+        [Out] byte[] fileInformation,
+        uint bufferSize);
 
     // ---- DPAPI (dpapi.h, crypt32.dll) ----
 

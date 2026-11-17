@@ -93,6 +93,11 @@ internal static class BackboneHost
             sp.GetRequiredService<ILogger<CredentialStore>>()));
         services.AddSingleton<ShareCredentialProvider>();
 
+        // Conexión al NAS (HU-05, §8.2 ShareConnector).
+        services.TryAddSingleton<IShareConnector, WindowsShareConnector>();
+        services.TryAddSingleton(new ConnectionTestOptions());
+        services.AddSingleton<ConnectionTester>();
+
         // IPC.
         services.AddSingleton<ServiceRuntimeInfo>();
         services.AddSingleton<CallerAuthorizer>();

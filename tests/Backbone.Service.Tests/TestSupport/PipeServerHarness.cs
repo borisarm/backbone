@@ -1,6 +1,7 @@
 using System.IO.Pipes;
 using System.Security.Principal;
 using Backbone.Service.Ipc;
+using Backbone.Service.Nas;
 using Backbone.Service.Os;
 using Backbone.Service.Persistence;
 using Microsoft.Extensions.Logging;
@@ -26,7 +27,14 @@ internal sealed class PipeServerHarness : IAsyncDisposable
         var authorizer = new CallerAuthorizer(Settings, Accounts);
         Directory.CreateDirectory(_temp.Combine("credentials"));
         Credentials = new CredentialStore(_temp.Combine("credentials"), TestFileTrust.CurrentUser, new DpapiMachineProtector(), TimeProvider.System, LoggerFactory.CreateLogger<CredentialStore>());
-        var operations = new BackboneOperations(new ServiceRuntimeInfo(TimeProvider.System), Settings, Accounts, Credentials);
+        // Conector real (HU-05): estas pruebas no llaman a TestConnectionAsync, así que nunca conecta.
+        var connectionTester = new ConnectionTester(
+            new WindowsShareConnector(LoggerFactory.CreateLogger<WindowsShareConnector>()),
+            new ShareCredentialProvider(Credentials, LoggerFactory.CreateLogger<ShareCredentialProvider>()),
+            TimeProvider.System,
+            new ConnectionTestOptions(),
+            LoggerFactory.CreateLogger<ConnectionTester>());
+        var operations = new BackboneOperations(new ServiceRuntimeInfo(TimeProvider.System), Settings, Accounts, Credentials, connectionTester);
         Manager = new IpcConnectionManager(authorizer, Accounts, Settings, operations, options, TimeProvider.System, LoggerFactory);
         Events = new IpcEventPublisher(Manager, options, TimeProvider.System);
         Server = new IpcServer(Manager, Settings, EventLog, options, LoggerFactory.CreateLogger<IpcServer>());

@@ -321,3 +321,25 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 **Resultado esperado:** copias correctas con rutas largas; nada de la carpeta de datos en el NAS; el *junction* se rechaza.
 
 **Estado:** pendiente (requiere servicio, NAS y HU-05, HU-08, HU-14).
+
+## PM-HU05-01 · Probar la conexión contra el NAS real (OpenMediaVault)
+
+**Cubre:** HU-05, criterios 1 a 5 (RF-61) con `WNetAddConnection2` y Samba reales, y con el servicio instalado como LocalSystem.
+
+**Por qué es manual:** exige un NAS real con un recurso de lectura y escritura, otro de solo lectura y poder apagar el NAS. Las pruebas automáticas usan un doble (`ConnectionTesterTests`, `ConnectionTestIpcTests`). En `Backbone.IntegrationTests`, `WindowsShareConnectorTests` prueba siempre el servidor inexistente y el resto solo si se definen `BACKBONE_IT_SMB_SHARE`, `BACKBONE_IT_SMB_USER`, `BACKBONE_IT_SMB_PASSWORD` y, opcionalmente, `BACKBONE_IT_SMB_READONLY_SHARE`.
+
+**Pasos**
+1. En PowerShell (no hace falta elevar), definir esas variables para `\\192.168.1.163\<recurso>` y ejecutar `dotnet test tests\Backbone.IntegrationTests --filter "FullyQualifiedName~WindowsShareConnectorTests"`: 5 correctas y 0 omitidas.
+2. Con el servicio instalado y la app (cuando backbone-app implemente el botón), "Probar conexión" con datos correctos: "Conexión correcta", espacio libre y total coherentes con el panel de OMV y la versión SMB (3.1.1 con Samba actual).
+3. Con la contraseña errónea: "El NAS ha rechazado el usuario o la contraseña".
+4. Con un recurso inexistente y la credencial correcta: el mensaje de recurso inexistente. (Con Samba, si además la contraseña es errónea, gana el rechazo de credenciales: el servidor autentica antes de buscar el recurso.)
+5. Con un recurso de solo lectura para ese usuario: el mensaje de "sin permiso de escritura".
+6. Apagar el NAS (o desconectar su cable) y probar: "No se encuentra el NAS en la red" en menos de 15 s, cronometrados desde el clic.
+7. Tras cada paso, en el NAS: ningún archivo `.backbone-prueba-*.tmp` en el recurso ni en la carpeta del destino (`ls -la` por SSH).
+8. Con una conexión del servicio abierta contra el mismo NAS con **otra** cuenta (copia en curso, cuando exista HU-14), probar la conexión: el resultado es `CredentialsRejected` (`ERROR_SESSION_CREDENTIAL_CONFLICT`: Windows no admite dos usuarios contra el mismo servidor en la misma sesión de inicio) y la copia en curso no se interrumpe.
+9. Con una conexión ya abierta al recurso con la credencial correcta (copia en curso), probar con la contraseña errónea y anotar el resultado: Windows puede reutilizar la sesión SMB existente y dar la prueba por correcta.
+10. Buscar la contraseña centinela en `%ProgramData%\Backbone` como en PM-HU04-01, paso 6: ninguna coincidencia.
+
+**Resultado esperado:** cada caso con su código y su mensaje, en menos de 15 s; ningún archivo de prueba en el NAS; la contraseña no aparece en ningún archivo.
+
+**Estado:** pendiente. El 2026-11-18, sin elevar: `A_server_that_does_not_exist_is_NasUnreachable_in_less_than_15_seconds` correcta contra 192.0.2.1 (unos 11 s); con `net use` contra 192.168.1.163, un usuario inexistente y una contraseña errónea, Samba devuelve 86 o 1326 (los dos se traducen a `CredentialsRejected`). Pendientes la credencial del NAS y los pasos 1 a 10.
