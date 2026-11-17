@@ -1,4 +1,5 @@
 using Backbone.Service.Ipc;
+using Backbone.Service.Jobs;
 using Backbone.Service.Nas;
 using Backbone.Service.Os;
 using Backbone.Service.Persistence;
@@ -93,6 +94,18 @@ internal static class BackboneHost
             sp.GetRequiredService<ILogger<CredentialStore>>()));
         services.AddSingleton<ShareCredentialProvider>();
 
+        // Trabajos (HU-07): jobs.json, validación (RF-03) y carpetas protegidas (§8.3), reutilizadas por el JobRunner.
+        services.TryAddSingleton<ILocalFileSystemInspector, WindowsLocalFileSystemInspector>();
+        services.AddSingleton(sp => new JobStore(
+            sp.GetRequiredService<ServicePaths>().JobsFile,
+            sp.GetRequiredService<TrustedFile>(),
+            sp.GetRequiredService<ILogger<JobStore>>()));
+        services.AddSingleton<IJobList>(sp => sp.GetRequiredService<JobStore>());
+        services.AddSingleton<ProtectedFolderResolver>();
+        services.AddSingleton<JobValidator>();
+        services.TryAddSingleton<IJobActivity, NoJobActivity>();
+        services.AddSingleton<ServiceStatusProvider>();
+
         // IPC.
         services.AddSingleton<ServiceRuntimeInfo>();
         services.AddSingleton<CallerAuthorizer>();
@@ -104,6 +117,8 @@ internal static class BackboneHost
 
         // Orden de arranque: comprobación de la carpeta y ajustes (StartingAsync) antes de crear el pipe.
         services.AddHostedService<StartupService>();
+        services.AddSingleton<StatusBroadcaster>();
+        services.AddHostedService(sp => sp.GetRequiredService<StatusBroadcaster>());
         services.AddHostedService(sp => sp.GetRequiredService<IpcServer>());
         return services;
     }

@@ -321,3 +321,48 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 **Resultado esperado:** copias correctas con rutas largas; nada de la carpeta de datos en el NAS; el *junction* se rechaza.
 
 **Estado:** pendiente (requiere servicio, NAS y HU-05, HU-08, HU-14).
+
+## PM-HU07-01 · Servicio instalado: matar el servicio a mitad de guardar `jobs.json`
+
+**Cubre:** HU-07, criterio 5 (§8.2, escritura atómica).
+
+**Por qué es manual:** la prueba automática (`JobStoreTests`) comprueba que un lector concurrente ve siempre un archivo completo y que una escritura cortada antes del renombrado deja el archivo anterior intacto (simulando el temporal que quedaría), pero no mata de verdad el proceso del servicio instalado como SYSTEM.
+
+**Pasos** (PowerShell **elevado**, servicio instalado y en ejecución)
+1. Con la app (o un cliente de pruebas), guardar un trabajo y anotar su nombre.
+2. Lanzar en bucle guardados del mismo trabajo cambiando el nombre (p. ej. 200 llamadas a `SaveJobAsync` desde un script con el cliente IPC) y, mientras tanto, ejecutar varias veces `Stop-Process -Name Backbone.Service -Force`; el SCM lo reinicia (RNF-02).
+3. Tras cada reinicio, comprobar en el log que el servicio ha arrancado ("Trabajos leídos: 1"), que `GetJobsAsync` devuelve el trabajo con uno de los nombres guardados y que `%ProgramData%\Backbone\config\jobs.json` es JSON válido (`Get-Content … | ConvertFrom-Json`).
+4. Comprobar que en `config\` no quedan archivos `.jobs.json.*.tmp` después del arranque y que no ha aparecido `jobs.json.bad`.
+
+**Resultado esperado:** el servicio arranca siempre con un `jobs.json` completo (el anterior o el nuevo), sin `.bad` ni temporales.
+
+**Estado:** pendiente (requiere el servicio instalado, HU-01).
+
+## PM-HU07-02 · Pruebas automáticas de `jobs.json` que requieren elevación
+
+**Cubre:** HU-07, criterio 5 con la política de producción: `JobStoreElevatedTests` (`Backbone.IntegrationTests`): propietario Administradores y DACL de RNF-07 en `jobs.json`, y servicio que no arranca (1002) con un `jobs.json` de propietario usuario.
+
+**Por qué es manual:** sin elevar no se puede asignar Administradores como propietario; las pruebas se omiten (`Skip`).
+
+**Pasos** (PowerShell **elevado**, en la raíz del repositorio)
+1. `dotnet test tests\Backbone.IntegrationTests --filter "FullyQualifiedName~JobStoreElevatedTests|FullyQualifiedName~TrustedFileElevatedTests"`.
+
+**Resultado esperado:** pasan y no aparecen como omitidas.
+
+**Estado:** pendiente.
+
+## PM-HU07-03 · Validación de orígenes con unidades reales: red, extraíble y no NTFS
+
+**Cubre:** HU-07, criterio 3 (RF-03: "no NTFS, unidades de red").
+
+**Por qué es manual:** las pruebas automáticas simulan el tipo de volumen (`JobValidatorTests`) y solo ejercitan con la API real un disco fijo NTFS (`WindowsLocalFileSystemInspectorTests`); hacen falta una memoria USB, una unidad FAT32/exFAT y una unidad de red asignada.
+
+**Pasos** (servicio instalado, app o cliente IPC)
+1. Validar un trabajo con un origen en una memoria USB (`E:\Fotos`): error `SourceNotLocal` en `Sources[0].Path`.
+2. Validar un origen en una partición o tarjeta FAT32/exFAT de disco fijo: error `SourceNotNtfs`.
+3. Asignar una unidad de red `Z:` (`net use Z: \\nas\fotos`) en la sesión del usuario y validar `Z:\`. Las letras asignadas son de cada sesión de inicio: el servicio (SYSTEM, sesión 0) no ve la `Z:` del usuario y responde `SourceNotFound`; con `--console` en la sesión del usuario, `SourceNotLocal`. Anotar el resultado de los dos.
+4. Crear (como administrador) un enlace simbólico de carpeta `mklink /D C:\RedFotos \\nas\fotos` y validar `C:\RedFotos`: error `SourceNotLocal`. Anotar si el registro del NAS muestra un intento de acceso de la cuenta del equipo: al abrir el enlace siguiéndolo, Windows resuelve la ruta de red como SYSTEM (riesgo residual señalado en el informe de HU-07).
+
+**Resultado esperado:** cada caso con su código junto al campo del origen.
+
+**Estado:** pendiente.

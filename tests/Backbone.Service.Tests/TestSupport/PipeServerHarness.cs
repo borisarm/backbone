@@ -1,6 +1,8 @@
 using System.IO.Pipes;
 using System.Security.Principal;
+using Backbone.Service.Hosting;
 using Backbone.Service.Ipc;
+using Backbone.Service.Jobs;
 using Backbone.Service.Os;
 using Backbone.Service.Persistence;
 using Microsoft.Extensions.Logging;
@@ -26,7 +28,12 @@ internal sealed class PipeServerHarness : IAsyncDisposable
         var authorizer = new CallerAuthorizer(Settings, Accounts);
         Directory.CreateDirectory(_temp.Combine("credentials"));
         Credentials = new CredentialStore(_temp.Combine("credentials"), TestFileTrust.CurrentUser, new DpapiMachineProtector(), TimeProvider.System, LoggerFactory.CreateLogger<CredentialStore>());
-        var operations = new BackboneOperations(new ServiceRuntimeInfo(TimeProvider.System), Settings, Accounts, Credentials);
+        Jobs = new JobStore(_temp.Combine("config", "jobs.json"), TestFileTrust.CurrentUser, LoggerFactory.CreateLogger<JobStore>());
+        var fileSystem = new FakeLocalFileSystemInspector();
+        var protectedFolders = new ProtectedFolderResolver(new ServicePaths(_temp.Path), fileSystem, LoggerFactory.CreateLogger<ProtectedFolderResolver>());
+        var activity = new FakeJobActivity();
+        var status = new ServiceStatusProvider(Jobs, activity, TimeProvider.System);
+        var operations = new BackboneOperations(new ServiceRuntimeInfo(TimeProvider.System), Settings, Accounts, Credentials, Jobs, new JobValidator(fileSystem, protectedFolders), activity, status);
         Manager = new IpcConnectionManager(authorizer, Accounts, Settings, operations, options, TimeProvider.System, LoggerFactory);
         Events = new IpcEventPublisher(Manager, options, TimeProvider.System);
         Server = new IpcServer(Manager, Settings, EventLog, options, LoggerFactory.CreateLogger<IpcServer>());
@@ -50,6 +57,8 @@ internal sealed class PipeServerHarness : IAsyncDisposable
     public SettingsStore Settings { get; }
 
     public CredentialStore Credentials { get; }
+
+    public JobStore Jobs { get; }
 
     public IpcConnectionManager Manager { get; }
 
@@ -122,6 +131,7 @@ internal sealed class PipeServerHarness : IAsyncDisposable
         Events.Dispose();
         Settings.Dispose();
         Credentials.Dispose();
+        Jobs.Dispose();
         LoggerFactory.Dispose();
         _temp.Dispose();
     }

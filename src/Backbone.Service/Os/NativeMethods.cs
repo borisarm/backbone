@@ -284,6 +284,58 @@ internal static partial class NativeMethods
     [LibraryImport("kernel32.dll")]
     internal static partial nint LocalFree(nint memory);
 
+    // ---- Inspección de carpetas locales (HU-07, §8.3): ruta final, volumen y enumeración por handle ----
+
+    internal const int ErrorNoMoreFiles = 18;
+
+    /// <summary><c>FILE_FULL_DIRECTORY_INFO</c> por handle (minwinbase.h, <c>FileFullDirectoryInfo</c>).</summary>
+    internal const int FileFullDirectoryInfo = 14;
+
+    /// <summary><c>FileFullDirectoryRestartInfo</c>: como <see cref="FileFullDirectoryInfo"/>, desde el principio.</summary>
+    internal const int FileFullDirectoryRestartInfo = 15;
+
+    /// <summary><c>FILE_NAME_NORMALIZED | VOLUME_NAME_DOS</c> (0): ruta normalizada con letra de unidad, en forma <c>\\?\</c>.</summary>
+    internal const uint FileNameNormalizedVolumeNameDos = 0x0;
+
+    /// <summary><c>FILE_NAME_NORMALIZED | VOLUME_NAME_GUID</c>: ruta con <c>\\?\Volume{guid}\</c>.</summary>
+    internal const uint FileNameNormalizedVolumeNameGuid = 0x1;
+
+    internal const uint DriveUnknown = 0;
+    internal const uint DriveNoRootDir = 1;
+    internal const uint DriveRemovable = 2;
+    internal const uint DriveFixed = 3;
+    internal const uint DriveRemote = 4;
+
+    /// <summary><c>GetFinalPathNameByHandleW</c>: longitud sin el nulo final; si no cabe, el tamaño necesario con el nulo; 0 si falla.</summary>
+    [LibraryImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial uint GetFinalPathNameByHandle(SafeHandle file, [Out] char[] filePath, uint filePathLength, uint flags);
+
+    /// <summary><c>GetVolumeInformationByHandleW</c>; solo se pide el nombre del sistema de archivos.</summary>
+    [LibraryImport("kernel32.dll", EntryPoint = "GetVolumeInformationByHandleW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetVolumeInformationByHandle(
+        SafeHandle file,
+        nint volumeNameBuffer,
+        uint volumeNameSize,
+        nint volumeSerialNumber,
+        nint maximumComponentLength,
+        nint fileSystemFlags,
+        [Out] char[] fileSystemNameBuffer,
+        uint fileSystemNameSize);
+
+    /// <summary><c>GetDriveTypeW</c>; la raíz debe terminar en <c>\</c> (letra de unidad o ruta de volumen GUID).</summary>
+    [LibraryImport("kernel32.dll", EntryPoint = "GetDriveTypeW", StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial uint GetDriveType(string rootPathName);
+
+    /// <summary><c>GetFileInformationByHandleEx</c> con un búfer de bytes (enumeración de carpetas).</summary>
+    [LibraryImport("kernel32.dll", EntryPoint = "GetFileInformationByHandleEx", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetFileInformationByHandleExBuffer(
+        SafeHandle file,
+        int fileInformationClass,
+        [Out] byte[] fileInformation,
+        uint bufferSize);
+
     // ---- Creación de carpetas relativa a un handle (winternl.h, ntifs.h, ntdef.h) ----
 
     /// <summary><c>FILE_CREATE</c>: falla si ya existe una entrada con ese nombre (no se abre ni se sigue).</summary>

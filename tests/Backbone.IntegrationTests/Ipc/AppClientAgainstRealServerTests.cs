@@ -74,7 +74,7 @@ public sealed class AppClientAgainstRealServerTests
         await Eventually(() => client.State == ConnectionState.Connected);
 
         // Hoy el servidor responde NotSupported a las operaciones aún sin implementar (§7.4).
-        var ex = await Assert.ThrowsAsync<StreamJsonRpc.RemoteInvocationException>(() => client.GetStatusAsync(Ct));
+        var ex = await Assert.ThrowsAsync<StreamJsonRpc.RemoteInvocationException>(() => client.GetSettingsAsync(Ct));
 
         Assert.True(ConnectionFailures.TryGetErrorCode(ex, out var code, out var data));
         Assert.Equal(BackboneErrorCode.NotSupported, code);

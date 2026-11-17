@@ -7,14 +7,15 @@ using Microsoft.Extensions.Logging;
 namespace Backbone.Service.Hosting;
 
 /// <summary>
-/// Primer servicio alojado: comprueba la carpeta de datos (HT-03 I-1) y, solo si es segura, lee <c>settings.json</c>.
-/// Registra en el Visor de eventos el arranque (1000), la parada (1001), el fallo de arranque (1002: carpeta insegura o
-/// <c>settings.json</c> rechazado) y la carpeta apartada y sustituida (1003).
+/// Primer servicio alojado: comprueba la carpeta de datos (HT-03 I-1) y, solo si es segura, lee <c>settings.json</c> y
+/// <c>jobs.json</c> (HU-07). Registra en el Visor de eventos el arranque (1000), la parada (1001), el fallo de arranque (1002:
+/// carpeta insegura, o <c>settings.json</c> o <c>jobs.json</c> rechazados) y la carpeta apartada y sustituida (1003).
 /// </summary>
 internal sealed partial class StartupService(
     ServicePaths paths,
     IDataDirectoryGuard guard,
     SettingsStore settings,
+    JobStore jobs,
     IEventLogWriter eventLog,
     ServiceRuntimeInfo runtime,
     ILogger<StartupService> logger) : IHostedLifecycleService
@@ -72,6 +73,39 @@ internal sealed partial class StartupService(
                 BackboneEventIds.ServiceStartFailed,
                 $"Backbone does not start: '{settings.SettingsPath}' could not be read ({ex.GetType().Name}).");
             throw new ServiceStartupException("settings.json could not be read.", ex);
+        }
+
+        await LoadJobsAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// HU-07: lee <c>jobs.json</c>. Un rechazo (§8.2, ADR-14) se trata como el de <c>settings.json</c>: no se lee nada y el
+    /// servicio no arranca (1002). Un archivo dañado no impide arrancar (lo resuelve <see cref="JobStore"/>).
+    /// </summary>
+    private async Task LoadJobsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await jobs.LoadAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (UntrustedFileException ex)
+        {
+            var rejected = ex.FilePath ?? jobs.JobsPath;
+            LogSettingsRejected(logger, ex, rejected);
+            eventLog.Write(
+                EventLogLevel.Error,
+                BackboneEventIds.ServiceStartFailed,
+                $"Backbone does not start: '{rejected}' was rejected ({ex.Reason}) while reading '{jobs.JobsPath}'; the file and its folder must be owned by SYSTEM or Administrators and must not be links. Repair the installation.");
+            throw new ServiceStartupException("jobs.json was rejected.", ex);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            LogSettingsUnreadable(logger, ex, jobs.JobsPath);
+            eventLog.Write(
+                EventLogLevel.Error,
+                BackboneEventIds.ServiceStartFailed,
+                $"Backbone does not start: '{jobs.JobsPath}' could not be read ({ex.GetType().Name}).");
+            throw new ServiceStartupException("jobs.json could not be read.", ex);
         }
     }
 

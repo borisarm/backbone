@@ -1,4 +1,6 @@
+using Backbone.Service.Hosting;
 using Backbone.Service.Ipc;
+using Backbone.Service.Jobs;
 using Backbone.Service.Os;
 using Backbone.Service.Persistence;
 using Microsoft.Extensions.Logging;
@@ -26,10 +28,28 @@ internal sealed class IpcTestHarness : IAsyncDisposable
         Directory.CreateDirectory(_temp.Combine("credentials")); // ídem (§8.3)
         Protector = protector ?? new DpapiMachineProtector();
         Credentials = new CredentialStore(_temp.Combine("credentials"), TestFileTrust.CurrentUser, Protector, Time, LoggerFactory.CreateLogger<CredentialStore>());
-        Operations = new BackboneOperations(Runtime, Settings, Accounts, Credentials);
+        Jobs = new JobStore(_temp.Combine("config", "jobs.json"), TestFileTrust.CurrentUser, LoggerFactory.CreateLogger<JobStore>());
+        ProtectedFolders = new ProtectedFolderResolver(new ServicePaths(_temp.Path), FileSystem, LoggerFactory.CreateLogger<ProtectedFolderResolver>());
+        Status = new ServiceStatusProvider(Jobs, Activity, Time);
+        Operations = new BackboneOperations(Runtime, Settings, Accounts, Credentials, Jobs, new JobValidator(FileSystem, ProtectedFolders), Activity, Status);
         Manager = new IpcConnectionManager(Authorizer, Accounts, Settings, Operations, Options, Time, LoggerFactory);
         Events = new IpcEventPublisher(Manager, Options, Time);
+        Broadcaster = new StatusBroadcaster(Jobs, Status, Events);
+        Broadcaster.Subscribe();
     }
+
+    /// <summary>Carpetas locales simuladas para la validación de trabajos (HU-07).</summary>
+    public FakeLocalFileSystemInspector FileSystem { get; } = new();
+
+    public FakeJobActivity Activity { get; } = new();
+
+    public JobStore Jobs { get; }
+
+    public ProtectedFolderResolver ProtectedFolders { get; }
+
+    public ServiceStatusProvider Status { get; }
+
+    public StatusBroadcaster Broadcaster { get; }
 
     public FakeTimeProvider Time { get; } = new(new DateTimeOffset(2026, 11, 15, 10, 0, 0, TimeSpan.Zero));
 
@@ -117,7 +137,9 @@ internal sealed class IpcTestHarness : IAsyncDisposable
         }
 
         await Manager.DisposeAsync();
+        Broadcaster.Dispose();
         Events.Dispose();
+        Jobs.Dispose();
         Settings.Dispose();
         Credentials.Dispose();
         LoggerFactory.Dispose();
