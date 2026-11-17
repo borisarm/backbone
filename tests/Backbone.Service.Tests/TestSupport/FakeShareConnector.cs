@@ -101,6 +101,15 @@ internal sealed class FakeShare
 
     public ShareException? DialectError { get; set; }
 
+    /// <summary>Error de la escritura DESPUÉS de crear el archivo (red cortada a mitad de la escritura).</summary>
+    public Exception? WriteErrorAfterCreate { get; set; }
+
+    /// <summary>Error al cerrar la conexión.</summary>
+    public Exception? DisposeError { get; set; }
+
+    /// <summary>Error no previsto (no es un <see cref="ShareException"/>) al leer la carpeta.</summary>
+    public Exception? UnexpectedListError { get; set; }
+
     /// <summary>El servidor no aplica el borrado al cerrar (el archivo queda tras la escritura).</summary>
     public bool IgnoresDeleteOnClose { get; set; }
 
@@ -152,7 +161,7 @@ internal sealed class FakeShareConnection(FakeShareConnector owner, string share
         RunAsync("Exists", () => Task.FromResult(string.Equals(path, ShareRoot, StringComparison.OrdinalIgnoreCase) || Share.Directories.ContainsKey(path)));
 
     public Task ListDirectoryAsync(string path, CancellationToken ct) =>
-        RunAsync<object?>("List", () => Share.ListError is { } e ? throw e : Task.FromResult<object?>(null));
+        RunAsync<object?>("List", () => Share.UnexpectedListError is { } u ? throw u : Share.ListError is { } e ? throw e : Task.FromResult<object?>(null));
 
     public Task<ShareSpace> GetSpaceAsync(string path, CancellationToken ct) =>
         RunAsync("Space", () => Share.SpaceError is { } e ? throw e : Task.FromResult(Share.Space));
@@ -178,6 +187,10 @@ internal sealed class FakeShareConnection(FakeShareConnector owner, string share
             try
             {
                 await Share.WaitAsync("Write").ConfigureAwait(false);
+                if (Share.WriteErrorAfterCreate is { } cut)
+                {
+                    throw cut;
+                }
             }
             finally
             {
@@ -212,6 +225,10 @@ internal sealed class FakeShareConnection(FakeShareConnector owner, string share
         {
             DisposedWithOperationsInFlight = Volatile.Read(ref _inFlight) != 0;
             owner.Closed();
+            if (Share.DisposeError is { } error)
+            {
+                throw error;
+            }
         }
 
         return ValueTask.CompletedTask;
