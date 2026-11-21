@@ -242,7 +242,11 @@ public enum ValidationIssueCode
     /// <summary>El origen no está en un volumen NTFS local.</summary>
     SourceNotNtfs = 4,
 
-    /// <summary>El origen es una unidad de red o extraíble.</summary>
+    /// <summary>
+    /// El origen es una unidad de red o extraíble, una ruta UNC o de dispositivo (<c>\\?\</c>, <c>\\.\</c>, <c>\??\</c>), o
+    /// pasa por un enlace cuyo destino no es un volumen local (<c>\??\UNC\</c>, <c>\Device\Mup</c>, <c>\RPC Control</c>,
+    /// <c>GLOBALROOT</c>…), que no se llega a abrir (§8.3, ADR-20).
+    /// </summary>
     SourceNotLocal = 5,
 
     /// <summary>Falta el alias.</summary>
@@ -326,4 +330,21 @@ public enum ValidationIssueCode
     /// obligatoria, ADR-16, §8.3). <c>Field</c> = <c>Sources[i].Path</c>. No impide guardar.
     /// </summary>
     SourceContainsDataFolder = 27,
+
+    /// <summary>
+    /// Contrato 1.3. Error: el origen existe (o puede existir) pero el servicio no puede comprobarlo: acceso denegado, error de
+    /// E/S, plazo vencido, o su ruta atraviesa (o es) una carpeta solo en la nube o con un punto de reanálisis que Backbone no
+    /// lee (ADR-19), o la ruta final no coincide con la resuelta (§8.3, "Resolución controlada de los orígenes", ADR-20).
+    /// <c>Field</c> = <c>Sources[i].Path</c>.
+    /// </summary>
+    SourceUnreadable = 28,
+
+    /// <summary>
+    /// Contrato 1.3. Error: la ruta del origen no es una ruta local completa con letra de unidad (<c>X:\…</c>) en forma
+    /// normalizada: relativa, con <c>:</c> fuera de la posición 1 (flujos alternativos como <c>C:\ProgramData::$INDEX_ALLOCATION</c>),
+    /// con segmentos vacíos, <c>.</c> o <c>..</c>, con un segmento terminado en punto o espacio (<c>docs.</c>) o que no cumple
+    /// <see cref="SnapshotPaths.IsValidSegment"/> (§7.5 "Ruta de origen"). Las rutas UNC y <c>\\?\</c>, <c>\\.\</c> o <c>\??\</c>
+    /// siguen siendo <see cref="SourceNotLocal"/>. <c>Field</c> = <c>Sources[i].Path</c>.
+    /// </summary>
+    SourcePathInvalid = 29,
 }

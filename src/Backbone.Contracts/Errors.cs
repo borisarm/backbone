@@ -71,6 +71,15 @@ public enum BackboneErrorCode
     /// siendo el último restaurable. Solución: dividir el trabajo en varios. Solo aparece en <see cref="RunRecord.ErrorCode"/>.
     /// </summary>
     SnapshotTooLarge = 1017,
+
+    /// <summary>
+    /// Contrato 1.3. El servicio no puede conectar ahora con ese servidor, y la respuesta no depende de si la credencial es
+    /// correcta (revisión de seguridad de HU-05, M-1; §8.2 "Conexiones al NAS"). Hay dos casos: el servidor ya tiene una
+    /// conexión del servicio hecha con otra credencial (Windows admite un solo usuario por servidor), o el usuario que llama ha
+    /// acumulado demasiados <see cref="CredentialsRejected"/> seguidos. No se ha intentado conectar. Solución: reintentar
+    /// cuando termine la otra operación o pasados unos minutos.
+    /// </summary>
+    NasBusy = 1018,
 }
 
 /// <summary>

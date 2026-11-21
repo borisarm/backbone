@@ -55,7 +55,9 @@ public sealed record ConnectionTestResult
     /// <summary>
     /// Motivo del fallo: <see cref="BackboneErrorCode.NasUnreachable"/>, <see cref="BackboneErrorCode.CredentialsRejected"/>,
     /// <see cref="BackboneErrorCode.ShareNotFound"/>, <see cref="BackboneErrorCode.AccessDenied"/> (sin permiso de escritura) o
-    /// <see cref="BackboneErrorCode.CredentialRequired"/> (sin credencial indicada ni guardada: no se intenta conectar).
+    /// <see cref="BackboneErrorCode.CredentialRequired"/> (sin credencial indicada ni guardada: no se intenta conectar) o, desde el
+    /// contrato 1.3, <see cref="BackboneErrorCode.NasBusy"/> (el servidor está en uso por otra conexión del servicio o hay
+    /// demasiados rechazos seguidos; no se intenta conectar).
     /// </summary>
     public BackboneErrorCode? ErrorCode { get; init; }
 
