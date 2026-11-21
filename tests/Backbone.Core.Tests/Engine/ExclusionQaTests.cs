@@ -239,7 +239,7 @@ public sealed class ExclusionQaTests
         // (ruta relativa, atributos, ¿se omite como nube?)  El nombre de la carpeta no influye.
         { @"Datos\x.bin", (int)SourceAttributes.RecallOnDataAccess, true },
         { @"OneDrive\x.bin", (int)SourceAttributes.RecallOnOpen, true },
-        { @"OneDrive - Empresa\x.bin", (int)FileAttributes.Offline, true },
+        { @"OneDrive - Empresa\x.bin", (int)FileAttributes.Offline, false }, // OFFLINE sin etiqueta no significa nada (ADR-19)
         { @"Datos\x.bin", (int)(SourceAttributes.RecallOnDataAccess | FileAttributes.Hidden | FileAttributes.System | FileAttributes.ReadOnly), true },
         { @"OneDrive\x.bin", (int)FileAttributes.Archive, false },
         { @"OneDrive\x.bin", (int)FileAttributes.Normal, false },
@@ -278,11 +278,11 @@ public sealed class ExclusionQaTests
     [Trait("Requirement", "R4")]
     public async Task HU08_4_A_reparse_point_without_cloud_bits_is_a_link_and_one_with_cloud_bits_is_cloud_only()
     {
-        // La precedencia (nube antes que enlace) es la del motor sobre los atributos recibidos; el servicio decide qué ve cada uno.
+        // La precedencia es la del motor sobre los atributos y la etiqueta recibidos (ADR-19); el servicio decide qué ve cada uno.
         var storage = new InMemoryRepositoryStorage();
         var source = new InMemorySourceFileSystem();
-        source.AddFile(DocumentsRoot + @"\enlace.txt", "e"u8.ToArray(), attributes: FileAttributes.Archive | FileAttributes.ReparsePoint);
-        source.AddFile(DocumentsRoot + @"\placeholder.txt", "p"u8.ToArray(), attributes: FileAttributes.Archive | FileAttributes.ReparsePoint | SourceAttributes.RecallOnDataAccess);
+        source.AddFile(DocumentsRoot + @"\enlace.txt", "e"u8.ToArray(), attributes: FileAttributes.Archive | FileAttributes.ReparsePoint, reparseTag: ReparseTags.Symlink);
+        source.AddFile(DocumentsRoot + @"\placeholder.txt", "p"u8.ToArray(), attributes: FileAttributes.Archive | FileAttributes.ReparsePoint | SourceAttributes.RecallOnDataAccess, reparseTag: 0x9000601A);
 
         var result = await RunAsync(storage, new ManualTimeProvider(), source, Request([DefaultSources[0]]));
 

@@ -46,7 +46,7 @@ public sealed class ReparseSwitchingSource(InMemorySourceFileSystem inner) : ISo
         }
 
         var info = await inner.GetFileInfoAsync(filePath, cancellationToken);
-        return info is not null && InfoReportsLink.Contains(filePath) ? info with { Attributes = info.Attributes | FileAttributes.ReparsePoint } : info;
+        return info is not null && InfoReportsLink.Contains(filePath) ? info with { Attributes = info.Attributes | FileAttributes.ReparsePoint, ReparseTag = ReparseTags.Symlink } : info;
     }
 }
 

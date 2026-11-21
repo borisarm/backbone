@@ -12,8 +12,10 @@ namespace Backbone.Core.Engine;
 /// (<see cref="ExclusionPreviewResult.ExcludedFiles"/>…) cuentan cada archivo una vez.
 /// </para>
 /// <para>
-/// Como en la copia: las exclusiones obligatorias (ADR-16) no se recorren ni se cuentan, los puntos de reanálisis no se
-/// siguen ni se cuentan (RF-06), y los archivos solo en la nube se cuentan con su tamaño sin abrirlos. Una carpeta que no se
+/// Como en la copia: las exclusiones obligatorias (ADR-16) no se recorren ni se cuentan, los enlaces no se siguen ni se
+/// cuentan (RF-06, ADR-19), y los archivos solo en la nube o no legibles por su etiqueta se cuentan con su tamaño sin
+/// abrirlos. Las carpetas solo en la nube (no pobladas) o no legibles por su etiqueta no se recorren y se cuentan en
+/// <see cref="ExclusionPreviewResult.UnreadableDirectories"/>. Una carpeta que no se
 /// puede leer (o cuyo listado no cabe en el presupuesto de memoria, §8.4) se cuenta en
 /// <see cref="ExclusionPreviewResult.UnreadableDirectories"/> y el resultado es aproximado. La memoria se acota igual que
 /// en el motor: solo se guardan las subcarpetas de las carpetas abiertas, con su estado.
@@ -171,11 +173,17 @@ public sealed class ExclusionPreview
                     ArgumentNullException.ThrowIfNull(child);
                     cancellationToken.ThrowIfCancellationRequested();
                     var childPath = frame.SnapshotPath + "/" + child.Name;
-                    // Como en la copia: un archivo solo en la nube se cuenta aunque sea punto de reanálisis; un enlace, no.
-                    var isLink = child.Attributes.HasFlag(FileAttributes.ReparsePoint)
-                        && (child.IsDirectory || !SourceAttributes.IsCloudOnly(child.Attributes));
-                    if ((checkMandatory && mandatory.IsExcluded(childPath)) || isLink)
+                    // Como en la copia (ADR-19): un enlace no se sigue ni se cuenta.
+                    var kind = SourceAttributes.Classify(child);
+                    if ((checkMandatory && mandatory.IsExcluded(childPath)) || kind == SourceEntryKind.Link)
                     {
+                        continue;
+                    }
+
+                    if (child.IsDirectory && kind is SourceEntryKind.CloudOnly or SourceEntryKind.Unreadable)
+                    {
+                        // Como en la copia, no se recorre (no se piden datos al proveedor): el resultado es aproximado.
+                        counts.UnreadableDirectories++;
                         continue;
                     }
 

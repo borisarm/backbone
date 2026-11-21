@@ -39,12 +39,17 @@ namespace Backbone.Core.Engine;
 /// segmento cada vez; las exclusiones obligatorias no dependen de esa lista.
 /// </para>
 /// <para>
-/// <b>Puntos de reanálisis y archivos solo en la nube</b> (RF-06, R4): un elemento enumerado con
-/// <see cref="FileAttributes.ReparsePoint"/> no se sigue ni se abre (aviso <see cref="RunIssueCode.ReparsePointSkipped"/>,
-/// sin conservar nada). Un archivo con algún atributo de <see cref="SourceAttributes.CloudOnlyMask"/> no se abre (aviso
-/// <see cref="RunIssueCode.CloudOnlySkipped"/>) y conserva su versión anterior si la tenía; esta comprobación va antes que la
-/// de punto de reanálisis, porque un marcador de OneDrive también puede serlo. Las carpetas se recorren aunque tengan esos
-/// atributos: lo que se omite es cada archivo no descargado.
+/// <b>Puntos de reanálisis y elementos solo en la nube</b> (RF-06, R4, ADR-19, §8.2 "Clasificación por etiqueta"): cada
+/// elemento enumerado se clasifica con <see cref="SourceAttributes.Classify(SourceEntry)"/> (atributos y
+/// <see cref="SourceEntry.ReparseTag"/>) antes de abrir nada, en este orden. Un <b>enlace</b> (etiqueta sustituto de nombre)
+/// no se sigue ni se abre (aviso <see cref="RunIssueCode.ReparsePointSkipped"/>, sin conservar nada; en una carpeta, tampoco
+/// lo de debajo). Lo que está <b>solo en la nube</b> no se abre ni se recorre (aviso <see cref="RunIssueCode.CloudOnlySkipped"/>)
+/// y conserva su versión anterior (en una carpeta no poblada, todo lo que tenía debajo). Lo <b>no legible</b> (etiqueta fuera
+/// de la lista blanca, o punto de reanálisis con etiqueta 0) tampoco (aviso <see cref="RunIssueCode.ReadError"/> con la
+/// etiqueta en hexadecimal) y conserva lo del padre igual. Lo de la lista blanca (nube descargada, WOF, Dedup) y lo normal se
+/// copia; una carpeta de nube poblada se recorre. Si la implementación ve sobre el handle que el elemento ha cambiado de clase
+/// (<see cref="RunIssueCode.CloudOnlySkipped"/> al abrir, al volver a leer los metadatos o al enumerar), o vence el plazo de
+/// una lectura (<see cref="RunIssueCode.ReadError"/>), se conserva igualmente la versión del padre.
 /// </para>
 /// <para>
 /// <b>Archivos ilegibles</b> (RF-25): un archivo o carpeta que no se puede leer se omite con un aviso y la ejecución termina
@@ -463,44 +468,7 @@ public sealed class BackupEngine
                     {
                         // ADR-16: exclusión obligatoria. Ni se recorre, ni se avisa, ni cuenta como omitido.
                     }
-                    else if (!child.IsDirectory && SourceAttributes.IsCloudOnly(child.Attributes))
-                    {
-                        // R4: solo en la nube. Se mira antes que el punto de reanálisis porque un marcador de OneDrive
-                        // también puede serlo; no se abre nada (ni siquiera los metadatos).
-                        if (!IsValidName(child.Name) || !EntryPath.IsValidFilePath(childPath))
-                        {
-                            Skip(childPath, RunIssueCode.PathInvalid, "El nombre del archivo no es válido en un snapshot (§7.5); no se copia.");
-                            Report(child.Length, childPath);
-                        }
-                        else if (await SkipCloudOnlyAsync(child, childPath, detail: null, cancellationToken).ConfigureAwait(false))
-                        {
-                            frame.Added++;
-                        }
-                    }
-                    else if (child.Attributes.HasFlag(FileAttributes.ReparsePoint))
-                    {
-                        // RF-06: no se siguen ni se conserva su versión anterior. Si un elemento se convierte en enlace
-                        // después de enumerarlo, la implementación lo detecta sobre el handle y lanza
-                        // SourceAccessException(ReparsePointSkipped) (§8.2): se omite con ese aviso.
-                        Skip(childPath, RunIssueCode.ReparsePointSkipped, "Punto de reanálisis (junction o enlace simbólico) no seguido.");
-                    }
-                    else if (child.IsDirectory)
-                    {
-                        if (IsValidName(child.Name) && EntryPath.IsValidDirectoryPath(childPath + "/"))
-                        {
-                            stack.Push(NewFrame(child.FullPath, childPath, ChildState(frame, child)));
-                        }
-                        else
-                        {
-                            Skip(childPath, RunIssueCode.PathInvalid, "El nombre de la carpeta no es válido en un snapshot (§7.5); no se copia.");
-                        }
-                    }
-                    else if (!IsValidName(child.Name) || !EntryPath.IsValidFilePath(childPath))
-                    {
-                        Skip(childPath, RunIssueCode.PathInvalid, "El nombre del archivo no es válido en un snapshot (§7.5); no se copia.");
-                        Report(child.Length, childPath);
-                    }
-                    else if (await CopyFileAsync(child, childPath, cancellationToken).ConfigureAwait(false))
+                    else if (await AddChildAsync(frame, child, childPath, stack, cancellationToken).ConfigureAwait(false))
                     {
                         frame.Added++;
                     }
@@ -520,6 +488,90 @@ public sealed class BackupEngine
                     container.Added++;
                 }
             }
+        }
+
+        /// <summary>
+        /// Trata un hijo de una carpeta según su clase (ADR-19, §8.2 "Clasificación por etiqueta"), con lo que dio la
+        /// enumeración y antes de abrir nada: un enlace se omite sin conservar nada (RF-06); lo que está solo en la nube (R4)
+        /// y lo que no es legible (etiqueta fuera de la lista blanca, RF-25) se omiten con aviso conservando lo del padre (en
+        /// una carpeta, todo lo de debajo); lo demás se copia o, si es una carpeta, se apila para recorrerla.
+        /// </summary>
+        /// <returns>Si ha añadido una entrada al snapshot (también si conserva algo del padre).</returns>
+        private async Task<bool> AddChildAsync(DirectoryFrame frame, SourceEntry child, string childPath, Stack<DirectoryFrame> stack, CancellationToken cancellationToken)
+        {
+            var kind = SourceAttributes.Classify(child);
+            if (kind == SourceEntryKind.Link)
+            {
+                // RF-06: no se sigue ni se conserva su versión anterior (en una carpeta, tampoco lo de debajo). Si un
+                // elemento se convierte en enlace después de enumerarlo, la implementación lo detecta sobre el handle y lanza
+                // SourceAccessException(ReparsePointSkipped) (§8.2): se omite igual.
+                Skip(childPath, RunIssueCode.ReparsePointSkipped, $"Enlace (junction, enlace simbólico o punto de montaje; etiqueta {ReparseTags.Format(child.ReparseTag)}) no seguido.");
+                return false;
+            }
+
+            var validName = IsValidName(child.Name)
+                && (child.IsDirectory ? EntryPath.IsValidDirectoryPath(childPath + "/") : EntryPath.IsValidFilePath(childPath));
+            if (!validName)
+            {
+                if (child.IsDirectory)
+                {
+                    Skip(childPath, RunIssueCode.PathInvalid, "El nombre de la carpeta no es válido en un snapshot (§7.5); no se copia.");
+                }
+                else
+                {
+                    Skip(childPath, RunIssueCode.PathInvalid, "El nombre del archivo no es válido en un snapshot (§7.5); no se copia.");
+                    Report(child.Length, childPath);
+                }
+
+                return false;
+            }
+
+            switch (kind)
+            {
+                case SourceEntryKind.CloudOnly when child.IsDirectory:
+                    // R4: carpeta de nube no poblada. Enumerarla en vivo pediría su contenido al proveedor y en VSS faltarían
+                    // los hijos que no están en local: no se recorre y se conserva todo lo que tenía debajo en el padre.
+                    KeepDirectoryFromParent(
+                        childPath,
+                        RunIssueCode.CloudOnlySkipped,
+                        "Carpeta solo en la nube (no poblada); no se recorre ni se descarga y se conserva lo que tenía en el snapshot anterior.");
+                    return true;
+
+                case SourceEntryKind.CloudOnly:
+                    // R4: no se abre nada (ni siquiera los metadatos), para no desencadenar la descarga.
+                    return await SkipCloudOnlyAsync(child, childPath, detail: null, cancellationToken).ConfigureAwait(false);
+
+                case SourceEntryKind.Unreadable when child.IsDirectory:
+                    KeepDirectoryFromParent(childPath, RunIssueCode.ReadError, UnreadableTagMessage(child, isDirectory: true));
+                    return true;
+
+                case SourceEntryKind.Unreadable:
+                    return await SkipUnreadableAsync(
+                        childPath,
+                        RunIssueCode.ReadError,
+                        UnreadableTagMessage(child, isDirectory: false),
+                        child.Length,
+                        cancellationToken).ConfigureAwait(false);
+
+                case SourceEntryKind.Normal or SourceEntryKind.Content when child.IsDirectory:
+                    // Una carpeta de nube totalmente poblada se recorre; cada archivo se clasifica por separado.
+                    stack.Push(NewFrame(child.FullPath, childPath, ChildState(frame, child)));
+                    return false;
+
+                default:
+                    return await CopyFileAsync(child, childPath, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>Mensaje del aviso de un elemento no legible por su etiqueta (ADR-19).</summary>
+        private static string UnreadableTagMessage(SourceEntry child, bool isDirectory)
+        {
+            var what = child.ReparseTag == 0
+                ? "Punto de reanálisis sin etiqueta (0x00000000)"
+                : $"Punto de reanálisis con etiqueta {ReparseTags.Format(child.ReparseTag)}, fuera de la lista blanca";
+            return isDirectory
+                ? what + "; la carpeta no se recorre y se conserva lo que tenía en el snapshot anterior."
+                : what + "; el archivo no se lee y se conserva su versión anterior si la había.";
         }
 
         /// <summary>
@@ -676,10 +728,10 @@ public sealed class BackupEngine
         private void MarkUnreadable(DirectoryFrame frame, RunIssueCode code, string message)
         {
             frame.KeptFromParent = true;
-            unreadableDirectories.Add(frame.SnapshotPath + "/");
-            skipped++;
             if (frame.IsRoot)
             {
+                unreadableDirectories.Add(frame.SnapshotPath + "/");
+                skipped++;
                 Warn(new SnapshotWarning(
                     frame.SnapshotPath,
                     nameof(RunIssueCode.SourceRootUnreadable),
@@ -687,8 +739,19 @@ public sealed class BackupEngine
             }
             else
             {
-                Warn(new SnapshotWarning(frame.SnapshotPath, code.ToString(), message));
+                KeepDirectoryFromParent(frame.SnapshotPath, code, message);
             }
+        }
+
+        /// <summary>
+        /// RF-25: una carpeta interior que no se recorre (ilegible, solo en la nube o no legible por su etiqueta), con aviso;
+        /// después se conserva lo que tenía debajo en el padre (<see cref="PreserveUnreadableDirectoriesAsync"/>).
+        /// </summary>
+        private void KeepDirectoryFromParent(string snapshotPath, RunIssueCode code, string message)
+        {
+            unreadableDirectories.Add(snapshotPath + "/");
+            skipped++;
+            Warn(new SnapshotWarning(snapshotPath, code.ToString(), message));
         }
 
         /// <summary>Copia (o reutiliza) un archivo. Devuelve si ha añadido una entrada al snapshot.</summary>
@@ -725,7 +788,7 @@ public sealed class BackupEngine
 
             if (written is null)
             {
-                return await SkipUnreadableAsync(path, sourceError ?? new SourceAccessException(), inParent ? previous : null, file.Length, cancellationToken).ConfigureAwait(false);
+                return await SkipUnreadableAsync(path, sourceError ?? new SourceAccessException(), file.Length, cancellationToken).ConfigureAwait(false);
             }
 
             if (written.Stored)
@@ -734,14 +797,34 @@ public sealed class BackupEngine
                 newBytes += written.Length;
             }
 
-            var check = await ChangedDuringCopyAsync(file, modifiedUtc, written.Length, cancellationToken).ConfigureAwait(false);
+            var (check, afterError) = await ChangedDuringCopyAsync(file, modifiedUtc, written.Length, cancellationToken).ConfigureAwait(false);
             if (check == AfterCopy.BecameReparsePoint)
             {
                 // Se leyó del handle abierto antes del cambio, pero ahora es un enlace: se omite (RF-06, §8.2). El objeto
                 // subido queda sin referencia hasta la limpieza.
-                Skip(path, RunIssueCode.ReparsePointSkipped, "El archivo se ha convertido en un punto de reanálisis (junction o enlace simbólico) durante la copia; no se guarda.");
+                Skip(path, RunIssueCode.ReparsePointSkipped, "El archivo se ha convertido en un enlace (junction o enlace simbólico) durante la copia; no se guarda.");
                 Report(written.Length, path);
                 return false;
+            }
+
+            if (check == AfterCopy.BecameCloudOnly)
+            {
+                // R4: ha pasado a estar solo en la nube mientras se copiaba; lo leído no se guarda (podría tener huecos) y
+                // se conserva la versión anterior. El objeto subido queda sin referencia hasta la limpieza.
+                return await SkipCloudOnlyAsync(file, path, afterError, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (check == AfterCopy.BecameUnreadable)
+            {
+                // RF-25 (§8.2): no se han podido volver a leer sus metadatos (p. ej. plazo vencido) o ahora tiene una
+                // etiqueta fuera de la lista blanca: se omite como ilegible y se conserva su versión anterior.
+                return await SkipUnreadableAsync(
+                    path,
+                    RunIssueCode.ReadError,
+                    "No se pudo comprobar el archivo después de copiarlo; no se guarda lo leído y se conserva su versión anterior si la había: "
+                        + Untrusted.Describe(afterError ?? string.Empty),
+                    written.Length,
+                    cancellationToken).ConfigureAwait(false);
             }
 
             if (check == AfterCopy.Changed)
@@ -811,7 +894,7 @@ public sealed class BackupEngine
         /// §6.4.2: el archivo cambió durante la copia si se leyó un número de bytes distinto del tamaño visto al recorrer, o si
         /// después de copiarlo su tamaño o su fecha ya no son los de entonces (o no se pueden leer).
         /// </summary>
-        private async Task<AfterCopy> ChangedDuringCopyAsync(SourceEntry file, DateTime modifiedUtc, long length, CancellationToken cancellationToken)
+        private async Task<(AfterCopy Result, string? Detail)> ChangedDuringCopyAsync(SourceEntry file, DateTime modifiedUtc, long length, CancellationToken cancellationToken)
         {
             SourceEntry? after;
             try
@@ -820,34 +903,57 @@ public sealed class BackupEngine
             }
             catch (Exception ex) when (IsReparsePointError(ex))
             {
-                return AfterCopy.BecameReparsePoint;
+                return (AfterCopy.BecameReparsePoint, null);
+            }
+            catch (SourceAccessException ex) when (ex.Code == RunIssueCode.CloudOnlySkipped)
+            {
+                return (AfterCopy.BecameCloudOnly, ex.Message);
+            }
+            catch (SourceAccessException ex) when (ex.Code == RunIssueCode.ReadError)
+            {
+                // §8.2 "Plazo de las lecturas de los orígenes": p. ej. el plazo ha vencido.
+                return (AfterCopy.BecameUnreadable, ex.Message);
             }
             catch (Exception ex) when (IsSourceError(ex))
             {
-                return AfterCopy.Changed;
+                return (AfterCopy.Changed, null);
             }
 
-            if (after is not null && after.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            switch (after is null ? SourceEntryKind.Normal : SourceAttributes.Classify(after))
             {
-                return AfterCopy.BecameReparsePoint;
+                case SourceEntryKind.Link:
+                    return (AfterCopy.BecameReparsePoint, null);
+                case SourceEntryKind.CloudOnly:
+                    return (AfterCopy.BecameCloudOnly, null);
+                case SourceEntryKind.Unreadable when after is not null:
+                    return (AfterCopy.BecameUnreadable, $"etiqueta {ReparseTags.Format(after.ReparseTag)} fuera de la lista blanca");
             }
 
             return length != file.Length || after is null || after.Length != length || ToUtc(after.LastWriteTimeUtc) != modifiedUtc
-                ? AfterCopy.Changed
-                : AfterCopy.Unchanged;
+                ? (AfterCopy.Changed, null)
+                : (AfterCopy.Unchanged, null);
         }
 
         /// <summary>RF-25: omite un archivo ilegible con aviso y conserva su versión anterior si la había.</summary>
-        private async Task<bool> SkipUnreadableAsync(string path, Exception error, ParentFile? previous, long length, CancellationToken cancellationToken)
+        private Task<bool> SkipUnreadableAsync(string path, Exception error, long length, CancellationToken cancellationToken)
         {
-            var preserved = previous.HasValue;
-            Skip(
+            var preserved = parent.TryGet(EntryPathSet.Digest(path), out _);
+            return SkipUnreadableAsync(
                 path,
                 IssueCode(error),
                 (preserved ? "No se pudo leer el archivo; se conserva su versión anterior: " : "No se pudo leer el archivo; no se copia: ")
-                    + Untrusted.Describe(error.Message));
+                    + Untrusted.Describe(error.Message),
+                length,
+                cancellationToken);
+        }
+
+        /// <summary>RF-25: omite un archivo con aviso (<paramref name="code"/>, <paramref name="message"/>) y conserva su versión anterior si la había.</summary>
+        private async Task<bool> SkipUnreadableAsync(string path, RunIssueCode code, string message, long length, CancellationToken cancellationToken)
+        {
+            var preserved = parent.TryGet(EntryPathSet.Digest(path), out var kept);
+            Skip(path, code, message);
             Report(length, path);
-            if (previous is { } kept)
+            if (preserved)
             {
                 await writer.AddAsync(SnapshotEntry.File(path, kept.Hash, kept.Size, kept.ModifiedUtc, kept.Attributes), cancellationToken).ConfigureAwait(false);
             }
@@ -903,6 +1009,12 @@ public sealed class BackupEngine
         Unchanged,
         Changed,
         BecameReparsePoint,
+
+        /// <summary>Ha pasado a estar solo en la nube (R4).</summary>
+        BecameCloudOnly,
+
+        /// <summary>Ya no se puede leer (plazo vencido, etiqueta fuera de la lista blanca; RF-25).</summary>
+        BecameUnreadable,
     }
 
     /// <summary>Carpeta en recorrido.</summary>

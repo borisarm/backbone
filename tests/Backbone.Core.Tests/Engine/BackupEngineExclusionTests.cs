@@ -370,24 +370,30 @@ public sealed class BackupEngineExclusionTests
 
     // ================================================================== Criterio 4: OneDrive solo en la nube (R4)
 
-    public static TheoryData<int> CloudAttributes =>
-    [
-        (int)SourceAttributes.RecallOnDataAccess,
-        (int)SourceAttributes.RecallOnOpen,
-        (int)FileAttributes.Offline,
-        (int)(SourceAttributes.RecallOnDataAccess | FileAttributes.ReparsePoint | FileAttributes.SparseFile),
-    ];
+    /// <summary>Atributos y etiqueta de un archivo solo en la nube (§8.2 "Archivos y carpetas solo en la nube").</summary>
+    public static TheoryData<int, uint> CloudAttributes => new()
+    {
+        { (int)SourceAttributes.RecallOnDataAccess, 0u },
+        { (int)SourceAttributes.RecallOnOpen, 0u },
+        { (int)(FileAttributes.Offline | FileAttributes.ReparsePoint), ReparseTags.Cloud },
+        { (int)(FileAttributes.Offline | FileAttributes.ReparsePoint), 0x9000601Au },
+        { (int)(FileAttributes.Offline | FileAttributes.ReparsePoint), ReparseTags.Hsm },
+        { (int)(FileAttributes.Offline | FileAttributes.ReparsePoint), ReparseTags.Hsm2 },
+        { (int)(SourceAttributes.RecallOnDataAccess | FileAttributes.ReparsePoint | FileAttributes.SparseFile), 0x9000601Au },
+        { (int)(SourceAttributes.RecallOnDataAccess | FileAttributes.ReparsePoint | FileAttributes.SparseFile), 0u },
+        { (int)(SourceAttributes.RecallOnOpen | FileAttributes.ReparsePoint), ReparseTags.ProjFs }, // la nube va antes que "no legible"
+    };
 
     [Theory]
     [MemberData(nameof(CloudAttributes))]
     [Trait("Requirement", "RF-06")]
     [Trait("Requirement", "R4")]
-    public async Task HU08_4_Cloud_only_files_are_skipped_with_CloudOnlySkipped_without_opening_them(int attribute)
+    public async Task HU08_4_Cloud_only_files_are_skipped_with_CloudOnlySkipped_without_opening_them(int attribute, uint tag)
     {
         var storage = new InMemoryRepositoryStorage();
         var source = new InMemorySourceFileSystem();
         source.AddFile(DocumentsRoot + @"\OneDrive\local.txt", "descargado"u8.ToArray());
-        source.AddFile(DocumentsRoot + @"\OneDrive\nube.pdf", new byte[5000], attributes: FileAttributes.Archive | (FileAttributes)attribute);
+        source.AddFile(DocumentsRoot + @"\OneDrive\nube.pdf", new byte[5000], attributes: FileAttributes.Archive | (FileAttributes)attribute, reparseTag: tag);
 
         var result = await RunAsync(storage, new ManualTimeProvider(), source, WithExclusions(JobDefaults.Exclusions, [DefaultSources[0]]));
 
@@ -440,13 +446,14 @@ public sealed class BackupEngineExclusionTests
 
     [Fact]
     [Trait("Requirement", "R4")]
-    public async Task HU08_4_A_cloud_folder_is_traversed_and_only_its_dehydrated_files_are_skipped()
+    public async Task HU08_4_A_populated_cloud_folder_is_traversed_and_only_its_dehydrated_files_are_skipped()
     {
         var storage = new InMemoryRepositoryStorage();
         var source = new InMemorySourceFileSystem();
-        source.AddFile(DocumentsRoot + @"\OneDrive\local.txt", "descargado"u8.ToArray());
-        source.AddFile(DocumentsRoot + @"\OneDrive\nube.txt", "en la nube"u8.ToArray(), attributes: SourceAttributes.RecallOnDataAccess);
-        source.SetAttributes(DocumentsRoot + @"\OneDrive", FileAttributes.Directory | SourceAttributes.RecallOnDataAccess);
+        source.AddFile(DocumentsRoot + @"\OneDrive\local.txt", "descargado"u8.ToArray(), attributes: FileAttributes.Archive | FileAttributes.ReparsePoint, reparseTag: 0x9000601A);
+        source.AddFile(DocumentsRoot + @"\OneDrive\nube.txt", "en la nube"u8.ToArray(), attributes: SourceAttributes.RecallOnDataAccess | FileAttributes.ReparsePoint, reparseTag: 0x9000601A);
+        // Lo que se ve en una máquina con OneDrive: 0x410 y 0x9000601A, sin RECALL_* (§8.2).
+        source.SetAttributes(DocumentsRoot + @"\OneDrive", FileAttributes.Directory | FileAttributes.ReparsePoint, 0x9000601A);
 
         var result = await RunAsync(storage, new ManualTimeProvider(), source, Request([DefaultSources[0]]));
 
@@ -513,7 +520,8 @@ public sealed class BackupEngineExclusionTests
         Assert.Equal(0x00040000, (int)SourceAttributes.RecallOnOpen);
         Assert.Equal(0x00400000, (int)SourceAttributes.RecallOnDataAccess);
         Assert.Equal(0x00001000, (int)FileAttributes.Offline);
-        Assert.False(SourceAttributes.IsCloudOnly(FileAttributes.Archive | FileAttributes.SparseFile | FileAttributes.ReparsePoint));
+        Assert.Equal(SourceEntryKind.Content, SourceAttributes.Classify(FileAttributes.Archive | FileAttributes.SparseFile | FileAttributes.ReparsePoint, ReparseTags.Cloud));
+        Assert.Equal(SourceEntryKind.Normal, SourceAttributes.Classify(FileAttributes.Archive | FileAttributes.Offline, 0));
     }
 
     // ================================================================== RNF-01 con exclusiones
