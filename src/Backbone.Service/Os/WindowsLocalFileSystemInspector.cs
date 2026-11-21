@@ -55,15 +55,9 @@ internal sealed partial class WindowsLocalFileSystemInspector(ILogger<WindowsLoc
     /// <summary>Tope de aperturas por resolución, contando raíces de volumen y componentes de todos los saltos (§8.3 paso 4).</summary>
     internal const int MaxOpensPerResolution = 2_048;
 
-    public LocalFolderInfo ResolveFolder(string normalizedPath, SourceIoGuard guard) => ResolveFolder(normalizedPath, guard, out _, keepHandle: false);
-
-    public LocalFolderInfo ResolveFolder(string normalizedPath, SourceIoGuard guard, out SafeFileHandle? handle) =>
-        ResolveFolder(normalizedPath, guard, out handle, keepHandle: true);
-
-    private LocalFolderInfo ResolveFolder(string normalizedPath, SourceIoGuard guard, out SafeFileHandle? handle, bool keepHandle)
+    public LocalFolderInfo ResolveFolder(string normalizedPath, SourceIoGuard guard)
     {
         ArgumentNullException.ThrowIfNull(guard);
-        handle = null;
         if (SourcePath.TryNormalize(normalizedPath, out var normalized) != SourcePathCheck.Ok || !string.Equals(normalized, normalizedPath, StringComparison.Ordinal))
         {
             return new LocalFolderInfo(LocalFolderStatus.InvalidPath);
@@ -72,22 +66,8 @@ internal sealed partial class WindowsLocalFileSystemInspector(ILogger<WindowsLoc
         guard.CurrentPath = normalized;
         guard.ResetSlowBudget();
         var outcome = Resolve(normalized, guard);
-        var resolved = outcome.Handle;
-        try
-        {
-            var info = outcome.Failure ?? Describe(outcome, guard);
-            if (keepHandle && info.Status == LocalFolderStatus.Ok)
-            {
-                handle = resolved;
-                resolved = null;
-            }
-
-            return info;
-        }
-        finally
-        {
-            resolved?.Dispose();
-        }
+        using var resolved = outcome.Handle;
+        return outcome.Failure ?? Describe(outcome, guard);
     }
 
     public RealDirectoryScan FindRealDirectories(string directory, string namePrefix, int maxNames, SourceIoGuard guard)
@@ -688,7 +668,7 @@ internal sealed partial class WindowsLocalFileSystemInspector(ILogger<WindowsLoc
     /// Apertura de solo lectura por <see cref="SourceOpen.Open"/> (<c>NtCreateFile</c> con <c>FILE_OPEN</c>,
     /// <c>FILE_OPEN_REPARSE_POINT | FILE_OPEN_FOR_BACKUP_INTENT | FILE_COMPLETE_IF_OPLOCKED</c>, SQOS de identificación): con
     /// <paramref name="parent"/>, <paramref name="name"/> es un solo componente relativo a esa carpeta ya abierta, o vacío para
-    /// reabrir el propio objeto. Si vence el plazo, el handle que vuelva tarde se cierra (I-1).
+    /// reabrir el propio objeto. Si vence el plazo, el handle que vuelva tarde se cierra.
     /// </summary>
     private static int OpenNt(string name, SafeFileHandle? parent, SourceIoGuard guard, out SafeFileHandle handle, uint access = R.FileReadAttributes | R.Synchronize, OpenCounter? opens = null)
     {

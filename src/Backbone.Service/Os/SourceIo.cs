@@ -96,7 +96,7 @@ internal sealed class ThreadSynchronousIoCanceller : ISynchronousIoCanceller
 /// operación, para los dobles). Si tras vencer tampoco vuelve en <see cref="SourceIoOptions.CancellationGrace"/>, se avisa
 /// al que espera (<c>onAbandon</c>) y el hilo se abandona. La cancelación solo se emite mientras la operación está armada,
 /// para no cancelar por error la siguiente (Microsoft Learn, "Canceling Pending I/O Operations"). Lo que devuelva tarde una
-/// operación cuyo plazo ha vencido (un handle) se libera (I-1). Las operaciones de más de
+/// operación cuyo plazo ha vencido (un handle) se libera. Las operaciones de más de
 /// <see cref="SourceIoOptions.SlowOperationThreshold"/> suman; con <see cref="SourceIoOptions.SlowOperationBudget"/>
 /// acumulados, la siguiente lanza <see cref="SourceIoTimeoutException"/> (§8.3 paso 4).
 /// </remarks>
@@ -128,7 +128,7 @@ internal sealed class SourceIoGuard : IDisposable
     /// <summary>Número de operaciones hechas (para pruebas).</summary>
     public int Operations { get; private set; }
 
-    /// <summary>Se ha abandonado el hilo: lo que quede de trabajo no debe seguir (I-2).</summary>
+    /// <summary>Se ha abandonado el hilo: lo que quede de trabajo no debe seguir.</summary>
     public bool IsAbandoned => Volatile.Read(ref _abandoned) != 0;
 
     /// <summary>Ruta que se está tratando, para el log y el evento 1005 (texto no confiable).</summary>
@@ -195,7 +195,7 @@ internal sealed class SourceIoGuard : IDisposable
 
         if (timedOut || IsAbandoned)
         {
-            // I-1: lo que vuelve tarde (un handle abierto) se cierra sin usarlo.
+            // Lo que vuelve tarde (un handle abierto) se cierra sin usarlo.
             (result as IDisposable)?.Dispose();
             throw new SourceIoTimeoutException(abandoned: IsAbandoned);
         }

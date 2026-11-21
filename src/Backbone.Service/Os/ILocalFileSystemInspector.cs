@@ -78,18 +78,6 @@ internal interface ILocalFileSystemInspector
     LocalFolderInfo ResolveFolder(string normalizedPath, SourceIoGuard guard);
 
     /// <summary>
-    /// Como <see cref="ResolveFolder(string, SourceIoGuard)"/>, pero, si el resultado es <see cref="LocalFolderStatus.Ok"/>,
-    /// devuelve además en <paramref name="handle"/> el handle de la carpeta final, ya comprobado (§8.3 paso 6), para que el
-    /// llamador (<c>SourceFileSystem</c>) lo use como raíz del origen sin volver a abrirla por ruta. Quien lo recibe lo cierra.
-    /// La implementación por defecto no conserva el handle (los dobles de prueba).
-    /// </summary>
-    LocalFolderInfo ResolveFolder(string normalizedPath, SourceIoGuard guard, out Microsoft.Win32.SafeHandles.SafeFileHandle? handle)
-    {
-        handle = null;
-        return ResolveFolder(normalizedPath, guard);
-    }
-
-    /// <summary>
     /// Resuelve <paramref name="directory"/> como <see cref="ResolveFolder"/>, la enumera por handle y devuelve las entradas
     /// cuyo nombre empieza por <paramref name="namePrefix"/> (ordinal, sin distinguir mayúsculas) y que son <b>carpetas
     /// reales</b>: cada una se abre relativo a la carpeta, sin seguir puntos de reanálisis, y un punto de reanálisis o un

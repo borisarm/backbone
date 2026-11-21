@@ -10,7 +10,7 @@ internal static class DirectoryListing
 
     /// <summary>
     /// Nombres de un búfer de <c>FILE_FULL_DIR_INFO</c>: <c>NextEntryOffset</c> (0), <c>FileNameLength</c> en bytes (60) y
-    /// nombre (68). Comprueba que cada entrada, su nombre y el desplazamiento a la siguiente caben en el búfer (I-4); si no,
+    /// nombre (68). Comprueba que cada entrada, su nombre y el desplazamiento a la siguiente caben en el búfer; si no,
     /// <see cref="IOException"/>.
     /// </summary>
     public static List<string> ReadNames(byte[] buffer)
