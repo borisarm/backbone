@@ -301,6 +301,13 @@ Como Luis, quiero lanzar una copia en el momento y poder cancelarla, para contro
   1. "Copiar ahora" en Inicio, en la bandeja ("Copiar todo ahora") y en Trabajos lanza o encola la ejecución.
   2. "Cancelar" detiene la ejecución en menos de 5 s; queda `Cancelled`, sin snapshot nuevo.
   3. Tras cancelar, `check` del repositorio es correcto y la siguiente ejecución termina bien.
+- **Requisito previo (revisión final de seguridad de HU-05; decisión del coordinador)**: antes de que las copias usen `ShareConnectionManager`, backbone-service corrige en el gestor (§8.2 "Conexiones al NAS"):
+  - **M-1, oráculo de contraseñas**: la reutilización de una conexión se decide por la **identidad** de la credencial guardada (raíz más `UpdatedUtc`), no por su contenido. Se quita la huella HMAC. Una credencial explícita no guardada nunca comparte una conexión ajena. Si ya hay otra conexión con ese servidor que no se puede compartir, la respuesta es `NasBusy` (1018, contrato 1.3), coincida o no el secreto. Además, tras 5 `CredentialsRejected` seguidos de un SID, sus pruebas con credencial explícita dan `NasBusy` durante 5 min. backbone-app traduce `NasBusy` (es-ES y en-US).
+  - **B-1**: un `AcquireAsync` de una raíz en estado "cerrando" espera a que termine la desconexión pendiente.
+  - **B-2**: en la parada, el gestor queda cerrado (`AcquireAsync` lanza) y las conexiones aún en curso se desconectan a la fuerza cuando terminan. 2250 no se registra como "forzada". El límite de dos pruebas en total cuenta las operaciones abandonadas, y los semáforos por servidor se liberan cuando quedan libres.
+  - **B-3**: la ruta final del archivo de prueba se comprueba sobre su handle ya abierto, antes de escribir. Si no se puede obtener, `AccessDenied`.
+  - Informativo: la sesión de inicio `0x3e7` es común a todos los servicios LocalSystem (§8.2). Riesgo de *DNS rebinding* y de referencias DFS hacia el propio equipo: R14 (§13).
+- **Al empezar cada ejecución** (HU-07, §8.4 paso 2): el `JobRunner` repite la resolución controlada de los orígenes (ADR-20) y la comprobación de la credencial guardada (`CredentialRequired` sin conectar).
 
 ### HU-15 · Copiar archivos abiertos (VSS)
 Como Ana, quiero que se copien también los archivos que tengo abiertos, como el correo de Outlook, para que no queden fuera de la copia.

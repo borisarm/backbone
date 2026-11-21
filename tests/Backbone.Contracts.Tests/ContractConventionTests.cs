@@ -187,7 +187,7 @@ public sealed class ContractConventionTests
             "ValidationFailed", "JobNotFound", "JobAlreadyRunning", "NasUnreachable", "CredentialsRejected", "ShareNotFound",
             "AccessDenied", "RepositoryLocked", "RepositoryIncompatible", "RepositoryCorrupt", "SnapshotNotFound",
             "RestoreTargetNotWritable", "Interrupted", "NotAuthorized", "NotSupported", "Internal", "CredentialRequired",
-            "SnapshotTooLarge",
+            "SnapshotTooLarge", "NasBusy",
         ];
 
         Assert.Equal(spec, Enum.GetNames<BackboneErrorCode>());
@@ -217,6 +217,8 @@ public sealed class ContractConventionTests
         Assert.Equal(1015, (int)BackboneErrorCode.Internal);
         Assert.Equal(1016, (int)BackboneErrorCode.CredentialRequired);
         Assert.Equal(1017, (int)BackboneErrorCode.SnapshotTooLarge); // contrato 1.2
+        Assert.Equal(1018, (int)BackboneErrorCode.NasBusy); // contrato 1.3
+        Assert.Equal(1018, Enum.GetValues<BackboneErrorCode>().Max(v => (int)v));
     }
 
     [Fact]
