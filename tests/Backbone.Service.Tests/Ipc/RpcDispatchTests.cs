@@ -32,7 +32,7 @@ public sealed partial class RpcDispatchTests : IAsyncLifetime
         nameof(IBackboneService.GetStatusAsync), nameof(IBackboneService.GetJobsAsync), nameof(IBackboneService.SaveJobAsync),
         nameof(IBackboneService.DeleteJobAsync), nameof(IBackboneService.ValidateJobAsync), nameof(IBackboneService.RunNowAsync),
         nameof(IBackboneService.CancelRunAsync), nameof(IBackboneService.SetPauseAsync),
-        nameof(IBackboneService.TestConnectionAsync), nameof(IBackboneService.GetStorageInfoAsync), nameof(IBackboneService.GetHistoryAsync),
+        nameof(IBackboneService.GetStorageInfoAsync), nameof(IBackboneService.GetHistoryAsync),
         nameof(IBackboneService.GetRunDetailAsync), nameof(IBackboneService.GetSnapshotsAsync), nameof(IBackboneService.BrowseSnapshotAsync),
         nameof(IBackboneService.SearchSnapshotAsync), nameof(IBackboneService.GetFileVersionsAsync), nameof(IBackboneService.StartRestoreAsync),
         nameof(IBackboneService.ResolveRestoreConflictAsync), nameof(IBackboneService.CancelRestoreAsync),
@@ -57,6 +57,8 @@ public sealed partial class RpcDispatchTests : IAsyncLifetime
             // HU-04.
             nameof(IBackboneService.SaveCredentialAsync), nameof(IBackboneService.GetCredentialInfoAsync),
             nameof(IBackboneService.DeleteCredentialAsync),
+            // HU-05.
+            nameof(IBackboneService.TestConnectionAsync),
         };
         var all = typeof(IBackboneService).GetMethods().Where(m => !m.IsSpecialName).Select(m => m.Name).ToHashSet();
 

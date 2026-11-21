@@ -145,6 +145,23 @@ public sealed class DtoSerializationTests
         Assert.Equal(code == ValidationIssueCode.SourceContainsDataFolder, copy?.IsValid);
     }
 
+    [Theory]
+    [InlineData(ValidationIssueCode.SourceUnreadable, 28, @"C:\Users\ana\OneDrive\Fotos")]
+    [InlineData(ValidationIssueCode.SourcePathInvalid, 29, @"C:\ProgramData::$INDEX_ALLOCATION")]
+    public void Source_resolution_validation_codes_round_trip_with_their_stable_values(ValidationIssueCode code, int expected, string path)
+    {
+        // Contrato 1.3 (ADR-20, §7.5 "Ruta de origen"): errores de origen en Sources[i].Path.
+        var result = new ValidationResult { Errors = [new ValidationIssue { Field = "Sources[1].Path", Code = code, Value = path }] };
+
+        var json = JsonSerializer.Serialize(result, ContractTypes.FormatterOptions);
+        var copy = JsonSerializer.Deserialize<ValidationResult>(json, ContractTypes.FormatterOptions);
+
+        using var doc = JsonDocument.Parse(json);
+        Assert.Equal(expected, doc.RootElement.GetProperty("Errors")[0].GetProperty("Code").GetInt32());
+        Assert.Null(ContractTypes.FindDifference(result, copy, nameof(ValidationResult)));
+        Assert.False(copy?.IsValid);
+    }
+
     [Fact]
     public void Dates_keep_UTC_and_100ns_precision()
     {

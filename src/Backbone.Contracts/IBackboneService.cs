@@ -44,7 +44,10 @@ public interface IBackboneService
     /// </remarks>
     /// <param name="job">Trabajo.</param>
     /// <param name="ct">Cancelación.</param>
-    /// <returns>El trabajo guardado, con su identificador.</returns>
+    /// <returns>
+    /// El trabajo guardado, con su identificador y con la ruta de cada origen en forma normalizada (§7.5 "Ruta de origen"), que
+    /// es la que se guarda en <c>jobs.json</c> y la que abre cada ejecución.
+    /// </returns>
     Task<JobDefinition> SaveJobAsync(JobDefinition job, CancellationToken ct = default);
 
     /// <summary>Elimina un trabajo. El repositorio del NAS no se borra (RF-01). Emite <see cref="StatusChanged"/>.</summary>
@@ -58,6 +61,14 @@ public interface IBackboneService
     Task DeleteJobAsync(Guid jobId, CancellationToken ct = default);
 
     /// <summary>Valida un trabajo sin guardarlo (RF-03). La app no duplica estas reglas.</summary>
+    /// <remarks>
+    /// Es una operación de <b>escritura</b> a efectos de permisos y auditoría (§7.3), como <see cref="TestConnectionAsync"/>:
+    /// abre como SYSTEM las rutas que indica el cliente. Los orígenes se comprueban con la resolución controlada de §8.3
+    /// (ADR-20), que nunca sigue un enlace que no lleve a un volumen local. Errores de origen: <see cref="ValidationIssueCode.SourceNotFound"/>,
+    /// <see cref="ValidationIssueCode.SourceNotNtfs"/>, <see cref="ValidationIssueCode.SourceNotLocal"/>,
+    /// <see cref="ValidationIssueCode.SourceNotAllowed"/>, <see cref="ValidationIssueCode.SourceUnreadable"/> y
+    /// <see cref="ValidationIssueCode.SourcePathInvalid"/> (contrato 1.3).
+    /// </remarks>
     /// <param name="job">Trabajo.</param>
     /// <param name="ct">Cancelación.</param>
     /// <returns>Errores y avisos por campo.</returns>
