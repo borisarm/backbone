@@ -142,13 +142,13 @@ public sealed class ContractConventionTests
     // ---- Criterio 3 y transporte (§7.1) ----
 
     [Fact]
-    public void Contract_version_is_semantic_1_2()
+    public void Contract_version_is_semantic_1_3()
     {
-        const string expected = "1.2";
+        const string expected = "1.3";
         Assert.Equal(expected, ContractVersion.Value);
         Assert.Equal(ContractVersion.Value, string.Create(CultureInfo.InvariantCulture, $"{ContractVersion.Major}.{ContractVersion.Minor}"));
         Assert.True(ContractVersion.TryParse(ContractVersion.Value, out var major, out var minor));
-        Assert.Equal((1, 2), (major, minor));
+        Assert.Equal((1, 3), (major, minor));
     }
 
     [Theory]
@@ -226,7 +226,10 @@ public sealed class ContractConventionTests
         Assert.Equal(25, (int)ValidationIssueCode.SnapshotPathInvalid);
         Assert.Equal(26, (int)ValidationIssueCode.SourceNotAllowed);
         Assert.Equal(27, (int)ValidationIssueCode.SourceContainsDataFolder);
-        Assert.Equal(27, Enum.GetValues<ValidationIssueCode>().Max(v => (int)v));
+        // Contrato 1.3 (ADR-20, §7.5 "Ruta de origen"): origen no comprobable y ruta de origen no normalizada.
+        Assert.Equal(28, (int)ValidationIssueCode.SourceUnreadable);
+        Assert.Equal(29, (int)ValidationIssueCode.SourcePathInvalid);
+        Assert.Equal(29, Enum.GetValues<ValidationIssueCode>().Max(v => (int)v));
     }
 
     [Fact]
