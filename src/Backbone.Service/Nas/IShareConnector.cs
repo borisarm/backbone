@@ -21,6 +21,12 @@ internal interface IShareConnector
     /// </remarks>
     /// <exception cref="ShareException">El sistema rechaza la conexión; <see cref="ShareException.Code"/> dice por qué.</exception>
     Task<IShareConnection> ConnectAsync(NasCredential credential, CancellationToken ct);
+
+    /// <summary>
+    /// Cierra a la fuerza la conexión con <paramref name="shareRoot"/> (<c>WNetCancelConnection2</c> con <c>fForce</c>), aunque
+    /// tenga archivos abiertos. Solo para la parada del servicio (<see cref="ShareConnectionShutdown"/>).
+    /// </summary>
+    Task ForceDisconnectAsync(string shareRoot, CancellationToken ct);
 }
 
 /// <summary>
@@ -39,6 +45,12 @@ internal interface IShareConnection : IAsyncDisposable
 
     /// <summary>Indica si <paramref name="path"/> existe y es una carpeta; un error cuenta como "no".</summary>
     Task<bool> DirectoryExistsAsync(string path, CancellationToken ct);
+
+    /// <summary>
+    /// Ruta final de la carpeta abierta (<c>GetFinalPathNameByHandle</c>, sin normalizar), p. ej.
+    /// <c>\?\UNC\servidor\recurso\carpeta</c>; <see langword="null"/> si el redirector no la sabe dar.
+    /// </summary>
+    Task<string?> GetFinalPathAsync(string path, CancellationToken ct);
 
     /// <summary>Lee el contenido de la carpeta (comprobación de lectura, RF-61).</summary>
     Task ListDirectoryAsync(string path, CancellationToken ct);

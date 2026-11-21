@@ -23,6 +23,7 @@ public sealed class ConnectionTesterFaultTests : IDisposable
     private readonly ILoggerFactory _loggerFactory;
     private readonly CredentialStore _store;
     private readonly FakeShareConnector _connector = new();
+    private readonly FakeHostResolver _resolver = new();
     private readonly FakeTimeProvider _time = new(new DateTimeOffset(2026, 11, 18, 9, 0, 0, TimeSpan.Zero));
     private readonly ConnectionTester _tester;
 
@@ -32,7 +33,8 @@ public sealed class ConnectionTesterFaultTests : IDisposable
         Directory.CreateDirectory(_temp.Combine("credentials"));
         _store = new CredentialStore(_temp.Combine("credentials"), TestFileTrust.CurrentUser, new DpapiMachineProtector(), _time, _loggerFactory.CreateLogger<CredentialStore>());
         _tester = new ConnectionTester(
-            _connector,
+            new ShareConnectionManager(_connector, _loggerFactory.CreateLogger<ShareConnectionManager>()),
+            _resolver,
             new ShareCredentialProvider(_store, _loggerFactory.CreateLogger<ShareCredentialProvider>()),
             _time,
             new ConnectionTestOptions(),
@@ -144,23 +146,31 @@ public sealed class ConnectionTesterFaultTests : IDisposable
     [Fact]
     public async Task If_closing_the_connection_fails_the_result_is_still_returned_and_the_failure_logged()
     {
-        _connector.Share.DisposeError = new IOException("boom");
+        _connector.Share.DisposeError = new IOException("boom-texto-del-servidor");
 
         var result = await _tester.TestAsync(Share, Ana, Ct);
 
         Assert.True(result.Success);
         await _tester.WhenCleanupsCompleteAsync().WaitAsync(TimeSpan.FromSeconds(10), Ct);
-        Assert.Contains(_logs.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("cerrar la conexión", StringComparison.Ordinal));
+        Assert.Contains(_logs.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("cerrar la conexión", StringComparison.Ordinal) && e.Message.Contains("IOException", StringComparison.Ordinal));
         Assert.Empty(_connector.Share.Files);
+
+        // Informativa de la revisión: solo el tipo y el HResult, nunca el mensaje ni la excepción entera.
+        Assert.DoesNotContain("boom-texto-del-servidor", _logs.AllText(), StringComparison.Ordinal);
+        Assert.All(_logs.Entries, e => Assert.Null(e.Exception));
     }
 
     [Fact]
-    public async Task An_unexpected_exception_from_the_share_does_not_leave_files_or_connections()
+    public async Task An_unexpected_exception_from_the_share_is_a_result_and_does_not_leave_files_or_connections()
     {
         _connector.Share.UnexpectedListError = new InvalidOperationException("inesperado");
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => _tester.TestAsync(Share, Ana, Ct));
+        // Revisión de seguridad (informativa): un error no previsto de la E/S es AccessDenied, no Internal.
+        var result = await _tester.TestAsync(Share, Ana, Ct);
 
+        Assert.Equal(BackboneErrorCode.AccessDenied, result.ErrorCode);
+        Assert.False(result.Success);
+        Assert.DoesNotContain("inesperado", _logs.AllText(), StringComparison.Ordinal);
         await AssertCleanAsync();
     }
 

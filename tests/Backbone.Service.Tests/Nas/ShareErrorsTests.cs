@@ -17,6 +17,9 @@ public sealed class ShareErrorsTests
     [InlineData(1909, BackboneErrorCode.CredentialsRejected)] // ERROR_ACCOUNT_LOCKED_OUT
     [InlineData(2202, BackboneErrorCode.CredentialsRejected)] // ERROR_BAD_USERNAME
     [InlineData(1219, BackboneErrorCode.CredentialsRejected)] // ERROR_SESSION_CREDENTIAL_CONFLICT
+    [InlineData(1272, BackboneErrorCode.CredentialsRejected)] // ERROR_SMB_GUEST_LOGON_BLOCKED (BAJA-3)
+    [InlineData(1265, BackboneErrorCode.CredentialsRejected)] // ERROR_DOWNGRADE_DETECTED (BAJA-3)
+    [InlineData(1311, BackboneErrorCode.CredentialsRejected)] // ERROR_NO_LOGON_SERVERS (BAJA-3)
     [InlineData(53, BackboneErrorCode.NasUnreachable)] // ERROR_BAD_NETPATH: servidor apagado o nombre que no resuelve
     [InlineData(1231, BackboneErrorCode.NasUnreachable)] // ERROR_NETWORK_UNREACHABLE
     [InlineData(1232, BackboneErrorCode.NasUnreachable)] // ERROR_HOST_UNREACHABLE

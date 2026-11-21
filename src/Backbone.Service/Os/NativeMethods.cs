@@ -403,6 +403,15 @@ internal static partial class NativeMethods
         [Out] byte[] fileInformation,
         uint bufferSize);
 
+    /// <summary><c>FILE_NAME_OPENED</c> | <c>VOLUME_NAME_DOS</c>: ruta abierta sin normalizar (SMB no admite normalizar).</summary>
+    internal const uint FileNameOpened = 0x8;
+
+    /// <summary>
+    /// <c>GetFinalPathNameByHandleW</c>: longitud sin el NUL si cabe; si no cabe, el tamaño necesario con el NUL; 0 si falla.
+    /// </summary>
+    [LibraryImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", SetLastError = true)]
+    internal static unsafe partial uint GetFinalPathNameByHandle(SafeHandle file, char* filePath, uint filePathLength, uint flags);
+
     // ---- DPAPI (dpapi.h, crypt32.dll) ----
 
     /// <summary><c>CRYPTPROTECT_UI_FORBIDDEN</c>: nunca se muestra interfaz (el servicio corre en la sesión 0).</summary>

@@ -28,7 +28,8 @@ internal sealed class IpcTestHarness : IAsyncDisposable
         Protector = protector ?? new DpapiMachineProtector();
         Credentials = new CredentialStore(_temp.Combine("credentials"), TestFileTrust.CurrentUser, Protector, Time, LoggerFactory.CreateLogger<CredentialStore>());
         ConnectionTester = new ConnectionTester(
-            ShareConnector,
+            new ShareConnectionManager(ShareConnector, LoggerFactory.CreateLogger<ShareConnectionManager>()),
+            HostResolver,
             new ShareCredentialProvider(Credentials, LoggerFactory.CreateLogger<ShareCredentialProvider>()),
             Time,
             new ConnectionTestOptions(),
@@ -65,6 +66,9 @@ internal sealed class IpcTestHarness : IAsyncDisposable
 
     /// <summary>Doble de la conexión SMB (HU-05).</summary>
     public FakeShareConnector ShareConnector { get; } = new();
+
+    /// <summary>Doble de la resolución DNS del servidor (HU-05, §7.5).</summary>
+    public FakeHostResolver HostResolver { get; } = new();
 
     public ConnectionTester ConnectionTester { get; }
 

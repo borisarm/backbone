@@ -39,7 +39,8 @@ public sealed class WindowsShareConnectorTests : IDisposable
         Directory.CreateDirectory(_temp.Combine("credentials"));
         _store = new CredentialStore(_temp.Combine("credentials"), TestFileTrust.CurrentUser, new DpapiMachineProtector(), TimeProvider.System, _loggerFactory.CreateLogger<CredentialStore>());
         _tester = new ConnectionTester(
-            new WindowsShareConnector(_loggerFactory.CreateLogger<WindowsShareConnector>()),
+            new ShareConnectionManager(new WindowsShareConnector(_loggerFactory.CreateLogger<WindowsShareConnector>()), _loggerFactory.CreateLogger<ShareConnectionManager>()),
+            new DnsHostResolver(),
             new ShareCredentialProvider(_store, _loggerFactory.CreateLogger<ShareCredentialProvider>()),
             TimeProvider.System,
             new ConnectionTestOptions(),

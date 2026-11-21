@@ -29,7 +29,8 @@ internal sealed class PipeServerHarness : IAsyncDisposable
         Credentials = new CredentialStore(_temp.Combine("credentials"), TestFileTrust.CurrentUser, new DpapiMachineProtector(), TimeProvider.System, LoggerFactory.CreateLogger<CredentialStore>());
         // Conector real (HU-05): estas pruebas no llaman a TestConnectionAsync, así que nunca conecta.
         var connectionTester = new ConnectionTester(
-            new WindowsShareConnector(LoggerFactory.CreateLogger<WindowsShareConnector>()),
+            new ShareConnectionManager(new WindowsShareConnector(LoggerFactory.CreateLogger<WindowsShareConnector>()), LoggerFactory.CreateLogger<ShareConnectionManager>()),
+            new DnsHostResolver(),
             new ShareCredentialProvider(Credentials, LoggerFactory.CreateLogger<ShareCredentialProvider>()),
             TimeProvider.System,
             new ConnectionTestOptions(),

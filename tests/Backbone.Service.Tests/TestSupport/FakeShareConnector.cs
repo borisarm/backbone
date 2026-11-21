@@ -67,6 +67,15 @@ internal sealed class FakeShareConnector : IShareConnector
         return connection;
     }
 
+    /// <summary>Raíces cerradas a la fuerza (parada del servicio).</summary>
+    public ConcurrentQueue<string> ForcedDisconnects { get; } = new();
+
+    public Task ForceDisconnectAsync(string shareRoot, CancellationToken ct)
+    {
+        ForcedDisconnects.Enqueue(shareRoot);
+        return Task.CompletedTask;
+    }
+
     internal void Closed() => Interlocked.Decrement(ref _openConnections);
 
     /// <summary>Indica si la credencial está desechada (contraseña puesta a cero).</summary>
@@ -117,6 +126,9 @@ internal sealed class FakeShare
 
     public string? Dialect { get; set; } = "3.1.1";
 
+    /// <summary>Rutas finales por carpeta (sin entrada: <c>\\?\UNC\</c> + la propia ruta; valor nulo: no se sabe).</summary>
+    public ConcurrentDictionary<string, string?> FinalPaths { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// Puertas por operación (<c>Exists</c>, <c>List</c>, <c>Space</c>, <c>Dialect</c>, <c>Write</c>, <c>FileExists</c>,
     /// <c>Delete</c>): la operación espera a que se completen. En <c>Write</c>, el archivo ya existe mientras espera.
@@ -159,6 +171,9 @@ internal sealed class FakeShareConnection(FakeShareConnector owner, string share
 
     public Task<bool> DirectoryExistsAsync(string path, CancellationToken ct) =>
         RunAsync("Exists", () => Task.FromResult(string.Equals(path, ShareRoot, StringComparison.OrdinalIgnoreCase) || Share.Directories.ContainsKey(path)));
+
+    public Task<string?> GetFinalPathAsync(string path, CancellationToken ct) =>
+        RunAsync("FinalPath", () => Task.FromResult(Share.FinalPaths.TryGetValue(path, out var final) ? final : @"\\?\UNC\" + path[2..]));
 
     public Task ListDirectoryAsync(string path, CancellationToken ct) =>
         RunAsync<object?>("List", () => Share.UnexpectedListError is { } u ? throw u : Share.ListError is { } e ? throw e : Task.FromResult<object?>(null));

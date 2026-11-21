@@ -34,6 +34,18 @@ internal sealed partial class WindowsShareConnector(ILogger<WindowsShareConnecto
             ct);
     }
 
+    public Task ForceDisconnectAsync(string shareRoot, CancellationToken ct) =>
+        Task.Run(
+            () =>
+            {
+                var error = NativeMethods.WNetCancelConnection2(shareRoot, 0, force: true);
+                if (error is not NativeMethods.ErrorSuccess and not ErrorNotConnected)
+                {
+                    throw new ShareException(ShareErrors.FromWin32(error, ShareOperation.Connect), error);
+                }
+            },
+            ct);
+
     private static unsafe int AddConnection(NasCredential credential)
     {
         // Usuario y contraseña siempre explícitos (nunca NULL: se usaría la cuenta del equipo, §7.5). La contraseña se pasa
@@ -72,17 +84,34 @@ internal sealed partial class WindowsShareConnector(ILogger<WindowsShareConnecto
     [LoggerMessage(Level = LogLevel.Warning, Message = "No se pudo cerrar la conexión con el recurso {ShareRoot} (error Win32 {Error}).")]
     private static partial void LogDisconnectFailed(ILogger logger, string shareRoot, int error);
 
+    /// <summary><c>ERROR_NOT_CONNECTED</c>: ya estaba cerrada.</summary>
+    private const int ErrorNotConnected = 2250;
+
     private sealed class WindowsShareConnection(string shareRoot, ILogger logger) : IShareConnection
     {
-        /// <summary><c>ERROR_NOT_CONNECTED</c>: ya estaba cerrada.</summary>
-        private const int ErrorNotConnected = 2250;
-
         private int _disposed;
 
         public string ShareRoot { get; } = shareRoot;
 
         public Task<bool> DirectoryExistsAsync(string path, CancellationToken ct) =>
             Task.Run(() => Directory.Exists(path), ct);
+
+        public Task<string?> GetFinalPathAsync(string path, CancellationToken ct) =>
+            Run(
+                () =>
+                {
+                    using var handle = OpenDirectory(path);
+                    var buffer = new char[1024];
+                    var length = FinalPath(handle, buffer);
+                    if (length >= buffer.Length)
+                    {
+                        buffer = new char[length];
+                        length = FinalPath(handle, buffer);
+                    }
+
+                    return length == 0 || length >= buffer.Length ? null : new string(buffer, 0, (int)length);
+                },
+                ct);
 
         public Task ListDirectoryAsync(string path, CancellationToken ct) =>
             Run(
@@ -110,18 +139,7 @@ internal sealed partial class WindowsShareConnector(ILogger<WindowsShareConnecto
             Run(
                 () =>
                 {
-                    using var handle = NativeMethods.CreateFile(
-                        path,
-                        NativeMethods.FileReadAttributes,
-                        NativeMethods.FileShareRead | NativeMethods.FileShareWrite | NativeMethods.FileShareDelete,
-                        0,
-                        NativeMethods.OpenExisting,
-                        NativeMethods.FileFlagBackupSemantics,
-                        0);
-                    if (handle.IsInvalid)
-                    {
-                        throw ShareErrors.FromLastPInvokeError(ShareOperation.FileAccess);
-                    }
+                    using var handle = OpenDirectory(path);
 
                     // FILE_REMOTE_PROTOCOL_INFO mide 116 o 180 bytes según la versión de winbase.h; un búfer mayor es válido.
                     var buffer = new byte[256];
@@ -182,6 +200,34 @@ internal sealed partial class WindowsShareConnector(ILogger<WindowsShareConnecto
                     LogDisconnectFailed(logger, UntrustedText.Describe(ShareRoot), error);
                 }
             }));
+        }
+
+        private static unsafe uint FinalPath(System.Runtime.InteropServices.SafeHandle handle, char[] buffer)
+        {
+            fixed (char* pointer = buffer)
+            {
+                return NativeMethods.GetFinalPathNameByHandle(handle, pointer, (uint)buffer.Length, NativeMethods.FileNameOpened);
+            }
+        }
+
+        private static Microsoft.Win32.SafeHandles.SafeFileHandle OpenDirectory(string path)
+        {
+            var handle = NativeMethods.CreateFile(
+                path,
+                NativeMethods.FileReadAttributes,
+                NativeMethods.FileShareRead | NativeMethods.FileShareWrite | NativeMethods.FileShareDelete,
+                0,
+                NativeMethods.OpenExisting,
+                NativeMethods.FileFlagBackupSemantics,
+                0);
+            if (handle.IsInvalid)
+            {
+                var error = ShareErrors.FromLastPInvokeError(ShareOperation.FileAccess);
+                handle.Dispose();
+                throw error;
+            }
+
+            return handle;
         }
 
         private static string WithTrailingSeparator(string path) =>

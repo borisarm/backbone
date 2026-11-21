@@ -24,6 +24,7 @@ public sealed class ConnectionTesterTests : IDisposable
     private readonly ILoggerFactory _loggerFactory;
     private readonly CredentialStore _store;
     private readonly FakeShareConnector _connector = new();
+    private readonly FakeHostResolver _resolver = new();
     private readonly FakeTimeProvider _time = new(new DateTimeOffset(2026, 11, 17, 9, 0, 0, TimeSpan.Zero));
     private readonly ConnectionTestOptions _options = new();
     private readonly ConnectionTester _tester;
@@ -34,7 +35,8 @@ public sealed class ConnectionTesterTests : IDisposable
         Directory.CreateDirectory(_temp.Combine("credentials"));
         _store = new CredentialStore(_temp.Combine("credentials"), TestFileTrust.CurrentUser, new DpapiMachineProtector(), _time, _loggerFactory.CreateLogger<CredentialStore>());
         _tester = new ConnectionTester(
-            _connector,
+            new ShareConnectionManager(_connector, _loggerFactory.CreateLogger<ShareConnectionManager>()),
+            _resolver,
             new ShareCredentialProvider(_store, _loggerFactory.CreateLogger<ShareCredentialProvider>()),
             _time,
             _options,

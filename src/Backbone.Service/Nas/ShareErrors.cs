@@ -34,6 +34,9 @@ internal static class ShareErrors
     internal const int ErrorPasswordMustChange = 1907;
     internal const int ErrorAccountLockedOut = 1909;
     internal const int ErrorBadUsername = 2202;
+    internal const int ErrorDowngradeDetected = 1265;
+    internal const int ErrorSmbGuestLogonBlocked = 1272;
+    internal const int ErrorNoLogonServers = 1311;
 
     // Recurso inexistente.
     internal const int ErrorBadNetName = 67;
@@ -71,7 +74,8 @@ internal static class ShareErrors
         ErrorInvalidPassword or ErrorSessionCredentialConflict or ErrorNotAuthenticated or ErrorLogonFailure
             or ErrorAccountRestriction or ErrorInvalidLogonHours or ErrorInvalidWorkstation or ErrorPasswordExpired
             or ErrorAccountDisabled or ErrorLogonTypeNotGranted or ErrorAccountExpired or ErrorPasswordMustChange
-            or ErrorAccountLockedOut or ErrorBadUsername => BackboneErrorCode.CredentialsRejected,
+            or ErrorAccountLockedOut or ErrorBadUsername or ErrorDowngradeDetected or ErrorSmbGuestLogonBlocked
+            or ErrorNoLogonServers => BackboneErrorCode.CredentialsRejected,
 
         ErrorBadNetName or NerrNetNameNotFound => BackboneErrorCode.ShareNotFound,
 
