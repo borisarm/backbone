@@ -404,7 +404,7 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 
 ## PM-HU08-01 · OneDrive real, WOF y puntos de reanálisis: en vivo y desde VSS
 
-**Cubre:** HU-08, criterios 3 y 4 (RF-06, R4, ADR-19, §8.2 "Clasificación por etiqueta", "Archivos y carpetas solo en la nube" y "Apertura para leer el contenido").
+**Cubre:** HU-08, criterios 3 y 4 (RF-06, R4, ADR-19, ADR-21, §8.2 "Clasificación por etiqueta", "Archivos y carpetas solo en la nube", "Apertura para leer el contenido" y "Token de lectura de los orígenes").
 
 **Por qué es manual:** necesita OneDrive (o otro proveedor de la Cloud Files API) con una cuenta real, la instantánea VSS de un volumen real y el servicio instalado como LocalSystem. Las pruebas automáticas usan simuladores de `ISourceFileSystem` con atributos y etiquetas fijos.
 
@@ -431,9 +431,11 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 4. Modificar `nube.bin` desde otro equipo o desde la web de OneDrive sin descargarlo en esta máquina, y copiar: no debe aparecer ninguna versión nueva. Comprobar sobre `objects\` que ningún objeto del tamaño de `nube.bin` es todo ceros.
 5. Repetir los pasos 1 a 4 **sin VSS**, deshabilitando el servicio de instantáneas o con un origen en un volumen sin VSS.
 6. Con el servicio en ejecución, comprobar con Process Monitor que el proceso `Backbone.Service` no genera lecturas de datos sobre `nube.bin`.
-7. Registrar el resultado de leer `wof.bin` y los marcadores de nube **desde VSS**, para confirmar §8.2 "Apertura para leer el contenido", punto 3: ¿abre el segundo handle sin `FILE_FLAG_OPEN_REPARSE_POINT` o falla con `ERROR_CANT_ACCESS_FILE`?
+7. Registrar el resultado de leer `wof.bin` y los marcadores de nube **desde VSS**, para confirmar §8.2 "Apertura para leer el contenido", punto 3: ¿abre el segundo handle (reapertura relativa al primero, sin `FILE_OPEN_REPARSE_POINT`) o falla con `STATUS_IO_REPARSE_TAG_NOT_HANDLED`/`ERROR_CANT_ACCESS_FILE`?
+8. **Enlaces duros hacia la carpeta de datos** (ADR-21, revisión del `SourceFileSystem` de HU-08, I-3): con el servicio instalado y al menos una credencial guardada, como **usuario estándar** (sin elevar), en una carpeta de su perfil: `mklink /H enlace.bin C:\ProgramData\Backbone\credentials\<hash>.bin`. Tiene que **fallar** (acceso denegado). Repetirlo con `New-Item -ItemType HardLink` en PowerShell. Si alguna de las dos funciona, parar y avisar: con `SeBackupPrivilege` el servicio leería ese enlace y lo subiría al NAS.
+9. **`SeBackupPrivilege`** (ADR-21): crear en el origen `privado.bin` y quitarle la herencia dejando solo al usuario con control total (`icacls privado.bin /inheritance:r /grant:r "%USERNAME%:F"`), de modo que SYSTEM no tenga acceso por la DACL. Copiar en vivo y con VSS: `privado.bin` está, con su SHA-256. Cifrar otro archivo con EFS (`cipher /e cifrado.bin`) y copiar: aviso `ReadError` y no está. Con Process Explorer, comprobar que el token del **proceso** `Backbone.Service` tiene `SeBackupPrivilege` desactivado (o ausente) y, si el instalador ya fija los privilegios (`sc qprivs BackboneService`), que no aparecen `SeDebugPrivilege` ni `SeTakeOwnershipPrivilege`.
 
-**Resultado esperado:** los archivos descargados, los fijados y los WOF se copian con su contenido real; un archivo no descargado nunca se descarga ni se guarda como ceros, en vivo ni desde VSS, y conserva su versión anterior; los enlaces no se siguen.
+**Resultado esperado:** los archivos descargados, los fijados y los WOF se copian con su contenido real; un archivo no descargado nunca se descarga ni se guarda como ceros, en vivo ni desde VSS, y conserva su versión anterior; los enlaces no se siguen; un usuario estándar no puede crear un enlace duro hacia `credentials\`; un archivo cuya DACL excluye a SYSTEM se copia y uno cifrado con EFS da `ReadError`.
 
 **Estado:** pendiente (requiere `SourceFileSystem` de HU-08, servicio instalado y VSS de HU-15).
 
