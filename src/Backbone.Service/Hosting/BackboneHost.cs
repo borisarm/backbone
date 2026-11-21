@@ -2,6 +2,7 @@ using Backbone.Service.Ipc;
 using Backbone.Service.Nas;
 using Backbone.Service.Os;
 using Backbone.Service.Persistence;
+using Backbone.Service.Sources;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -109,6 +110,9 @@ internal static class BackboneHost
         services.AddSingleton<IpcEventPublisher>();
         services.AddSingleton<IIpcEventPublisher>(sp => sp.GetRequiredService<IpcEventPublisher>());
         services.AddSingleton<IpcServer>();
+
+        // Lectura de los orígenes (HU-08, §8.2): expone los marcadores de la nube al arrancar.
+        services.AddSourceReading();
 
         // Orden de arranque: comprobación de la carpeta y ajustes (StartingAsync) antes de crear el pipe.
         services.AddHostedService<StartupService>();

@@ -326,7 +326,9 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 
 **Cubre:** HU-08, criterios 3 y 4 (RF-06, R4, ADR-19, §8.2 "Clasificación por etiqueta", "Archivos y carpetas solo en la nube" y "Apertura para leer el contenido").
 
-**Por qué es manual:** necesita OneDrive (o otro proveedor de la Cloud Files API) con una cuenta real, la instantánea VSS de un volumen real y el servicio instalado como LocalSystem. Las pruebas automáticas usan simuladores de `ISourceFileSystem` con atributos y etiquetas fijos.
+**Por qué es manual:** necesita OneDrive (o otro proveedor de la Cloud Files API) con una cuenta real, la instantánea VSS de un volumen real y el servicio instalado como LocalSystem. Las pruebas automáticas usan simuladores de `ISourceFileSystem` con atributos y etiquetas fijos, y `SourceFileSystem` se prueba con un doble de `ISourceFileApi` (`SourceFileSystemTests`, `SourceReadTimeoutTests`) y, en real y sin elevar, con archivos normales, *junction*, enlace simbólico, WOF, rutas largas, raíz que es enlace, sustitución de una carpeta intermedia, archivo disperso y `CancelSynchronousIo` (`SourceFileSystemIntegrationTests`, `Category=Integration`). El camino del segundo handle (`ReOpenFile`) con un marcador de nube real, Dedup y lo que pasa en VSS solo se ejercita aquí.
+
+**Qué mirar además en el log del servicio (HU-08, servicio):** al arrancar no debe aparecer el error "No se han podido exponer los marcadores de la nube"; si aparece, toda copia termina `Failed` con `Internal`. En Windows 11 26320, sin elevar, la enumeración de un archivo WOF da atributos `0x20` y `EaSize` 0 (sin punto de reanálisis): se lee como normal desde el primer handle.
 
 **Preparación**
 1. En una máquina con OneDrive iniciado y "Archivos a petición" activado, crear en la carpeta de OneDrive `PruebaBackbone\` con:

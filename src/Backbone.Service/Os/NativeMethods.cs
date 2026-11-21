@@ -457,4 +457,235 @@ internal static partial class NativeMethods
         nint promptStruct,
         uint flags,
         out DataBlob dataOut);
+
+    /// <summary>
+    /// Llamadas de la lectura de los orígenes (<c>SourceFileSystem</c>, HU-08, §8.2). Van en una clase anidada para no chocar
+    /// con las constantes y firmas que añadan otras historias a <see cref="NativeMethods"/>. Firmas y valores comprobados en
+    /// Microsoft Learn (fileapi.h, winbase.h, ioapiset.h, processthreadsapi.h, winioctl.h, cfapi.h, ntifs.h).
+    /// </summary>
+    internal static partial class SourceIo
+    {
+        // ---- Códigos de error Win32 ----
+        internal const int ErrorFileNotFound = 2;
+        internal const int ErrorPathNotFound = 3;
+        internal const int ErrorAccessDenied = 5;
+        internal const int ErrorInvalidHandle = 6;
+        internal const int ErrorNoMoreFiles = 18;
+        internal const int ErrorSharingViolation = 32;
+        internal const int ErrorLockViolation = 33;
+        internal const int ErrorHandleEof = 38;
+        internal const int ErrorInvalidName = 123;
+        internal const int ErrorBadPathName = 161;
+        internal const int ErrorFilenameExcedRange = 206;
+        internal const int ErrorMoreData = 234;
+        internal const int ErrorDirectory = 267;
+        internal const int ErrorOperationAborted = 995;
+        internal const int ErrorIoPending = 997;
+        internal const int ErrorNotFound = 1168;
+
+        /// <summary>
+        /// <c>ERROR_CANT_ACCESS_FILE</c>: el filtro propietario de la etiqueta no está en la pila
+        /// (<c>STATUS_IO_REPARSE_TAG_NOT_HANDLED</c>), §8.2 "Apertura para leer el contenido", punto 3.
+        /// </summary>
+        internal const int ErrorCantAccessFile = 1920;
+
+        // ---- Acceso, compartición y marcas de CreateFile ----
+        internal const uint GenericRead = 0x8000_0000;
+        internal const uint Synchronize = 0x0010_0000;
+        internal const uint FileReadAttributes = 0x0080;
+        internal const uint FileListDirectory = 0x0001;
+
+        /// <summary>Lectura y escritura, <b>sin</b> <c>FILE_SHARE_DELETE</c>: nadie puede renombrar ni sustituir el elemento abierto.</summary>
+        internal const uint FileShareReadWrite = 0x1 | 0x2;
+
+        internal const uint OpenExisting = 3;
+        internal const uint FileFlagBackupSemantics = 0x0200_0000;
+        internal const uint FileFlagOpenReparsePoint = 0x0020_0000;
+        internal const uint FileFlagOverlapped = 0x4000_0000;
+        internal const uint FileFlagSequentialScan = 0x0800_0000;
+
+        internal const uint FileAttributeDirectory = 0x10;
+        internal const uint FileAttributeReparsePoint = 0x400;
+
+        // ---- FILE_INFO_BY_HANDLE_CLASS ----
+        internal const int FileBasicInfo = 0;
+        internal const int FileStandardInfo = 1;
+        internal const int FileAttributeTagInfo = 9;
+        internal const int FileIdBothDirectoryInfo = 10;
+        internal const int FileIdBothDirectoryRestartInfo = 11;
+        internal const int FileIdInfo = 18;
+
+        // ---- GetFinalPathNameByHandle ----
+        /// <summary><c>FILE_NAME_NORMALIZED</c> | <c>VOLUME_NAME_DOS</c>: <c>\\?\C:\…</c>.</summary>
+        internal const uint VolumeNameDos = 0x0;
+
+        /// <summary><c>FILE_NAME_NORMALIZED</c> | <c>VOLUME_NAME_GUID</c>: <c>\\?\Volume{…}\…</c>.</summary>
+        internal const uint VolumeNameGuid = 0x1;
+
+        /// <summary><c>FILE_NAME_NORMALIZED</c> | <c>VOLUME_NAME_NT</c>: <c>\Device\HarddiskVolumeN\…</c> (también en VSS).</summary>
+        internal const uint VolumeNameNt = 0x2;
+
+        // ---- Hilos ----
+        /// <summary><c>THREAD_TERMINATE</c>: el acceso que exige <c>CancelSynchronousIo</c>.</summary>
+        internal const uint ThreadTerminate = 0x0001;
+
+        // ---- FSCTL ----
+        /// <summary><c>FSCTL_QUERY_ALLOCATED_RANGES</c> = CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 51, METHOD_NEITHER, FILE_READ_DATA).</summary>
+        internal const uint FsctlQueryAllocatedRanges = 0x0009_40CF;
+
+        // ---- Cloud Files API (CF_PLACEHOLDER_STATE) ----
+        internal const uint CfPlaceholderStatePartial = 0x10;
+        internal const uint CfPlaceholderStatePartiallyOnDisk = 0x20;
+        internal const uint CfPlaceholderStateInvalid = 0xFFFF_FFFF;
+
+        // ---- Compatibilidad de marcadores (ntifs.h) ----
+        /// <summary><c>PHCM_EXPOSE_PLACEHOLDERS</c>.</summary>
+        internal const sbyte PhcmExposePlaceholders = 2;
+
+        /// <summary><c>FILE_ATTRIBUTE_TAG_INFO</c>.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct FileAttributeTagInformation
+        {
+            public uint FileAttributes;
+            public uint ReparseTag;
+        }
+
+        /// <summary><c>FILE_BASIC_INFO</c> (cuatro <c>LARGE_INTEGER</c> y un <c>DWORD</c>; 40 bytes con relleno).</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct FileBasicInformation
+        {
+            public long CreationTime;
+            public long LastAccessTime;
+            public long LastWriteTime;
+            public long ChangeTime;
+            public uint FileAttributes;
+        }
+
+        /// <summary><c>FILE_STANDARD_INFO</c>.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct FileStandardInformation
+        {
+            public long AllocationSize;
+            public long EndOfFile;
+            public uint NumberOfLinks;
+            public byte DeletePending;
+            public byte Directory;
+        }
+
+        /// <summary><c>FILE_ID_INFO</c>: número de serie del volumen e identificador de 128 bits (<c>FILE_ID_128</c>).</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct FileIdInformation
+        {
+            public ulong VolumeSerialNumber;
+            public ulong FileIdLow;
+            public ulong FileIdHigh;
+        }
+
+        /// <summary><c>FILE_ALLOCATED_RANGE_BUFFER</c>.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct FileAllocatedRangeBuffer
+        {
+            public long FileOffset;
+            public long Length;
+        }
+
+        [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+        internal static partial Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(
+            string fileName,
+            uint desiredAccess,
+            uint shareMode,
+            nint securityAttributes,
+            uint creationDisposition,
+            uint flagsAndAttributes,
+            nint templateFile);
+
+        /// <summary>
+        /// <c>ReOpenFile</c>: abre otra vez el mismo objeto que <paramref name="originalFile"/> sin volver a resolver la ruta;
+        /// <c>INVALID_HANDLE_VALUE</c> si falla.
+        /// </summary>
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        internal static partial Microsoft.Win32.SafeHandles.SafeFileHandle ReOpenFile(SafeHandle originalFile, uint desiredAccess, uint shareMode, uint flagsAndAttributes);
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool GetFileInformationByHandleEx(SafeHandle file, int fileInformationClass, out FileAttributeTagInformation fileInformation, uint bufferSize);
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool GetFileInformationByHandleEx(SafeHandle file, int fileInformationClass, out FileBasicInformation fileInformation, uint bufferSize);
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool GetFileInformationByHandleEx(SafeHandle file, int fileInformationClass, out FileStandardInformation fileInformation, uint bufferSize);
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool GetFileInformationByHandleEx(SafeHandle file, int fileInformationClass, out FileIdInformation fileInformation, uint bufferSize);
+
+        /// <summary>Enumeración de carpetas (<see cref="FileIdBothDirectoryInfo"/>): el búfer debe estar alineado a 8 bytes.</summary>
+        [LibraryImport("kernel32.dll", EntryPoint = "GetFileInformationByHandleEx", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static unsafe partial bool GetFileInformationByHandleExBuffer(SafeHandle file, int fileInformationClass, void* fileInformation, uint bufferSize);
+
+        /// <summary>
+        /// <c>GetFinalPathNameByHandleW</c>: longitud sin el NUL si cabe; si no cabe, el tamaño necesario con el NUL; 0 si falla.
+        /// </summary>
+        [LibraryImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", SetLastError = true)]
+        internal static unsafe partial uint GetFinalPathNameByHandle(SafeHandle file, char* filePath, uint filePathLength, uint flags);
+
+        /// <summary>
+        /// <c>DeviceIoControl</c> con <c>OVERLAPPED</c>: obligatorio si el handle se abrió con <c>FILE_FLAG_OVERLAPPED</c>.
+        /// </summary>
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static unsafe partial bool DeviceIoControl(
+            SafeHandle device,
+            uint ioControlCode,
+            void* inBuffer,
+            uint inBufferSize,
+            void* outBuffer,
+            uint outBufferSize,
+            uint* bytesReturned,
+            NativeOverlapped* overlapped);
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static unsafe partial bool GetOverlappedResult(SafeHandle file, NativeOverlapped* overlapped, out uint bytesTransferred, [MarshalAs(UnmanagedType.Bool)] bool wait);
+
+        /// <summary><c>CancelIoEx</c> con <c>lpOverlapped</c> = NULL: cancela toda la E/S pendiente del handle, de cualquier hilo.</summary>
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool CancelIoEx(SafeHandle file, nint overlapped);
+
+        /// <summary>
+        /// <c>CancelSynchronousIo</c>: cancela la E/S síncrona pendiente del hilo (handle con <see cref="ThreadTerminate"/>);
+        /// <see langword="false"/> con <see cref="ErrorNotFound"/> si no había ninguna.
+        /// </summary>
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool CancelSynchronousIo(nint thread);
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        internal static partial nint OpenThread(uint desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint threadId);
+
+        [LibraryImport("kernel32.dll")]
+        internal static partial uint GetCurrentThreadId();
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool CloseHandle(nint handle);
+
+        /// <summary>
+        /// <c>RtlSetProcessPlaceholderCompatibilityMode</c> (Windows 10 1803+): devuelve el modo anterior (<c>PHCM_*</c>) o un
+        /// valor negativo si falla (<c>PHCM_ERROR_INVALID_PARAMETER</c> = -1, <c>PHCM_ERROR_NO_TEB</c> = -2).
+        /// </summary>
+        [LibraryImport("ntdll.dll")]
+        internal static partial sbyte RtlSetProcessPlaceholderCompatibilityMode(sbyte mode);
+
+        /// <summary>
+        /// <c>CfGetPlaceholderStateFromAttributeTag</c> (cldapi.dll): solo interpreta los dos valores, no llama al proveedor.
+        /// </summary>
+        [LibraryImport("cldapi.dll")]
+        internal static partial uint CfGetPlaceholderStateFromAttributeTag(uint fileAttributes, uint reparseTag);
+    }
 }
