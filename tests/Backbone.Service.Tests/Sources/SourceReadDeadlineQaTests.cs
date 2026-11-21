@@ -89,7 +89,7 @@ public sealed class SourceReadDeadlineQaTests : IDisposable
         Assert.Contains("plazo", ex.Message, StringComparison.Ordinal);
         Assert.InRange(elapsed, TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(65));
         Assert.False(_fs.IsAbandoned);
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
         Assert.Equal(0, _api.ReadCalls);
     }
 
@@ -124,7 +124,7 @@ public sealed class SourceReadDeadlineQaTests : IDisposable
 
         Assert.Equal(new byte[] { 1, 2, 3 }, await operation);
         Assert.False(_fs.IsAbandoned);
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Fact]
@@ -142,7 +142,7 @@ public sealed class SourceReadDeadlineQaTests : IDisposable
         Assert.Equal(RunIssueCode.ReadError, ex.Code);
         Assert.False(_fs.IsAbandoned);
         Assert.Equal(new byte[] { 5 }, await ReadAllAsync(FakeSourceFileApi.Child("bien.bin"), Ct)); // el hilo sigue sirviendo
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Fact]
@@ -172,7 +172,7 @@ public sealed class SourceReadDeadlineQaTests : IDisposable
         stuck.BlockAt = FakeBlockAt.Open;
         stuck.BlockMode = FakeBlockMode.IgnoreCancellation;
         var stream = await _fs.OpenReadAsync(FakeSourceFileApi.Child("abierto.bin"), Ct);
-        Assert.Equal(2, _api.OpenHandles);
+        Assert.Equal(2 + _fs.HeldHandles, _api.OpenHandles);
 
         var operation = ReadAllAsync(FakeSourceFileApi.Child("colgado.bin"), Ct);
         await AdvanceUntilCompletedAsync(operation);
@@ -180,7 +180,7 @@ public sealed class SourceReadDeadlineQaTests : IDisposable
 
         await Assert.ThrowsAsync<SourceOperationAbandonedException>(() => stream.ReadAsync(new byte[4096], Ct).AsTask());
         await stream.DisposeAsync();
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Fact]
@@ -199,7 +199,7 @@ public sealed class SourceReadDeadlineQaTests : IDisposable
             await Task.Delay(50, Ct);
         }
 
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
         Assert.Equal(1, _api.LateHandles);
     }
 

@@ -211,6 +211,7 @@ public sealed class SourceFileSystemIntegrationTests : IDisposable
             "prueba",
             "pipe",
             null,
+            null,
             _ => client.Read(new byte[1], 0, 1), // ReadFile síncrono: se bloquea hasta que lo cancelen
             TestContext.Current.CancellationToken));
 
@@ -219,7 +220,7 @@ public sealed class SourceFileSystemIntegrationTests : IDisposable
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(8), $"Took {watch.Elapsed}.");
 
         // El hilo sigue disponible para la siguiente operación.
-        Assert.Equal(42, await runner.RunAsync("prueba", "x", null, _ => 42, TestContext.Current.CancellationToken));
+        Assert.Equal(42, await runner.RunAsync("prueba", "x", null, null, _ => 42, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -234,13 +235,12 @@ public sealed class SourceFileSystemIntegrationTests : IDisposable
             Assert.Skip("fsutil sparse is not available to this process.");
         }
 
-        var api = new Win32SourceFileApi();
-        using (var handle = api.Open(@"\\?\" + full, SourceOpenMode.Content, CancellationToken.None))
+        using (var handle = SourceHandles.Open(full, SourceOpenMode.Content))
         {
             Assert.True(handle.IsFullyAllocated(256 * 1024, CancellationToken.None));
         }
 
-        using (var handle = api.Open(@"\\?\" + sparse, SourceOpenMode.Content, CancellationToken.None))
+        using (var handle = SourceHandles.Open(sparse, SourceOpenMode.Content))
         {
             Assert.False(handle.IsFullyAllocated(256 * 1024, CancellationToken.None));
         }
@@ -250,12 +250,7 @@ public sealed class SourceFileSystemIntegrationTests : IDisposable
     public void Placeholders_can_be_exposed_in_this_process() =>
         Assert.True(new WindowsPlaceholderCompatibility().ExposePlaceholders() >= 0);
 
-    private static string FinalPath(string path)
-    {
-        using var handle = new Win32SourceFileApi().Open(@"\\?\" + Path.GetFullPath(path), SourceOpenMode.Directory, CancellationToken.None);
-        var final = handle.GetFinalPath(FinalPathFormat.Dos, CancellationToken.None);
-        return final.StartsWith(@"\\?\", StringComparison.Ordinal) ? final[4..] : final;
-    }
+    private static string FinalPath(string path) => SourceHandles.FinalPath(path);
 
     private static void CreateJunction(string link, string target) =>
         Assert.True(RunTool("cmd.exe", $"/c mklink /J \"{link}\" \"{target}\""), "mklink /J failed.");

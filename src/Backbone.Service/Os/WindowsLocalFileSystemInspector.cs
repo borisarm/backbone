@@ -49,17 +49,45 @@ internal sealed partial class WindowsLocalFileSystemInspector(ILogger<WindowsLoc
 
     private readonly ILogger _logger = logger ?? NullLogger<WindowsLocalFileSystemInspector>.Instance;
 
-    public LocalFolderInfo ResolveFolder(string normalizedPath, SourceIoGuard guard)
+    /// <summary>Tope de caracteres de la ruta compuesta durante la resolución (§8.3 paso 4, B-4).</summary>
+    internal const int MaxComposedPathLength = 32_767;
+
+    /// <summary>Tope de aperturas por resolución, contando raíces de volumen y componentes de todos los saltos (§8.3 paso 4).</summary>
+    internal const int MaxOpensPerResolution = 2_048;
+
+    public LocalFolderInfo ResolveFolder(string normalizedPath, SourceIoGuard guard) => ResolveFolder(normalizedPath, guard, out _, keepHandle: false);
+
+    public LocalFolderInfo ResolveFolder(string normalizedPath, SourceIoGuard guard, out SafeFileHandle? handle) =>
+        ResolveFolder(normalizedPath, guard, out handle, keepHandle: true);
+
+    private LocalFolderInfo ResolveFolder(string normalizedPath, SourceIoGuard guard, out SafeFileHandle? handle, bool keepHandle)
     {
         ArgumentNullException.ThrowIfNull(guard);
+        handle = null;
         if (SourcePath.TryNormalize(normalizedPath, out var normalized) != SourcePathCheck.Ok || !string.Equals(normalized, normalizedPath, StringComparison.Ordinal))
         {
             return new LocalFolderInfo(LocalFolderStatus.InvalidPath);
         }
 
+        guard.CurrentPath = normalized;
+        guard.ResetSlowBudget();
         var outcome = Resolve(normalized, guard);
-        using var handle = outcome.Handle;
-        return outcome.Failure ?? Describe(outcome, guard);
+        var resolved = outcome.Handle;
+        try
+        {
+            var info = outcome.Failure ?? Describe(outcome, guard);
+            if (keepHandle && info.Status == LocalFolderStatus.Ok)
+            {
+                handle = resolved;
+                resolved = null;
+            }
+
+            return info;
+        }
+        finally
+        {
+            resolved?.Dispose();
+        }
     }
 
     public RealDirectoryScan FindRealDirectories(string directory, string namePrefix, int maxNames, SourceIoGuard guard)
@@ -71,6 +99,8 @@ internal sealed partial class WindowsLocalFileSystemInspector(ILogger<WindowsLoc
             throw new IOException($"The folder '{directory}' is not a normalized local path.");
         }
 
+        guard.CurrentPath = normalized;
+        guard.ResetSlowBudget();
         var outcome = Resolve(normalized, guard);
         using var resolved = outcome.Handle;
         if (outcome.Failure is { } failure || resolved is null)
@@ -158,9 +188,24 @@ internal sealed partial class WindowsLocalFileSystemInspector(ILogger<WindowsLoc
         var volume = normalized[..2]; // "X:"
         var pending = new List<string>(SourcePath.Components(normalized));
         var hops = 0;
+        var opens = new OpenCounter();
         while (true)
         {
-            var step = Walk(volume, pending, guard, out var link);
+            if (ComposedLength(volume, pending) > MaxComposedPathLength)
+            {
+                return Fail(LocalFolderStatus.Unreadable, $"the composed path exceeds {MaxComposedPathLength} characters");
+            }
+
+            Outcome step;
+            (string Volume, List<string> Components)? link;
+            try
+            {
+                step = Walk(volume, pending, guard, opens, out link);
+            }
+            catch (OpenLimitExceededException)
+            {
+                return Fail(LocalFolderStatus.Unreadable, $"more than {MaxOpensPerResolution} opens");
+            }
             if (link is null)
             {
                 return step;
@@ -183,10 +228,10 @@ internal sealed partial class WindowsLocalFileSystemInspector(ILogger<WindowsLoc
     /// Abre la raíz de <paramref name="volume"/> y recorre <paramref name="components"/> uno a uno. Si encuentra un sustituto
     /// de nombre admitido, devuelve en <paramref name="link"/> el volumen y los componentes con que seguir.
     /// </summary>
-    private Outcome Walk(string volume, List<string> components, SourceIoGuard guard, out (string Volume, List<string> Components)? link)
+    private Outcome Walk(string volume, List<string> components, SourceIoGuard guard, OpenCounter opens, out (string Volume, List<string> Components)? link)
     {
         link = null;
-        var rootOutcome = OpenVolumeRoot(volume, guard, out var current);
+        var rootOutcome = OpenVolumeRoot(volume, guard, opens, out var current);
         if (rootOutcome is not null)
         {
             return rootOutcome;
@@ -199,11 +244,18 @@ internal sealed partial class WindowsLocalFileSystemInspector(ILogger<WindowsLoc
                 return Fail(LocalFolderStatus.Unreadable, "the volume GUID path of the root could not be obtained");
             }
 
+            // B-1 (revisión final de HU-07): tiene que ser exactamente la raíz de un volumen, \\?\Volume{guid}\, sin nada
+            // detrás (una letra definida con subst o DefineDosDevice hacia una subcarpeta no lo es).
+            if (!IsExactVolumeRoot(rootGuidPath))
+            {
+                return Fail(LocalFolderStatus.NotLocal, "the drive is not the root of a volume");
+            }
+
             var walked = new List<string>(components.Count);
             for (var i = 0; i < components.Count; i++)
             {
                 var name = components[i];
-                var status = OpenRelative(current!, name, guard, out var child);
+                var status = OpenRelative(current!, name, guard, out var child, opens);
                 if (status < 0)
                 {
                     return Fail(MapOpenStatus(status), string.Create(CultureInfo.InvariantCulture, $"NTSTATUS 0x{status:X8} opening a component"));
@@ -274,7 +326,7 @@ internal sealed partial class WindowsLocalFileSystemInspector(ILogger<WindowsLoc
         }
     }
 
-    private static Outcome? OpenVolumeRoot(string volume, SourceIoGuard guard, out SafeFileHandle? root)
+    private static Outcome? OpenVolumeRoot(string volume, SourceIoGuard guard, OpenCounter opens, out SafeFileHandle? root)
     {
         root = null;
         if (volume.Length == 2)
@@ -289,7 +341,7 @@ internal sealed partial class WindowsLocalFileSystemInspector(ILogger<WindowsLoc
             }
         }
 
-        var status = OpenNt(@"\??\" + volume + @"\", null, guard, out var handle);
+        var status = OpenNt(@"\??\" + volume + @"\", null, guard, out var handle, opens: opens);
         if (status < 0)
         {
             return Fail(MapOpenStatus(status), string.Create(CultureInfo.InvariantCulture, $"NTSTATUS 0x{status:X8} opening the volume root"));
@@ -345,7 +397,7 @@ internal sealed partial class WindowsLocalFileSystemInspector(ILogger<WindowsLoc
             ? new string(fileSystem, 0, Array.IndexOf(fileSystem, '\0') is var end and >= 0 ? end : fileSystem.Length)
             : string.Empty;
 
-        return new LocalFolderInfo(LocalFolderStatus.Ok, StripLongPrefix(dosPath), fileSystemName);
+        return new LocalFolderInfo(LocalFolderStatus.Ok, StripLongPrefix(dosPath), fileSystemName, GuidPath: guidPath);
     }
 
     private static bool SameSegments(string finalGuidPath, string rootGuidPath, IReadOnlyList<string> components)
@@ -629,73 +681,78 @@ internal sealed partial class WindowsLocalFileSystemInspector(ILogger<WindowsLoc
 
     // ---- Aperturas por handle ----
 
-    private static int OpenRelative(SafeFileHandle parent, string name, SourceIoGuard guard, out SafeFileHandle handle) =>
-        OpenNt(name, parent, guard, out handle);
+    private static int OpenRelative(SafeFileHandle parent, string name, SourceIoGuard guard, out SafeFileHandle handle, OpenCounter? opens = null) =>
+        OpenNt(name, parent, guard, out handle, opens: opens);
 
     /// <summary>
-    /// <c>NtCreateFile</c> con <c>FILE_OPEN | FILE_OPEN_REPARSE_POINT | FILE_OPEN_FOR_BACKUP_INTENT</c>: con
-    /// <paramref name="parent"/>, <paramref name="name"/> es un solo componente relativo a esa carpeta ya abierta.
+    /// Apertura de solo lectura por <see cref="SourceOpen.Open"/> (<c>NtCreateFile</c> con <c>FILE_OPEN</c>,
+    /// <c>FILE_OPEN_REPARSE_POINT | FILE_OPEN_FOR_BACKUP_INTENT | FILE_COMPLETE_IF_OPLOCKED</c>, SQOS de identificación): con
+    /// <paramref name="parent"/>, <paramref name="name"/> es un solo componente relativo a esa carpeta ya abierta, o vacío para
+    /// reabrir el propio objeto. Si vence el plazo, el handle que vuelva tarde se cierra (I-1).
     /// </summary>
-    private static int OpenNt(string name, SafeFileHandle? parent, SourceIoGuard guard, out SafeFileHandle handle, uint access = R.FileReadAttributes | R.Synchronize)
+    private static int OpenNt(string name, SafeFileHandle? parent, SourceIoGuard guard, out SafeFileHandle handle, uint access = R.FileReadAttributes | R.Synchronize, OpenCounter? opens = null)
     {
-        var (status, opened) = guard.Run(_ =>
+        if (opens is not null && ++opens.Count > MaxOpensPerResolution)
         {
-            var s = OpenNtCore(name, parent, access, out var h);
-            return (s, h);
-        });
-        handle = opened;
-        if (status < 0)
-        {
-            handle.Dispose();
+            throw new OpenLimitExceededException();
         }
 
-        return status;
+        using var opened = guard.Run(_ =>
+        {
+            var s = SourceOpen.Open(name, parent, access, R.FileShareRead | R.FileShareWrite, R.FileOpenReparsePoint | R.FileSynchronousIoNonAlert, out var h);
+            return new OpenResult(s, h);
+        });
+        handle = opened.Take();
+        return opened.Status;
     }
 
-    private static unsafe int OpenNtCore(string name, SafeFileHandle? parent, uint access, out SafeFileHandle handle)
+    private static bool IsExactVolumeRoot(string guidPath) =>
+        guidPath.Length == 4 + 44 + 1
+        && guidPath.StartsWith(@"\\?\Volume{", StringComparison.OrdinalIgnoreCase)
+        && guidPath.EndsWith("}\\", StringComparison.Ordinal)
+        && Guid.TryParseExact(guidPath.AsSpan(11, 36), "D", out _);
+
+    private static int ComposedLength(string volume, List<string> components)
     {
-        var addedRef = false;
-        try
+        var length = volume.Length + 1;
+        foreach (var component in components)
         {
-            parent?.DangerousAddRef(ref addedRef);
-            fixed (char* buffer = name)
-            {
-                var objectName = new UnicodeString
-                {
-                    Length = checked((ushort)(name.Length * sizeof(char))),
-                    MaximumLength = checked((ushort)(name.Length * sizeof(char))),
-                    Buffer = (nint)buffer,
-                };
-                var attributes = new ObjectAttributes
-                {
-                    Length = (uint)sizeof(ObjectAttributes),
-                    RootDirectory = parent?.DangerousGetHandle() ?? 0,
-                    ObjectName = (nint)(&objectName),
-                    Attributes = R.ObjCaseInsensitive,
-                    SecurityDescriptor = 0,
-                    SecurityQualityOfService = 0,
-                };
-                return NtCreateFile(
-                    out handle,
-                    access,
-                    in attributes,
-                    out _,
-                    0,
-                    0,
-                    R.FileShareRead | R.FileShareWrite,
-                    R.FileOpen,
-                    R.FileOpenReparsePoint | R.FileOpenForBackupIntent | R.FileSynchronousIoNonAlert,
-                    0,
-                    0);
-            }
+            length += component.Length + 1;
         }
-        finally
+
+        return length;
+    }
+
+    /// <summary>Aperturas hechas en una resolución (§8.3 paso 4).</summary>
+    private sealed class OpenCounter
+    {
+        public int Count { get; set; }
+    }
+
+    /// <summary>Se han superado <see cref="MaxOpensPerResolution"/> aperturas.</summary>
+    private sealed class OpenLimitExceededException : Exception
+    {
+        public OpenLimitExceededException()
+            : base("Too many opens in one resolution.")
         {
-            if (addedRef)
-            {
-                parent!.DangerousRelease();
-            }
         }
+    }
+
+    /// <summary>Resultado de una apertura que se libera si nadie lo recoge (p. ej. porque vuelve después del plazo).</summary>
+    private sealed class OpenResult(int status, SafeFileHandle handle) : IDisposable
+    {
+        private SafeFileHandle? _handle = handle;
+
+        public int Status => status;
+
+        public SafeFileHandle Take()
+        {
+            var taken = _handle ?? throw new ObjectDisposedException(nameof(OpenResult));
+            _handle = null;
+            return taken;
+        }
+
+        public void Dispose() => _handle?.Dispose();
     }
 
     private static (uint Attributes, uint Tag)? ReadAttributeTag(SafeFileHandle handle, SourceIoGuard guard, out int error)

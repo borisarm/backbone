@@ -16,7 +16,39 @@ public sealed class ProtectedFoldersTests
 {
     private const string ProgramData = @"C:\ProgramData";
 
-    private static ProtectedFolderSet Set(params string[] quarantined) => new(ProgramData, "Backbone", quarantined, IsComplete: true);
+    private static ProtectedFolderSet Set(params string[] quarantined) => new(ProgramData, ProgramData, "Backbone", quarantined, IsComplete: true);
+
+    private const string VolumeA = @"\\?\Volume{0a0a0a0a-0000-0000-0000-00000000000a}";
+    private const string VolumeB = @"\\?\Volume{0b0b0b0b-0000-0000-0000-00000000000b}";
+
+    /// <summary>
+    /// I-5: la comparación es por la identidad del volumen (rutas <c>VOLUME_NAME_GUID</c>). Un origen que llega a la carpeta de
+    /// datos por un volumen sin letra o por <c>\\?\Volume{guid}\</c> la contiene igual; uno con la misma ruta en otro volumen,
+    /// no.
+    /// </summary>
+    [Fact]
+    public void I5_Protected_folders_are_compared_by_volume_identity_not_by_drive_letter()
+    {
+        var set = new ProtectedFolderSet(ProgramData, VolumeA + @"\ProgramData", "Backbone", ["Backbone.untrusted-a"], IsComplete: true);
+
+        var sameVolume = set.Classify(VolumeA + "\\");
+        Assert.Equal(SourceProtectionKind.ContainsProtectedFolders, sameVolume.Kind);
+        Assert.Equal([@"ProgramData\Backbone", @"ProgramData\Backbone.untrusted-a"], sameVolume.MandatoryExclusions);
+        Assert.Equal(SourceProtectionKind.InsideProtectedFolder, set.Classify(VolumeA + @"\programdata\BACKBONE\credentials").Kind);
+        Assert.Equal(SourceProtectionKind.None, set.Classify(VolumeB + @"\ProgramData").Kind);
+        Assert.Equal(SourceProtectionKind.None, set.Classify(VolumeB + @"\ProgramData\Backbone").Kind);
+    }
+
+    [Fact]
+    public void I5_Without_the_volume_path_of_ProgramData_every_source_fails_closed()
+    {
+        var set = new ProtectedFolderSet(ProgramData, string.Empty, "Backbone", [], IsComplete: false);
+
+        var result = set.Classify(VolumeB + @"\Datos");
+
+        Assert.Equal(SourceProtectionKind.ProtectedFoldersUnknown, result.Kind);
+        Assert.True(result.IsNotAllowed);
+    }
 
     [Theory]
     [InlineData(@"C:\ProgramData\Backbone", @"C:\ProgramData\Backbone")]
@@ -74,7 +106,7 @@ public sealed class ProtectedFoldersTests
     [Fact]
     public void With_an_incomplete_list_a_source_containing_ProgramData_fails_closed()
     {
-        var set = new ProtectedFolderSet(ProgramData, "Backbone", [], IsComplete: false);
+        var set = new ProtectedFolderSet(ProgramData, ProgramData, "Backbone", [], IsComplete: false);
 
         var result = set.Classify(@"C:\");
 
@@ -86,7 +118,7 @@ public sealed class ProtectedFoldersTests
     [Fact]
     public void With_an_incomplete_list_other_sources_are_not_affected_and_inside_still_uses_the_location()
     {
-        var set = new ProtectedFolderSet(ProgramData, "Backbone", [], IsComplete: false);
+        var set = new ProtectedFolderSet(ProgramData, ProgramData, "Backbone", [], IsComplete: false);
 
         Assert.Equal(SourceProtectionKind.None, set.Classify(@"C:\Users\ana").Kind);
         Assert.Equal(SourceProtectionKind.InsideProtectedFolder, set.Classify(@"C:\ProgramData\Backbone.untrusted-zz\x").Kind);
@@ -102,6 +134,7 @@ public sealed class ProtectedFoldersTests
         var set = resolver.Resolve(TestIo.Guard());
 
         Assert.Equal(@"E:\Real\Datos", set.ProgramDataPath);
+        Assert.Equal(FakeLocalFileSystemInspector.FakeGuidPath(@"E:\Real\Datos"), set.ProgramDataGuidPath);
         Assert.Equal("Backbone", set.DataFolderName);
         Assert.Equal(["Backbone.untrusted-1"], set.QuarantinedFolderNames);
         Assert.True(set.IsComplete);
@@ -117,7 +150,7 @@ public sealed class ProtectedFoldersTests
 
         Assert.True(set.IsComplete);
         Assert.Equal(100, set.QuarantinedFolderNames.Count);
-        Assert.Equal(101, set.Classify(@"C:\").MandatoryExclusions.Count);
+        Assert.Equal(101, set.Classify(FakeLocalFileSystemInspector.FakeGuidPath(@"C:\")).MandatoryExclusions.Count);
     }
 
     [Fact]
@@ -133,7 +166,7 @@ public sealed class ProtectedFoldersTests
 
         Assert.False(set.IsComplete);
         Assert.Empty(set.QuarantinedFolderNames);
-        Assert.Equal(SourceProtectionKind.ProtectedFoldersUnknown, set.Classify(@"C:\").Kind);
+        Assert.Equal(SourceProtectionKind.ProtectedFoldersUnknown, set.Classify(FakeLocalFileSystemInspector.FakeGuidPath(@"C:\")).Kind);
         Assert.Contains(logs.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("100", StringComparison.Ordinal));
 
         // MEDIA-1: deja de abrir entradas en cuanto encuentra la 101.
@@ -160,7 +193,7 @@ public sealed class ProtectedFoldersTests
         var set = NewResolver(fileSystem).Resolve(TestIo.Guard());
 
         Assert.False(set.IsComplete);
-        Assert.True(set.Classify(@"C:\ProgramData").IsNotAllowed);
+        Assert.True(set.Classify(FakeLocalFileSystemInspector.FakeGuidPath(@"C:\ProgramData")).IsNotAllowed);
     }
 
     [Fact]

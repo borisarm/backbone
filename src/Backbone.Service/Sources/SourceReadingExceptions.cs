@@ -69,3 +69,25 @@ public sealed class SourceReadingUnavailableException : SourceReadingFailedExcep
     {
     }
 }
+
+/// <summary>
+/// Hay <see cref="Os.AbandonedSourceThreads.Limit"/> o más hilos de lectura abandonados en el servicio: las ejecuciones y las
+/// validaciones fallan con <c>Internal</c> sin abrir nada hasta reiniciar el servicio (§8.2, evento 1005, R12).
+/// </summary>
+public sealed class SourceReadingStoppedException : SourceReadingFailedException
+{
+    public SourceReadingStoppedException()
+        : base("Source reading is stopped: too many source reading threads were abandoned. Restart the Backbone service.")
+    {
+    }
+
+    public SourceReadingStoppedException(string message)
+        : base(message)
+    {
+    }
+
+    public SourceReadingStoppedException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+}

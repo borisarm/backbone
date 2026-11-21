@@ -685,6 +685,9 @@ internal static partial class NativeMethods
         internal const uint FileDirectoryFile = 0x0000_0001;
         internal const uint FileNonDirectoryFile = 0x0000_0040;
 
+        /// <summary><c>FILE_SEQUENTIAL_ONLY</c>: el equivalente de <c>FILE_FLAG_SEQUENTIAL_SCAN</c>.</summary>
+        internal const uint FileSequentialOnly = 0x0000_0004;
+
         /// <summary><c>FILE_COMPLETE_IF_OPLOCKED</c>: no espera la ruptura de un oplock (§8.2 "Oplocks").</summary>
         internal const uint FileCompleteIfOplocked = 0x0000_0100;
 

@@ -47,15 +47,19 @@ internal sealed class SourceReadingEnvironment
 /// <summary>
 /// Al arrancar el servicio, antes de leer ningún origen, expone los marcadores de la Cloud Files API al proceso (§8.2, R4).
 /// Si falla, lo registra como error y las copias que lean orígenes fallarán con <c>Internal</c>
-/// (<see cref="SourceReadingUnavailableException"/>); el servicio sigue arrancando.
+/// (<see cref="SourceReadingUnavailableException"/>); el servicio sigue arrancando. Además prepara el token de los hilos de
+/// lectura (<see cref="SourceReadToken"/>, ADR-21) en el hilo de arranque, que no suplanta a nadie.
 /// </summary>
 internal sealed partial class SourceReadingStartup(
     IPlaceholderCompatibility placeholders,
     SourceReadingEnvironment environment,
+    SourceReadToken readToken,
     ILogger<SourceReadingStartup> logger) : IHostedLifecycleService
 {
     public Task StartingAsync(CancellationToken cancellationToken)
     {
+        LogReadToken(logger, readToken.HasBackupPrivilege);
+
         var previous = placeholders.ExposePlaceholders();
         if (previous < 0)
         {
@@ -86,6 +90,9 @@ internal sealed partial class SourceReadingStartup(
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Marcadores de la nube expuestos al proceso (modo anterior {Previous}).")]
     private static partial void LogExposed(ILogger logger, int previous);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Token de lectura de orígenes preparado; SeBackupPrivilege activado en los hilos de lectura: {Enabled} (ADR-21).")]
+    private static partial void LogReadToken(ILogger logger, bool enabled);
 }
 
 /// <summary>Crea el <see cref="SourceFileSystem"/> de cada ejecución con sus orígenes (§8.2 "Rutas y raíces").</summary>
@@ -94,10 +101,19 @@ internal interface ISourceFileSystemFactory
     /// <summary>
     /// Crea la lectura de los orígenes de una ejecución; quien la crea la desecha al terminar.
     /// </summary>
+    /// <param name="sources">Orígenes, con <see cref="BackupSource.ReadPath"/> ya traducida a la instantánea si la hay.</param>
+    /// <param name="snapshotDevices">
+    /// Dispositivos (<c>HarddiskVolumeShadowCopy&lt;n&gt;</c>) de las instantáneas que <c>VssSnapshotter</c> ha creado para
+    /// <b>esta</b> ejecución; cualquier otra instantánea se rechaza (B-2).
+    /// </param>
     /// <exception cref="SourceReadingUnavailableException">
     /// No se expusieron los marcadores al arrancar: la ejecución termina <c>Failed</c>/<c>Internal</c> sin leer nada.
     /// </exception>
-    SourceFileSystem Create(IReadOnlyList<BackupSource> sources);
+    /// <exception cref="SourceReadingStoppedException">
+    /// Hay 4 o más hilos de lectura abandonados en el servicio (R12): <c>Failed</c>/<c>Internal</c> sin leer nada.
+    /// </exception>
+    /// <exception cref="ArgumentException">Un origen o una exclusión obligatoria no son válidos (B-2, I-4): <c>Internal</c>.</exception>
+    SourceFileSystem Create(IReadOnlyList<BackupSource> sources, IReadOnlyCollection<string>? snapshotDevices = null);
 }
 
 /// <inheritdoc />
@@ -106,16 +122,23 @@ internal sealed class SourceFileSystemFactory(
     SourceReadingEnvironment environment,
     TimeProvider time,
     SourceReadOptions options,
-    ILogger<SourceFileSystem> logger) : ISourceFileSystemFactory
+    ILogger<SourceFileSystem> logger,
+    SourceReadToken? token = null,
+    AbandonedSourceThreads? abandonedThreads = null) : ISourceFileSystemFactory
 {
-    public SourceFileSystem Create(IReadOnlyList<BackupSource> sources)
+    public SourceFileSystem Create(IReadOnlyList<BackupSource> sources, IReadOnlyCollection<string>? snapshotDevices = null)
     {
         if (!environment.PlaceholdersExposed)
         {
             throw new SourceReadingUnavailableException();
         }
 
-        return new SourceFileSystem(sources, api, time, options, logger);
+        if (abandonedThreads is { IsExhausted: true })
+        {
+            throw new SourceReadingStoppedException();
+        }
+
+        return new SourceFileSystem(sources, api, time, options, logger, token, abandonedThreads, snapshotDevices);
     }
 }
 
@@ -127,8 +150,19 @@ internal static class SourceReadingServiceCollectionExtensions
         services.TryAddSingleton<IPlaceholderCompatibility, WindowsPlaceholderCompatibility>();
         services.TryAddSingleton<ISourceFileApi, Win32SourceFileApi>();
         services.TryAddSingleton(SourceReadOptions.Default);
+        services.TryAddSingleton(sp => SourceReadToken.Create(sp.GetRequiredService<ILogger<SourceReadToken>>()));
+        services.TryAddSingleton(sp => new AbandonedSourceThreads(
+            sp.GetRequiredService<IEventLogWriter>(),
+            sp.GetRequiredService<ILogger<AbandonedSourceThreads>>()));
         services.AddSingleton<SourceReadingEnvironment>();
-        services.AddSingleton<ISourceFileSystemFactory, SourceFileSystemFactory>();
+        services.AddSingleton<ISourceFileSystemFactory>(sp => new SourceFileSystemFactory(
+            sp.GetRequiredService<ISourceFileApi>(),
+            sp.GetRequiredService<SourceReadingEnvironment>(),
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<SourceReadOptions>(),
+            sp.GetRequiredService<ILogger<SourceFileSystem>>(),
+            sp.GetRequiredService<SourceReadToken>(),
+            sp.GetRequiredService<AbandonedSourceThreads>()));
         services.AddHostedService<SourceReadingStartup>();
         return services;
     }

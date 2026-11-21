@@ -1,5 +1,6 @@
 using Backbone.Contracts;
 using Backbone.Core.Engine;
+using Backbone.Service.Os;
 using Backbone.Service.Sources;
 using Backbone.Service.Tests.TestSupport;
 using Microsoft.Extensions.Logging;
@@ -59,7 +60,7 @@ public sealed class SourceReadTimeoutTests : IDisposable
         Assert.Contains("plazo", ex.Message, StringComparison.Ordinal);
         Assert.InRange(elapsed, TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(65));
         Assert.False(_fs.IsAbandoned);
-        Assert.Equal(0, _api.OpenHandles); // también el handle que devolvió tarde
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles); // también el handle que devolvió tarde
     }
 
     [Fact]
@@ -73,7 +74,7 @@ public sealed class SourceReadTimeoutTests : IDisposable
 
         Assert.Equal([7, 8], await ReadAllAsync(FakeSourceFileApi.Child("bien.bin")));
         Assert.Equal(1, _api.LateHandles);
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Theory]
@@ -152,7 +153,7 @@ public sealed class SourceReadTimeoutTests : IDisposable
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation);
         Assert.False(_fs.IsAbandoned);
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Fact]
@@ -162,7 +163,7 @@ public sealed class SourceReadTimeoutTests : IDisposable
         var factory = new SourceFileSystemFactory(_api, environment, _time, SourceReadOptions.Default, new LoggerFactory([_logs]).CreateLogger<SourceFileSystem>());
         var sources = new[] { new BackupSource("src", FakeSourceFileApi.ReadPath, FakeSourceFileApi.ReadPath) };
 
-        var startup = new SourceReadingStartup(new FailingPlaceholders(), environment, new LoggerFactory([_logs]).CreateLogger<SourceReadingStartup>());
+        var startup = new SourceReadingStartup(new FailingPlaceholders(), environment, SourceReadToken.Unprivileged, new LoggerFactory([_logs]).CreateLogger<SourceReadingStartup>());
         await startup.StartingAsync(CancellationToken.None);
 
         var ex = Assert.Throws<SourceReadingUnavailableException>(() => factory.Create(sources));
@@ -177,7 +178,7 @@ public sealed class SourceReadTimeoutTests : IDisposable
         var factory = new SourceFileSystemFactory(_api, environment, _time, SourceReadOptions.Default, new LoggerFactory([_logs]).CreateLogger<SourceFileSystem>());
         Assert.Throws<SourceReadingUnavailableException>(() => factory.Create([])); // antes de arrancar tampoco
 
-        await new SourceReadingStartup(new WorkingPlaceholders(), environment, new LoggerFactory([_logs]).CreateLogger<SourceReadingStartup>()).StartingAsync(CancellationToken.None);
+        await new SourceReadingStartup(new WorkingPlaceholders(), environment, SourceReadToken.Unprivileged, new LoggerFactory([_logs]).CreateLogger<SourceReadingStartup>()).StartingAsync(CancellationToken.None);
 
         using var first = factory.Create([new BackupSource("src", FakeSourceFileApi.ReadPath, FakeSourceFileApi.ReadPath)]);
         using var second = factory.Create([new BackupSource("src", FakeSourceFileApi.ReadPath, FakeSourceFileApi.ReadPath)]);

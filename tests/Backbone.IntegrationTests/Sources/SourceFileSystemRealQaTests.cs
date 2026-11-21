@@ -257,15 +257,13 @@ public sealed class SourceFileSystemRealQaTests : IDisposable
         File.WriteAllBytes(none, RandomNumberGenerator.GetBytes(size));
         var empty = Path.Combine(_root, "vacio.bin");
         File.WriteAllBytes(empty, []);
-        var api = new Win32SourceFileApi();
-
-        Assert.False(IsFullyAllocated(api, leading, size));
-        Assert.False(IsFullyAllocated(api, trailing, size));
-        Assert.False(IsFullyAllocated(api, all, size));
-        Assert.True(IsFullyAllocated(api, none, size));
-        Assert.True(IsFullyAllocated(api, empty, 0));
+        Assert.False(IsFullyAllocated(leading, size));
+        Assert.False(IsFullyAllocated(trailing, size));
+        Assert.False(IsFullyAllocated(all, size));
+        Assert.True(IsFullyAllocated(none, size));
+        Assert.True(IsFullyAllocated(empty, 0));
         // Pedir más de lo que mide el archivo no puede dar "todo asignado".
-        Assert.False(IsFullyAllocated(api, none, size + 4096));
+        Assert.False(IsFullyAllocated(none, size + 4096));
     }
 
     private string SparseFile(string name, int size, int holeOffset, int holeLength)
@@ -280,20 +278,15 @@ public sealed class SourceFileSystemRealQaTests : IDisposable
         return path;
     }
 
-    private static bool IsFullyAllocated(Win32SourceFileApi api, string path, long length)
+    private static bool IsFullyAllocated(string path, long length)
     {
-        using var handle = api.Open(@"\\?\" + path, SourceOpenMode.Content, CancellationToken.None);
+        using var handle = SourceHandles.Open(path, SourceOpenMode.Content);
         return handle.IsFullyAllocated(length, CancellationToken.None);
     }
 
     // ================================================================== Ayudas
 
-    private static string FinalPath(string path)
-    {
-        using var handle = new Win32SourceFileApi().Open(@"\\?\" + Path.GetFullPath(path), SourceOpenMode.Directory, CancellationToken.None);
-        var final = handle.GetFinalPath(FinalPathFormat.Dos, CancellationToken.None);
-        return final.StartsWith(@"\\?\", StringComparison.Ordinal) ? final[4..] : final;
-    }
+    private static string FinalPath(string path) => SourceHandles.FinalPath(path);
 
     private static bool RunTool(string file, string arguments)
     {

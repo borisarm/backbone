@@ -88,7 +88,7 @@ public sealed class SourceFileSystemEngineQaTests : IDisposable
         Assert.DoesNotContain(opened, p => p.Contains("hijo.txt", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(opened, p => p.Contains("node_modules", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(opened, p => p.EndsWith("basura.tmp", StringComparison.OrdinalIgnoreCase));
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(fs.HeldHandles, _api.OpenHandles);
 
         // Ningún objeto del repositorio es el de un archivo de ceros (el tamaño de nube.bin, 50 000 bytes, es todo ceros).
         Assert.DoesNotContain(entries, e => e.Hash?.ToString() == Sha(new byte[50_000]));

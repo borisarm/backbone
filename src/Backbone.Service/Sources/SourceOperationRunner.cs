@@ -1,8 +1,10 @@
 using System.Collections.Concurrent;
 using Backbone.Contracts;
 using Backbone.Core.Engine;
+using Backbone.Service.Os;
 using Microsoft.Extensions.Logging;
-using static Backbone.Service.Os.NativeMethods.SourceIo;
+using Microsoft.Win32.SafeHandles;
+using R = Backbone.Service.Os.NativeMethods.Resolution;
 
 namespace Backbone.Service.Sources;
 
@@ -22,14 +24,32 @@ internal sealed record SourceReadOptions
 
     /// <summary>Tamaño máximo de un bloque leído (el búfer propio del flujo).</summary>
     public int ReadBlockBytes { get; init; } = 1024 * 1024;
+
+    /// <summary>Una operación que dura más es lenta y suma al presupuesto del origen (M-1): 10 s.</summary>
+    public TimeSpan SlowOperationThreshold { get; init; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>Tiempo acumulado en operaciones lentas que agota el presupuesto del origen: 10 min.</summary>
+    public TimeSpan SlowOperationBudget { get; init; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>Plazos vencidos que agotan el presupuesto del origen: 5.</summary>
+    public int MaxTimedOutOperationsPerSource { get; init; } = 5;
+
+    /// <summary>Handles de carpeta en la caché de una ejecución, aparte de las raíces: 128.</summary>
+    public int DirectoryCacheCapacity { get; init; } = 128;
 }
 
 /// <summary>
 /// Ejecuta las operaciones síncronas sobre los orígenes (aperturas, enumeraciones, consultas sobre el handle) en un
-/// <b>hilo propio</b> con plazo, y las lecturas asíncronas con plazo (§8.2 "Plazo de las lecturas de los orígenes", R12).
+/// <b>hilo dedicado de lectura</b> con plazo, y las lecturas asíncronas con plazo (§8.2 "Plazo de las lecturas de los
+/// orígenes", "Token de lectura de los orígenes", R12).
 /// </summary>
 /// <remarks>
 /// <list type="bullet">
+/// <item><description>
+/// El hilo se crea con <c>new Thread</c> y <c>UnsafeStart</c> (sin el <c>ExecutionContext</c> de quien lo pide), lleva la
+/// copia del token del proceso con <c>SeBackupPrivilege</c> (<see cref="SourceReadToken"/>, ADR-21), solo ejecuta los
+/// trabajos síncronos de su cola y llama a <c>RevertToSelf</c> al terminar (<see cref="SourceReaderThread"/>).
+/// </description></item>
 /// <item><description>
 /// Al vencer el plazo (o cancelarse el <see cref="CancellationToken"/> de la ejecución) se cancela la operación: en el hilo,
 /// con <c>CancelSynchronousIo</c> (y <c>CancelIoEx</c> sobre el handle si la operación tiene uno); en las lecturas, con
@@ -39,12 +59,14 @@ internal sealed record SourceReadOptions
 /// <item><description>
 /// Si vuelve: con el plazo vencido, <see cref="SourceAccessException"/> con <see cref="RunIssueCode.ReadError"/> (el motor
 /// omite el elemento y conserva la versión del padre, RF-25); con la ejecución cancelada,
-/// <see cref="OperationCanceledException"/>. Lo que devuelva tarde (un handle) se libera.
+/// <see cref="OperationCanceledException"/>. Lo que devuelva tarde (un handle) se libera. Cada operación lenta suma al
+/// <see cref="SourceBudget"/> de su origen; con el presupuesto agotado, la operación lanza sin E/S.
 /// </description></item>
 /// <item><description>
-/// Si tampoco vuelve en <see cref="SourceReadOptions.CancellationGrace"/>: se registra, el hilo se abandona y esta operación
-/// y todas las siguientes lanzan <see cref="SourceOperationAbandonedException"/>, que no es un error de un elemento
-/// (no deriva de <see cref="IOException"/>): la ejecución termina <c>Failed</c>/<c>Internal</c>.
+/// Si tampoco vuelve en <see cref="SourceReadOptions.CancellationGrace"/>: se registra, el hilo (o la lectura) se abandona,
+/// cuenta en <see cref="AbandonedSourceThreads"/> hasta que vuelva, y esta operación y todas las siguientes lanzan
+/// <see cref="SourceOperationAbandonedException"/>, que no es un error de un elemento (no deriva de
+/// <see cref="IOException"/>): la ejecución termina <c>Failed</c>/<c>Internal</c>.
 /// </description></item>
 /// </list>
 /// El hilo se crea con el ejecutor (uno por <see cref="SourceFileSystem"/>, es decir, por ejecución) y ejecuta las
@@ -57,11 +79,17 @@ internal sealed partial class SourceOperationRunner : IDisposable
     private readonly TimeProvider _time;
     private readonly SourceReadOptions _options;
     private readonly ILogger _logger;
-    private nint _threadHandle;
+    private readonly AbandonedSourceThreads? _abandonedThreads;
+    private SafeWaitHandle? _threadHandle;
     private string? _abandoned;
     private int _disposed;
 
-    public SourceOperationRunner(TimeProvider time, SourceReadOptions options, ILogger logger)
+    public SourceOperationRunner(
+        TimeProvider time,
+        SourceReadOptions options,
+        ILogger logger,
+        SourceReadToken? token = null,
+        AbandonedSourceThreads? abandonedThreads = null)
     {
         ArgumentNullException.ThrowIfNull(time);
         ArgumentNullException.ThrowIfNull(options);
@@ -69,18 +97,16 @@ internal sealed partial class SourceOperationRunner : IDisposable
         _time = time;
         _options = options;
         _logger = logger;
-        var thread = new Thread(Work)
-        {
-            IsBackground = true,
-            Name = "Backbone source reader",
-        };
-        thread.Start();
+        _abandonedThreads = abandonedThreads;
+        SourceReaderThread.Start("Backbone source reader", token ?? SourceReadToken.Unprivileged, Work, logger);
     }
 
     /// <summary>Se ha abandonado una operación: la lectura de los orígenes de esta ejecución no puede seguir.</summary>
     public bool IsAbandoned => Volatile.Read(ref _abandoned) is not null;
 
     public SourceReadOptions Options => _options;
+
+    public TimeProvider Time => _time;
 
     /// <summary>Lanza <see cref="SourceOperationAbandonedException"/> si se ha abandonado alguna operación.</summary>
     public void ThrowIfAbandoned()
@@ -93,13 +119,20 @@ internal sealed partial class SourceOperationRunner : IDisposable
     }
 
     /// <summary>
-    /// Ejecuta <paramref name="operation"/> en el hilo propio con plazo. <paramref name="target"/> es el handle sobre el que
+    /// Ejecuta <paramref name="operation"/> en el hilo dedicado con plazo. <paramref name="target"/> es el handle sobre el que
     /// trabaja, si lo hay, para cancelarlo también con <c>CancelIoEx</c>. El token que recibe la operación se cancela al
     /// cancelarla (lo usan los simuladores; la operación real la desbloquea <c>CancelSynchronousIo</c>).
     /// </summary>
+    /// <param name="description">Qué se hace, para los registros.</param>
+    /// <param name="path">Ruta afectada, para los registros (texto no confiable).</param>
+    /// <param name="budget">Presupuesto de plazos del origen; agotado, lanza sin hacer E/S.</param>
+    /// <param name="target">Handle sobre el que trabaja la operación, si lo hay.</param>
+    /// <param name="operation">Operación síncrona.</param>
+    /// <param name="cancellationToken">Cancelación de la ejecución.</param>
     public async Task<T> RunAsync<T>(
         string description,
         string path,
+        SourceBudget? budget,
         ISourceHandle? target,
         Func<CancellationToken, T> operation,
         CancellationToken cancellationToken)
@@ -108,8 +141,9 @@ internal sealed partial class SourceOperationRunner : IDisposable
         ThrowIfAbandoned();
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         cancellationToken.ThrowIfCancellationRequested();
+        budget?.ThrowIfExhausted();
 
-        var item = new WorkItem<T>(operation, target);
+        var item = new WorkItem<T>(operation, target, _time);
         try
         {
             _queue.Add(item, CancellationToken.None);
@@ -144,6 +178,7 @@ internal sealed partial class SourceOperationRunner : IDisposable
             if (winner == item.Completion || item.Completion.IsCompleted)
             {
                 await wait.CancelAsync().ConfigureAwait(false);
+                budget?.Record(item.Elapsed, timedOut: false);
                 return await item.Completion.ConfigureAwait(false);
             }
 
@@ -152,6 +187,7 @@ internal sealed partial class SourceOperationRunner : IDisposable
         }
 
         await CancelAndWaitAsync(item, description, path).ConfigureAwait(false);
+        budget?.Record(item.Elapsed, timedOut);
         if (!timedOut)
         {
             throw new OperationCanceledException(cancellationToken);
@@ -161,12 +197,14 @@ internal sealed partial class SourceOperationRunner : IDisposable
     }
 
     /// <summary>Lee un bloque de <paramref name="handle"/> con plazo (E/S asíncrona, cancelada con <c>CancelIoEx</c>).</summary>
-    public async Task<int> ReadAsync(ISourceHandle handle, Memory<byte> buffer, long fileOffset, string path, CancellationToken cancellationToken)
+    public async Task<int> ReadAsync(ISourceHandle handle, Memory<byte> buffer, long fileOffset, string path, SourceBudget? budget, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(handle);
         ThrowIfAbandoned();
         cancellationToken.ThrowIfCancellationRequested();
+        budget?.ThrowIfExhausted();
 
+        var start = _time.GetTimestamp();
         using var timeout = new CancellationTokenSource(_options.OperationTimeout, _time);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
         Task<int> read;
@@ -183,8 +221,11 @@ internal sealed partial class SourceOperationRunner : IDisposable
         var winner = await Task.WhenAny(read, cancelled).ConfigureAwait(false);
         if (winner == read && !(read.IsCanceled && linked.IsCancellationRequested))
         {
+            budget?.Record(_time.GetElapsedTime(start), timedOut: false);
             return await read.ConfigureAwait(false);
         }
+
+        var timedOut = timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested;
 
         // Plazo vencido o ejecución cancelada: el token ya ha pedido CancelIoEx; se pide otra vez por si acaso.
         if (!read.IsCompleted)
@@ -193,13 +234,25 @@ internal sealed partial class SourceOperationRunner : IDisposable
             var grace = Task.Delay(_options.CancellationGrace, _time, CancellationToken.None);
             if (await Task.WhenAny(read, grace).ConfigureAwait(false) != read)
             {
+                // La lectura abandonada cuenta como un hilo abandonado hasta que el controlador responda (R12).
+                _abandonedThreads?.OnAbandoned(path);
+                _ = read.ContinueWith(
+                    static (t, state) =>
+                    {
+                        _ = t.Exception;
+                        ((AbandonedSourceThreads?)state)?.OnReturned();
+                    },
+                    _abandonedThreads,
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
                 Abandon("lectura de un bloque", path);
-                ObserveLater(read);
                 ThrowIfAbandoned();
             }
         }
 
         ObserveLater(read);
+        budget?.Record(_time.GetElapsedTime(start), timedOut);
         cancellationToken.ThrowIfCancellationRequested();
         throw TimedOut("lectura de un bloque");
     }
@@ -231,8 +284,9 @@ internal sealed partial class SourceOperationRunner : IDisposable
 
         // Lo que devuelva cuando vuelva (un handle) se libera y su error, esperado tras cancelar, se descarta.
         item.DisposeResultWhenDone();
-        if (!returned)
+        if (!returned && item.TryMarkAbandoned())
         {
+            _abandonedThreads?.OnAbandoned(path);
             Abandon(description, path);
             ThrowIfAbandoned();
         }
@@ -264,7 +318,7 @@ internal sealed partial class SourceOperationRunner : IDisposable
     private void Work()
     {
         // CancelSynchronousIo exige un handle real del hilo con THREAD_TERMINATE.
-        var handle = OpenThread(ThreadTerminate, inheritHandle: false, GetCurrentThreadId());
+        var handle = R.OpenThread(R.ThreadTerminate, inheritHandle: false, R.GetCurrentThreadId());
         lock (_threadHandleLock)
         {
             _threadHandle = handle;
@@ -277,6 +331,11 @@ internal sealed partial class SourceOperationRunner : IDisposable
                 if (item.TryStart())
                 {
                     item.Execute();
+                    if (item.MarkReturned())
+                    {
+                        // El hilo abandonado ha vuelto por fin: deja de contar (R12). Lo que haya abierto ya se ha liberado.
+                        _abandonedThreads?.OnReturned();
+                    }
                 }
             }
         }
@@ -284,11 +343,8 @@ internal sealed partial class SourceOperationRunner : IDisposable
         {
             lock (_threadHandleLock)
             {
-                _threadHandle = 0;
-                if (handle != 0)
-                {
-                    CloseHandle(handle);
-                }
+                _threadHandle = null;
+                handle.Dispose();
             }
         }
     }
@@ -297,9 +353,9 @@ internal sealed partial class SourceOperationRunner : IDisposable
     {
         lock (_threadHandleLock)
         {
-            if (_threadHandle != 0)
+            if (_threadHandle is { IsInvalid: false, IsClosed: false } thread)
             {
-                _ = CancelSynchronousIo(_threadHandle); // ERROR_NOT_FOUND si no había E/S pendiente: se reintentará
+                _ = R.CancelSynchronousIo(thread); // ERROR_NOT_FOUND si no había E/S pendiente: se reintentará
             }
         }
     }
@@ -308,16 +364,34 @@ internal sealed partial class SourceOperationRunner : IDisposable
     private static partial void LogAbandoned(ILogger logger, string operation, string path, double timeout, double grace);
 
     /// <summary>Una operación en la cola. Su estado se cambia bajo <see cref="Gate"/>.</summary>
-    private abstract class WorkItem(ISourceHandle? target) : IDisposable
+    private abstract class WorkItem(ISourceHandle? target, TimeProvider time) : IDisposable
     {
+        private const int Running = 0;
+        private const int Returned = 1;
+        private const int AbandonedState = 2;
+
         private readonly CancellationTokenSource _signal = new();
         private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private bool _running;
         private bool _done;
+        private int _returnState;
+        private long _start;
+        private long _end;
 
         public Task Started => _started.Task;
 
         public abstract Task CompletionUntyped { get; }
+
+        /// <summary>Duración de la operación en el hilo (desde que empezó hasta que volvió).</summary>
+        public TimeSpan Elapsed
+        {
+            get
+            {
+                var start = Volatile.Read(ref _start);
+                var end = Volatile.Read(ref _end);
+                return start == 0 ? TimeSpan.Zero : time.GetElapsedTime(start, end == 0 ? time.GetTimestamp() : end);
+            }
+        }
 
         protected Lock Gate { get; } = new();
 
@@ -335,6 +409,7 @@ internal sealed partial class SourceOperationRunner : IDisposable
                 _running = true;
             }
 
+            Volatile.Write(ref _start, time.GetTimestamp());
             _started.TrySetResult();
             return true;
         }
@@ -372,6 +447,12 @@ internal sealed partial class SourceOperationRunner : IDisposable
             _started.TrySetException(exception);
         }
 
+        /// <summary>El que espera la da por abandonada; <see langword="false"/> si ya había vuelto (no se abandona).</summary>
+        public bool TryMarkAbandoned() => Interlocked.CompareExchange(ref _returnState, AbandonedState, Running) == Running;
+
+        /// <summary>El hilo ha vuelto de la operación; <see langword="true"/> si se había dado por abandonada.</summary>
+        public bool MarkReturned() => Interlocked.CompareExchange(ref _returnState, Returned, Running) == AbandonedState;
+
         public void RequestCancel(SourceOperationRunner runner)
         {
             lock (Gate)
@@ -402,6 +483,7 @@ internal sealed partial class SourceOperationRunner : IDisposable
 
         protected void MarkDone()
         {
+            Volatile.Write(ref _end, time.GetTimestamp());
             lock (Gate)
             {
                 _running = false;
@@ -415,7 +497,7 @@ internal sealed partial class SourceOperationRunner : IDisposable
         protected abstract void SetCanceled();
     }
 
-    private sealed class WorkItem<T>(Func<CancellationToken, T> operation, ISourceHandle? target) : WorkItem(target)
+    private sealed class WorkItem<T>(Func<CancellationToken, T> operation, ISourceHandle? target, TimeProvider time) : WorkItem(target, time)
     {
         private readonly TaskCompletionSource<T> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
 

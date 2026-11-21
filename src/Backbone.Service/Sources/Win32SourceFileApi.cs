@@ -1,52 +1,91 @@
 using System.Runtime.InteropServices;
+using Backbone.Service.Os;
 using Microsoft.Win32.SafeHandles;
-using static Backbone.Service.Os.NativeMethods.SourceIo;
+using N = Backbone.Service.Os.NativeMethods;
+using R = Backbone.Service.Os.NativeMethods.Resolution;
+using S = Backbone.Service.Os.NativeMethods.SourceIo;
 
 namespace Backbone.Service.Sources;
 
-/// <summary>Implementación real de <see cref="ISourceFileApi"/> (Win32, §8.2).</summary>
+/// <summary>
+/// Implementación real de <see cref="ISourceFileApi"/> (§8.2 "Apertura relativa", ADR-18, ADR-21). Toda apertura pasa por
+/// <see cref="SourceOpen.Open"/>: <c>NtCreateFile</c> de solo lectura con <c>FILE_OPEN</c>,
+/// <c>FILE_OPEN_FOR_BACKUP_INTENT | FILE_COMPLETE_IF_OPLOCKED</c> y SQOS de identificación; los hijos, relativos al handle
+/// de su carpeta padre y con un solo componente.
+/// </summary>
 internal sealed class Win32SourceFileApi : ISourceFileApi
 {
-    public ISourceHandle Open(string win32Path, SourceOpenMode mode, CancellationToken timeoutSignal)
-    {
-        ArgumentException.ThrowIfNullOrEmpty(win32Path);
-        var (access, flags) = mode switch
-        {
-            SourceOpenMode.Directory => (FileListDirectory | FileReadAttributes | Synchronize, 0u),
-            SourceOpenMode.Metadata => (FileReadAttributes | Synchronize, 0u),
-            SourceOpenMode.Content => (GenericRead, FileFlagOverlapped | FileFlagSequentialScan),
-            _ => throw new ArgumentOutOfRangeException(nameof(mode)),
-        };
+    internal const uint DirectoryAccess = N.FileListDirectory | N.FileReadAttributes | N.Synchronize;
+    internal const uint MetadataAccess = N.FileReadAttributes | N.Synchronize;
+    internal const uint ContentAccess = N.GenericRead;
 
-        var handle = CreateFile(
-            win32Path,
-            access,
-            FileShareReadWrite,
-            0,
-            OpenExisting,
-            FileFlagOpenReparsePoint | FileFlagBackupSemantics | flags,
-            0);
-        if (handle.IsInvalid)
+    /// <summary>Carpetas: compartición de lectura, escritura <b>y borrado</b> (§8.2 "Caché de carpetas").</summary>
+    internal const uint DirectoryShare = N.FileShareRead | N.FileShareWrite | N.FileShareDelete;
+
+    /// <summary>Archivos: sin <c>FILE_SHARE_DELETE</c> mientras se leen (nadie puede renombrarlos ni sustituirlos).</summary>
+    internal const uint FileShare = N.FileShareRead | N.FileShareWrite;
+
+    internal const uint DirectoryOptions = R.FileOpenReparsePoint | S.FileDirectoryFile | R.FileSynchronousIoNonAlert;
+    internal const uint MetadataOptions = R.FileOpenReparsePoint | R.FileSynchronousIoNonAlert;
+    internal const uint ContentOptions = R.FileOpenReparsePoint | S.FileNonDirectoryFile | S.FileSequentialOnly;
+
+    /// <summary>Reapertura de la lista blanca: <b>sin</b> <c>FILE_OPEN_REPARSE_POINT</c>, E/S asíncrona.</summary>
+    internal const uint ReOpenOptions = S.FileNonDirectoryFile | S.FileSequentialOnly;
+
+    public ISourceHandle OpenVolumeRoot(string ntRootPath, CancellationToken timeoutSignal)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(ntRootPath);
+        if (!ntRootPath.StartsWith('\\') || !ntRootPath.EndsWith('\\'))
         {
-            var error = Marshal.GetLastPInvokeError();
-            handle.Dispose();
-            throw new SourceFileApiException(error, "CreateFile");
+            throw new ArgumentException("The volume root must be an absolute NT path ending with a backslash.", nameof(ntRootPath));
         }
 
-        return new Win32SourceHandle(handle, mode == SourceOpenMode.Content);
+        return Open(ntRootPath, null, SourceOpenMode.Directory);
+    }
+
+    public ISourceHandle OpenChild(ISourceHandle parent, string name, SourceOpenMode mode, CancellationToken timeoutSignal)
+    {
+        ArgumentNullException.ThrowIfNull(parent);
+        ArgumentException.ThrowIfNullOrEmpty(name);
+        if (parent is not Win32SourceHandle native)
+        {
+            throw new ArgumentException("The parent handle does not come from this API.", nameof(parent));
+        }
+
+        return Open(name, native.Handle, mode);
     }
 
     public uint GetPlaceholderState(FileAttributes attributes, uint reparseTag)
     {
         try
         {
-            return CfGetPlaceholderStateFromAttributeTag((uint)attributes, reparseTag);
+            return R.CfGetPlaceholderStateFromAttributeTag((uint)attributes, reparseTag);
         }
         catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
         {
             // Sin la Cloud Files API no se puede saber si el marcador está descargado: falla cerrado (solo en la nube).
-            return CfPlaceholderStateInvalid;
+            return R.CfPlaceholderStateInvalid;
         }
+    }
+
+    internal static (uint Access, uint Share, uint Options) Parameters(SourceOpenMode mode) => mode switch
+    {
+        SourceOpenMode.Directory => (DirectoryAccess, DirectoryShare, DirectoryOptions),
+        SourceOpenMode.Metadata => (MetadataAccess, FileShare, MetadataOptions),
+        SourceOpenMode.Content => (ContentAccess, FileShare, ContentOptions),
+        _ => throw new ArgumentOutOfRangeException(nameof(mode)),
+    };
+
+    internal static Win32SourceHandle Open(string name, SafeFileHandle? parent, SourceOpenMode mode)
+    {
+        var (access, share, options) = Parameters(mode);
+        var status = SourceOpen.Open(name, parent, access, share, options, out var handle);
+        if (status < 0)
+        {
+            throw new SourceFileApiException(N.RtlNtStatusToDosError(status), "NtCreateFile", status);
+        }
+
+        return new Win32SourceHandle(handle, overlapped: mode == SourceOpenMode.Content);
     }
 }
 
@@ -68,14 +107,13 @@ internal sealed class Win32SourceHandle(SafeFileHandle handle, bool overlapped) 
     /// <summary>Rangos por llamada a <c>FSCTL_QUERY_ALLOCATED_RANGES</c>.</summary>
     private const int RangesPerQuery = 64;
 
-    private bool _restart = true;
     private byte[]? _directoryBuffer;
 
     internal SafeFileHandle Handle => handle;
 
     public SourceAttributeTag GetAttributeTag(CancellationToken timeoutSignal)
     {
-        if (!GetFileInformationByHandleEx(handle, FileAttributeTagInfo, out FileAttributeTagInformation info, (uint)Marshal.SizeOf<FileAttributeTagInformation>()))
+        if (!N.GetFileInformationByHandleEx(handle, N.FileAttributeTagInfo, out N.FileAttributeTagInformation info, (uint)Marshal.SizeOf<N.FileAttributeTagInformation>()))
         {
             throw new SourceFileApiException(Marshal.GetLastPInvokeError(), "GetFileInformationByHandleEx(FileAttributeTagInfo)");
         }
@@ -87,9 +125,9 @@ internal sealed class Win32SourceHandle(SafeFileHandle handle, bool overlapped) 
     {
         var flags = format switch
         {
-            FinalPathFormat.Nt => VolumeNameNt,
-            FinalPathFormat.Dos => VolumeNameDos,
-            FinalPathFormat.Guid => VolumeNameGuid,
+            FinalPathFormat.Nt => S.FileNameNormalizedVolumeNameNt,
+            FinalPathFormat.Dos => N.FileNameNormalizedVolumeNameDos,
+            FinalPathFormat.Guid => N.FileNameNormalizedVolumeNameGuid,
             _ => throw new ArgumentOutOfRangeException(nameof(format)),
         };
 
@@ -99,7 +137,7 @@ internal sealed class Win32SourceHandle(SafeFileHandle handle, bool overlapped) 
             uint length;
             fixed (char* pointer = buffer)
             {
-                length = GetFinalPathNameByHandle(handle, pointer, (uint)buffer.Length, flags);
+                length = N.GetFinalPathNameByHandle(handle, pointer, (uint)buffer.Length, flags);
             }
 
             if (length == 0)
@@ -114,7 +152,7 @@ internal sealed class Win32SourceHandle(SafeFileHandle handle, bool overlapped) 
 
             if (length > short.MaxValue + 1)
             {
-                throw new SourceFileApiException(ErrorFilenameExcedRange, "GetFinalPathNameByHandle");
+                throw new SourceFileApiException(S.ErrorFilenameExcedRange, "GetFinalPathNameByHandle");
             }
 
             buffer = new char[length];
@@ -123,7 +161,7 @@ internal sealed class Win32SourceHandle(SafeFileHandle handle, bool overlapped) 
 
     public SourceFileId GetFileId(CancellationToken timeoutSignal)
     {
-        if (!GetFileInformationByHandleEx(handle, FileIdInfo, out FileIdInformation info, (uint)Marshal.SizeOf<FileIdInformation>()))
+        if (!S.GetFileInformationByHandleEx(handle, S.FileIdInfo, out S.FileIdInformation info, (uint)Marshal.SizeOf<S.FileIdInformation>()))
         {
             throw new SourceFileApiException(Marshal.GetLastPInvokeError(), "GetFileInformationByHandleEx(FileIdInfo)");
         }
@@ -133,12 +171,12 @@ internal sealed class Win32SourceHandle(SafeFileHandle handle, bool overlapped) 
 
     public SourceFileTimes GetSizeAndTime(CancellationToken timeoutSignal)
     {
-        if (!GetFileInformationByHandleEx(handle, FileBasicInfo, out FileBasicInformation basic, (uint)Marshal.SizeOf<FileBasicInformation>()))
+        if (!S.GetFileInformationByHandleEx(handle, S.FileBasicInfo, out S.FileBasicInformation basic, (uint)Marshal.SizeOf<S.FileBasicInformation>()))
         {
             throw new SourceFileApiException(Marshal.GetLastPInvokeError(), "GetFileInformationByHandleEx(FileBasicInfo)");
         }
 
-        if (!GetFileInformationByHandleEx(handle, FileStandardInfo, out FileStandardInformation standard, (uint)Marshal.SizeOf<FileStandardInformation>()))
+        if (!N.GetFileInformationByHandleEx(handle, N.FileStandardInfo, out N.FileStandardInformation standard, (uint)Marshal.SizeOf<N.FileStandardInformation>()))
         {
             throw new SourceFileApiException(Marshal.GetLastPInvokeError(), "GetFileInformationByHandleEx(FileStandardInfo)");
         }
@@ -147,22 +185,27 @@ internal sealed class Win32SourceHandle(SafeFileHandle handle, bool overlapped) 
         return new SourceFileTimes(length, ToUtc(basic.LastWriteTime));
     }
 
-    public unsafe bool ReadDirectory(List<RawDirectoryEntry> entries, CancellationToken timeoutSignal)
+    public SourceDeviceInfo GetDeviceInfo(CancellationToken timeoutSignal)
+    {
+        var status = R.NtQueryVolumeInformationFile(handle, out _, out var info, (uint)Marshal.SizeOf<R.FileFsDeviceInformation>(), R.FileFsDeviceInformationClass);
+        if (status < 0)
+        {
+            throw new SourceFileApiException(N.RtlNtStatusToDosError(status), "NtQueryVolumeInformationFile(FileFsDeviceInformation)", status);
+        }
+
+        return new SourceDeviceInfo(info.DeviceType, info.Characteristics);
+    }
+
+    public bool ReadDirectory(List<RawDirectoryEntry> entries, bool restart, CancellationToken timeoutSignal)
     {
         ArgumentNullException.ThrowIfNull(entries);
         _directoryBuffer ??= GC.AllocateUninitializedArray<byte>(DirectoryBufferBytes, pinned: true);
         var buffer = _directoryBuffer;
-        var infoClass = _restart ? FileIdBothDirectoryRestartInfo : FileIdBothDirectoryInfo;
-        bool ok;
-        fixed (byte* pointer = buffer)
-        {
-            ok = GetFileInformationByHandleExBuffer(handle, infoClass, pointer, (uint)buffer.Length);
-        }
-
-        if (!ok)
+        var infoClass = restart ? S.FileIdBothDirectoryRestartInfo : S.FileIdBothDirectoryInfo;
+        if (!N.GetFileInformationByHandleExBuffer(handle, infoClass, buffer, (uint)buffer.Length))
         {
             var error = Marshal.GetLastPInvokeError();
-            if (error == ErrorNoMoreFiles)
+            if (error == N.ErrorNoMoreFiles)
             {
                 return false;
             }
@@ -170,20 +213,18 @@ internal sealed class Win32SourceHandle(SafeFileHandle handle, bool overlapped) 
             throw new SourceFileApiException(error, "GetFileInformationByHandleEx(FileIdBothDirectoryInfo)");
         }
 
-        _restart = false;
         ParseDirectoryBuffer(buffer, entries);
         return true;
     }
 
     public ISourceHandle ReOpenForContent(CancellationToken timeoutSignal)
     {
-        // Sin FILE_FLAG_OPEN_REPARSE_POINT: el filtro propietario de la etiqueta interviene y sirve el contenido (§8.2).
-        var reopened = ReOpenFile(handle, GenericRead, FileShareReadWrite, FileFlagBackupSemantics | FileFlagOverlapped | FileFlagSequentialScan);
-        if (reopened.IsInvalid)
+        // Relativo a este mismo handle con el nombre vacío (lo que hace ReOpenFile, sin volver a resolver la ruta) y sin
+        // FILE_OPEN_REPARSE_POINT: el filtro propietario de la etiqueta interviene y sirve el contenido (§8.2, punto 2).
+        var status = SourceOpen.Open(string.Empty, handle, Win32SourceFileApi.ContentAccess, Win32SourceFileApi.FileShare, Win32SourceFileApi.ReOpenOptions, out var reopened);
+        if (status < 0)
         {
-            var error = Marshal.GetLastPInvokeError();
-            reopened.Dispose();
-            throw new SourceFileApiException(error, "ReOpenFile");
+            throw new SourceFileApiException(N.RtlNtStatusToDosError(status), "NtCreateFile(reopen)", status);
         }
 
         return new Win32SourceHandle(reopened, overlapped: true);
@@ -197,17 +238,17 @@ internal sealed class Win32SourceHandle(SafeFileHandle handle, bool overlapped) 
         }
 
         var covered = 0L;
-        var output = new FileAllocatedRangeBuffer[RangesPerQuery];
+        var output = new S.FileAllocatedRangeBuffer[RangesPerQuery];
         while (covered < length)
         {
-            var input = new FileAllocatedRangeBuffer { FileOffset = covered, Length = length - covered };
+            var input = new S.FileAllocatedRangeBuffer { FileOffset = covered, Length = length - covered };
             var (error, bytes) = QueryAllocatedRanges(ref input, output);
-            if (error is not 0 and not ErrorMoreData)
+            if (error is not 0 and not S.ErrorMoreData)
             {
                 throw new SourceFileApiException(error, "DeviceIoControl(FSCTL_QUERY_ALLOCATED_RANGES)");
             }
 
-            var count = (int)(bytes / (uint)sizeof(FileAllocatedRangeBuffer));
+            var count = (int)(bytes / (uint)sizeof(S.FileAllocatedRangeBuffer));
             if (count == 0)
             {
                 return false; // nada asignado en lo que queda
@@ -239,10 +280,10 @@ internal sealed class Win32SourceHandle(SafeFileHandle handle, bool overlapped) 
         return true;
     }
 
-    public void CancelIo() => CancelIoEx(handle, 0);
+    public void CancelIo() => S.CancelIoEx(handle, 0);
 
     public ValueTask<int> ReadAsync(Memory<byte> buffer, long fileOffset, CancellationToken cancellationToken) =>
-        // Handle con FILE_FLAG_OVERLAPPED: RandomAccess cancela con CancelIoEx al cancelarse el token (§8.2 "Plazo").
+        // Handle de E/S asíncrona: RandomAccess cancela con CancelIoEx al cancelarse el token (§8.2 "Plazo").
         RandomAccess.ReadAsync(handle, buffer, fileOffset, cancellationToken);
 
     public void Dispose() => handle.Dispose();
@@ -254,7 +295,7 @@ internal sealed class Win32SourceHandle(SafeFileHandle handle, bool overlapped) 
         {
             if (offset < 0 || offset > buffer.Length - OffsetFileName)
             {
-                throw new SourceFileApiException(ErrorInvalidHandle, "FILE_ID_BOTH_DIR_INFO (malformed)");
+                throw new SourceFileApiException(S.ErrorInvalidHandle, "FILE_ID_BOTH_DIR_INFO (malformed)");
             }
 
             var entry = buffer[offset..];
@@ -262,7 +303,7 @@ internal sealed class Win32SourceHandle(SafeFileHandle handle, bool overlapped) 
             var nameBytes = BitConverter.ToUInt32(entry[OffsetFileNameLength..]);
             if (nameBytes % 2 != 0 || nameBytes > (uint)(entry.Length - OffsetFileName))
             {
-                throw new SourceFileApiException(ErrorInvalidHandle, "FILE_ID_BOTH_DIR_INFO (malformed)");
+                throw new SourceFileApiException(S.ErrorInvalidHandle, "FILE_ID_BOTH_DIR_INFO (malformed)");
             }
 
             var name = new string(MemoryMarshal.Cast<byte, char>(entry.Slice(OffsetFileName, (int)nameBytes)));
@@ -278,9 +319,9 @@ internal sealed class Win32SourceHandle(SafeFileHandle handle, bool overlapped) 
                 return;
             }
 
-            if (next < OffsetFileName || next > (uint)(buffer.Length - offset))
+            if (next < OffsetFileName || next > (uint)(buffer.Length - offset) || next % 8 != 0)
             {
-                throw new SourceFileApiException(ErrorInvalidHandle, "FILE_ID_BOTH_DIR_INFO (malformed)");
+                throw new SourceFileApiException(S.ErrorInvalidHandle, "FILE_ID_BOTH_DIR_INFO (malformed)");
             }
 
             offset += (int)next;
@@ -295,17 +336,17 @@ internal sealed class Win32SourceHandle(SafeFileHandle handle, bool overlapped) 
     /// bajo a 1 para que la finalización no vaya al puerto de E/S del grupo de subprocesos, y se espera con
     /// <c>GetOverlappedResult</c> (lo desbloquea <c>CancelIoEx</c> si vence el plazo).
     /// </summary>
-    private unsafe (int Error, uint Bytes) QueryAllocatedRanges(ref FileAllocatedRangeBuffer input, FileAllocatedRangeBuffer[] output)
+    private unsafe (int Error, uint Bytes) QueryAllocatedRanges(ref S.FileAllocatedRangeBuffer input, S.FileAllocatedRangeBuffer[] output)
     {
-        var inputSize = (uint)sizeof(FileAllocatedRangeBuffer);
-        var outputSize = (uint)(output.Length * sizeof(FileAllocatedRangeBuffer));
-        fixed (FileAllocatedRangeBuffer* inPointer = &input)
-        fixed (FileAllocatedRangeBuffer* outPointer = output)
+        var inputSize = (uint)sizeof(S.FileAllocatedRangeBuffer);
+        var outputSize = (uint)(output.Length * sizeof(S.FileAllocatedRangeBuffer));
+        fixed (S.FileAllocatedRangeBuffer* inPointer = &input)
+        fixed (S.FileAllocatedRangeBuffer* outPointer = output)
         {
             if (!overlapped)
             {
                 uint returned = 0;
-                var done = DeviceIoControl(handle, FsctlQueryAllocatedRanges, inPointer, inputSize, outPointer, outputSize, &returned, null);
+                var done = S.DeviceIoControlOverlapped(handle, S.FsctlQueryAllocatedRanges, inPointer, inputSize, outPointer, outputSize, &returned, null);
                 return (done ? 0 : Marshal.GetLastPInvokeError(), returned);
             }
 
@@ -314,10 +355,10 @@ internal sealed class Win32SourceHandle(SafeFileHandle handle, bool overlapped) 
             try
             {
                 native->EventHandle = completed.SafeWaitHandle.DangerousGetHandle() | 1;
-                if (!DeviceIoControl(handle, FsctlQueryAllocatedRanges, inPointer, inputSize, outPointer, outputSize, null, native))
+                if (!S.DeviceIoControlOverlapped(handle, S.FsctlQueryAllocatedRanges, inPointer, inputSize, outPointer, outputSize, null, native))
                 {
                     var error = Marshal.GetLastPInvokeError();
-                    if (error is not ErrorIoPending and not ErrorMoreData)
+                    if (error is not S.ErrorIoPending and not S.ErrorMoreData)
                     {
                         return (error, 0);
                     }
@@ -325,7 +366,7 @@ internal sealed class Win32SourceHandle(SafeFileHandle handle, bool overlapped) 
 
                 // Con OVERLAPPED, los bytes devueltos se leen siempre de GetOverlappedResult. Espera sin límite: este método
                 // corre en el hilo de SourceOperationRunner, que lo desbloquea con CancelIoEx si vence el plazo.
-                return GetOverlappedResult(handle, native, out var transferred, wait: true)
+                return S.GetOverlappedResult(handle, native, out var transferred, wait: true)
                     ? (0, transferred)
                     : (Marshal.GetLastPInvokeError(), transferred);
             }

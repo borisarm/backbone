@@ -16,6 +16,7 @@ public enum FakeBlockAt
     FileId = 7,
     Metadata = 8,
     AllocatedRanges = 9,
+    Device = 10,
 }
 
 /// <summary>Operación sobre un handle simulado en la que se puede inyectar un fallo.</summary>
@@ -29,6 +30,7 @@ public enum FakeOp
     ReadDirectory = 5,
     ReOpen = 6,
     AllocatedRanges = 7,
+    Device = 8,
 }
 
 /// <summary>Cómo se bloquea: atendiendo la cancelación o sin atenderla (un controlador que no responde, R12).</summary>
@@ -72,6 +74,12 @@ internal sealed class FakeNode
 
     public bool FullyAllocated { get; set; } = true;
 
+    /// <summary><c>FILE_FS_DEVICE_INFORMATION</c> que da el handle (por defecto, un disco local).</summary>
+    public SourceDeviceInfo Device { get; set; } = new(SourceDeviceInfo.FileDeviceDisk, 0);
+
+    /// <summary>Atributos que se ven en la segunda lectura de <c>FileAttributeTagInfo</c> del mismo handle (B-1).</summary>
+    public Func<int, SourceAttributeTag?>? AttributeTagOnCall { get; set; }
+
     /// <summary>Estado del marcador de nube (<c>CF_PLACEHOLDER_STATE</c>).</summary>
     public uint PlaceholderState { get; set; } = 0x1 | 0x8;
 
@@ -112,6 +120,9 @@ internal sealed class FakeSourceFileApi : ISourceFileApi, IDisposable
     public const string OpenRoot = @"\\?\C:\src";
     public const string RootFinalNt = @"\Device\HarddiskVolume3\src";
 
+    /// <summary>Raíz NT del volumen C: simulado.</summary>
+    public const string VolumeNtRoot = @"\??\C:\";
+
     private readonly ConcurrentDictionary<string, FakeNode> _nodes = new(StringComparer.OrdinalIgnoreCase);
     private readonly ManualResetEventSlim _release = new(false);
     private int _openHandles;
@@ -119,14 +130,29 @@ internal sealed class FakeSourceFileApi : ISourceFileApi, IDisposable
 
     public FakeSourceFileApi()
     {
+        Volume = AddNode(@"\\?\C:", @"\Device\HarddiskVolume3\", FileAttributes.Directory | FileAttributes.Hidden | FileAttributes.System);
+        VolumeRoots[VolumeNtRoot] = Volume;
         Root = AddNode(OpenRoot, RootFinalNt, FileAttributes.Directory);
     }
 
+    /// <summary>Raíz del volumen C: simulado (<c>\??\C:\</c>).</summary>
+    public FakeNode Volume { get; }
+
     public FakeNode Root { get; }
+
+    /// <summary>Raíces de volumen que se pueden abrir por ruta NT, y su nodo.</summary>
+    public ConcurrentDictionary<string, FakeNode> VolumeRoots { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public int OpenHandles => Volatile.Read(ref _openHandles);
 
+    /// <summary>Aperturas relativas (<see cref="OpenChild"/>): ruta del hijo y modo.</summary>
     public ConcurrentQueue<(string Path, SourceOpenMode Mode)> Opens { get; } = new();
+
+    /// <summary>Aperturas de raíces de volumen por ruta NT (<see cref="OpenVolumeRoot"/>).</summary>
+    public ConcurrentQueue<string> VolumeOpens { get; } = new();
+
+    /// <summary>Padres usados en cada apertura relativa (ruta del padre, nombre).</summary>
+    public ConcurrentQueue<(string Parent, string Name)> RelativeOpens { get; } = new();
 
     public ConcurrentQueue<string> ReOpens { get; } = new();
 
@@ -178,13 +204,41 @@ internal sealed class FakeSourceFileApi : ISourceFileApi, IDisposable
         return node;
     }
 
-    public ISourceHandle Open(string win32Path, SourceOpenMode mode, CancellationToken timeoutSignal)
+    public ISourceHandle OpenVolumeRoot(string ntRootPath, CancellationToken timeoutSignal)
+    {
+        VolumeOpens.Enqueue(ntRootPath);
+        if (!VolumeRoots.TryGetValue(ntRootPath, out var node))
+        {
+            throw new SourceFileApiException(3, "NtCreateFile", unchecked((int)0xC000_003A));
+        }
+
+        node.ThrowIfFault(FakeOp.Open, "NtCreateFile");
+        return NewHandle(node, overlapped: false);
+    }
+
+    public ISourceHandle OpenChild(ISourceHandle parent, string name, SourceOpenMode mode, CancellationToken timeoutSignal)
+    {
+        if (parent is not FakeHandle parentHandle || parentHandle.IsDisposed)
+        {
+            throw new InvalidOperationException("The parent handle is not an open fake handle.");
+        }
+
+        if (name.Length == 0 || name.Contains('\\', StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("A relative open must name a single component.");
+        }
+
+        var win32Path = parentHandle.Node.Win32Path + "\\" + name;
+        RelativeOpens.Enqueue((parentHandle.Node.Win32Path, name));
+        return Open(win32Path, mode, timeoutSignal);
+    }
+
+    private FakeHandle Open(string win32Path, SourceOpenMode mode, CancellationToken timeoutSignal)
     {
         Opens.Enqueue((win32Path, mode));
         if (!_nodes.TryGetValue(win32Path, out var node))
         {
-            var parent = win32Path[..win32Path.LastIndexOf('\\')];
-            throw new SourceFileApiException(_nodes.ContainsKey(parent) ? 2 : 3, "CreateFile");
+            throw new SourceFileApiException(2, "NtCreateFile", unchecked((int)0xC000_0034));
         }
 
         if (node.BlockAt == FakeBlockAt.Open)
@@ -203,7 +257,18 @@ internal sealed class FakeSourceFileApi : ISourceFileApi, IDisposable
             throw new SourceFileApiException(node.OpenError, "CreateFile");
         }
 
-        node.ThrowIfFault(FakeOp.Open, "CreateFile");
+        node.ThrowIfFault(FakeOp.Open, "NtCreateFile");
+
+        // FILE_DIRECTORY_FILE y FILE_NON_DIRECTORY_FILE (§8.2 "Apertura relativa").
+        if (mode == SourceOpenMode.Directory && !node.IsDirectory)
+        {
+            throw new SourceFileApiException(267, "NtCreateFile", SourceFileApiException.StatusNotADirectory);
+        }
+
+        if (mode == SourceOpenMode.Content && node.IsDirectory)
+        {
+            throw new SourceFileApiException(5, "NtCreateFile", SourceFileApiException.StatusFileIsADirectory);
+        }
 
         return NewHandle(node, mode == SourceOpenMode.Content);
     }
@@ -264,14 +329,26 @@ internal sealed class FakeSourceFileApi : ISourceFileApi, IDisposable
         private List<RawDirectoryEntry>? _pending;
         private int _taken;
         private int _calls;
+        private int _tagCalls;
         private int _disposed;
 
         public bool Overlapped => overlapped;
 
+        public FakeNode Node => node;
+
+        public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+
         public SourceAttributeTag GetAttributeTag(CancellationToken timeoutSignal)
         {
             Gate(FakeBlockAt.Attributes, FakeOp.Attributes, "GetFileInformationByHandleEx(FileAttributeTagInfo)", timeoutSignal);
-            return new(node.Attributes, node.ReparseTag);
+            var call = Interlocked.Increment(ref _tagCalls);
+            return node.AttributeTagOnCall?.Invoke(call) ?? new(node.Attributes, node.ReparseTag);
+        }
+
+        public SourceDeviceInfo GetDeviceInfo(CancellationToken timeoutSignal)
+        {
+            Gate(FakeBlockAt.Device, FakeOp.Device, "NtQueryVolumeInformationFile", timeoutSignal);
+            return node.Device;
         }
 
         public string GetFinalPath(FinalPathFormat format, CancellationToken timeoutSignal)
@@ -309,8 +386,15 @@ internal sealed class FakeSourceFileApi : ISourceFileApi, IDisposable
             return new(node.IsDirectory ? 0 : node.Content.Length, node.LastWriteTimeUtc);
         }
 
-        public bool ReadDirectory(List<RawDirectoryEntry> entries, CancellationToken timeoutSignal)
+        public bool ReadDirectory(List<RawDirectoryEntry> entries, bool restart, CancellationToken timeoutSignal)
         {
+            ObjectDisposedException.ThrowIf(IsDisposed, this);
+            if (restart)
+            {
+                _pending = null;
+                _taken = 0;
+            }
+
             Interlocked.Increment(ref api._readDirectoryCalls);
             _calls++;
             if (node.BlockAt == FakeBlockAt.Enumerate)

@@ -121,7 +121,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
             Assert.Equal(0, _api.ReadCalls);
         }
 
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     private static readonly FileAttributes[] GridAttributes =
@@ -190,7 +190,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
         }
 
         Assert.True(disagreements.Count == 0, string.Join(Environment.NewLine, disagreements));
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     // ================================================================== Cambio de clase entre la enumeración y la apertura
@@ -238,7 +238,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
             Assert.Equal(0, _api.ReadCalls);
         }
 
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Theory]
@@ -261,7 +261,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
         var ex = await Assert.ThrowsAsync<SourceAccessException>(() => ListAsync(listed.FullPath));
         Assert.Equal(Enum.Parse<RunIssueCode>(expected), ex.Code);
         Assert.Equal(callsBefore, _api.ReadDirectoryCalls); // ni una llamada de enumeración sobre la carpeta cambiada
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Fact]
@@ -274,7 +274,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
 
         Assert.Equal(RunIssueCode.ReadError, (await Assert.ThrowsAsync<SourceAccessException>(() => ReadAllAsync(FakeSourceFileApi.Child("a")))).Code);
         Assert.Equal(RunIssueCode.ReadError, (await Assert.ThrowsAsync<SourceAccessException>(() => ListAsync(FakeSourceFileApi.Child("b")))).Code);
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
         Assert.Equal(0, _api.ReadDirectoryCalls);
     }
 
@@ -298,7 +298,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
 
         Assert.Equal(RunIssueCode.CloudOnlySkipped, ex.Code);
         Assert.Equal(0, _api.ReadDirectoryCalls);
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Fact]
@@ -315,7 +315,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
         Assert.Equal(
             new[] { ("descargado.bin", SourceEntryKind.Content), ("nube.bin", SourceEntryKind.CloudOnly), ("vacia", SourceEntryKind.CloudOnly) },
             entries.OrderBy(e => e.Name, StringComparer.Ordinal).Select(e => (e.Name, SourceAttributes.Classify(e))));
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
         Assert.Equal(0, _api.ReadCalls);
     }
 
@@ -372,7 +372,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
 
         Assert.Equal(RunIssueCode.CloudOnlySkipped, ex.Code);
         Assert.Equal(0, _api.ReadCalls); // ni un solo bloque pedido al sistema
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Fact]
@@ -387,7 +387,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
         Assert.Equal(content, await ReadAllAsync(FakeSourceFileApi.Child("sin-filtro.bin")));
 
         Assert.Equal<IEnumerable<long>>([12_345L, 12_345L], _api.AllocatedRangeLengths);
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Theory]
@@ -399,7 +399,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
         _api.AddFile("vacio.bin", new byte[length], tag == 0 ? FileAttributes.Archive : Reparse, tag);
 
         Assert.Empty(await ReadAllAsync(FakeSourceFileApi.Child("vacio.bin")));
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     // ================================================================== Lista blanca: segundo handle
@@ -423,7 +423,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
 
         Assert.Equal(RunIssueCode.ReparsePointSkipped, ex.Code);
         Assert.Equal(0, _api.ReadCalls);
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Theory]
@@ -453,7 +453,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
             Assert.Equal(0, _api.ReadCalls);
         }
 
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Fact]
@@ -467,7 +467,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
         Assert.Equal(RunIssueCode.ReparsePointSkipped, (await Assert.ThrowsAsync<SourceAccessException>(() => ReadAllAsync(FakeSourceFileApi.Child("a.bin")))).Code);
         Assert.Equal(RunIssueCode.ReparsePointSkipped, (await Assert.ThrowsAsync<SourceAccessException>(() => ReadAllAsync(FakeSourceFileApi.Child("b.bin")))).Code);
         Assert.Equal(0, _api.ReadCalls);
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Fact]
@@ -486,7 +486,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
 
         Assert.Equal(RunIssueCode.ReparsePointSkipped, ex.Code);
         Assert.Equal(0, _api.ReadCalls);
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(fs.HeldHandles, _api.OpenHandles);
     }
 
     [Theory]
@@ -511,7 +511,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
 
         Assert.Equal(0, _api.ReadCalls);
         Assert.Empty(_api.AllocatedRangeQueries); // con un error distinto de ERROR_CANT_ACCESS_FILE no se lee el flujo crudo
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Fact]
@@ -523,7 +523,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
 
         await using var stream = await _fs.OpenReadAsync(FakeSourceFileApi.Child("nube.bin"), Ct);
 
-        Assert.Equal(1, _api.OpenHandles); // solo el primero
+        Assert.Equal(1 + _fs.HeldHandles, _api.OpenHandles); // solo el primero
         Assert.Equal(new[] { node.Win32Path }, _api.AllocatedRangeQueries.ToArray());
         Assert.Equal(0, _api.ReadCalls); // la comprobación va antes de leer
         Assert.Equal(content, await ReadToEndAsync(stream));
@@ -582,7 +582,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
                 break;
         }
 
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
         Assert.False(_fs.IsAbandoned);
         Assert.Equal(0, _api.ReadCalls);
         Assert.Equal(new byte[] { 7, 8 }, await ReadAllAsync(FakeSourceFileApi.Child("bien.bin")));
@@ -611,7 +611,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
         });
 
         Assert.True(ex is SourceAccessException || ex.InnerException is UnauthorizedAccessException);
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Fact]
@@ -627,7 +627,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
         var entries = await ListAsync(FakeSourceFileApi.Child("d"));
 
         Assert.Equal(Enumerable.Range(0, 7).Select(i => $"f{i}.txt"), entries.Select(e => e.Name).Order(StringComparer.Ordinal));
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
         Assert.True(_api.ReadDirectoryCalls >= 4);
     }
 
@@ -654,7 +654,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
 
         Assert.Equal(RunIssueCode.ReadError, ex.Code);
         Assert.Equal(2, delivered.Count); // el primer lote solo trae "." y ".."; el segundo, dos entradas; el tercero falla
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Fact]
@@ -672,7 +672,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
             break;
         }
 
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
 
         using var cancellation = new CancellationTokenSource();
         var seen = 0;
@@ -687,7 +687,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
             }
         });
 
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
         Assert.False(_fs.IsAbandoned);
     }
 
@@ -723,12 +723,12 @@ public sealed class SourceFileSystemQaTests : IDisposable
         node.ReadFault = offset => offset >= 8192 ? new SourceFileApiException(error, "ReadFile") : null;
 
         var stream = await _fs.OpenReadAsync(FakeSourceFileApi.Child("a.bin"), Ct);
-        Assert.Equal(2, _api.OpenHandles);
+        Assert.Equal(2 + _fs.HeldHandles, _api.OpenHandles);
         var ex = await Assert.ThrowsAsync<SourceAccessException>(() => ReadToEndAsync(stream));
         await stream.DisposeAsync();
 
         Assert.Equal(expected, ex.Code);
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Fact]
@@ -801,7 +801,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
             Assert.Equal(0, _api.ReadDirectoryCalls);
         }
 
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Theory]
@@ -815,7 +815,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
         var ex = await Assert.ThrowsAnyAsync<Exception>(() => ListAsync(FakeSourceFileApi.ReadPath));
 
         Assert.IsType(expected, ex);
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Fact]
@@ -824,7 +824,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
         _api.Root.Attributes = FileAttributes.Archive;
 
         Assert.Equal(RunIssueCode.ReadError, (await Assert.ThrowsAsync<SourceAccessException>(() => ListAsync(FakeSourceFileApi.ReadPath))).Code);
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     [Fact]
@@ -839,7 +839,7 @@ public sealed class SourceFileSystemQaTests : IDisposable
         Assert.Equal(RunIssueCode.ReparsePointSkipped, ex.Code);
         Assert.Equal(new[] { FakeSourceFileApi.OpenRoot }, _api.Opens.Select(o => o.Path).ToArray()); // solo se abrió la raíz
         Assert.Equal(0, _api.ReadCalls);
-        Assert.Equal(0, _api.OpenHandles);
+        Assert.Equal(_fs.HeldHandles, _api.OpenHandles);
     }
 
     // ================================================================== Ayudas

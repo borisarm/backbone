@@ -52,7 +52,11 @@ internal sealed record SourceProtection(SourceProtectionKind Kind, string Protec
 /// carpetas apartadas reales <c>PD\Backbone.untrusted-*</c>, siendo <c>PD</c> la ruta final de <c>%ProgramData%</c>. Se
 /// calcula de nuevo en cada validación y al empezar cada ejecución (<see cref="ProtectedFolderResolver.Resolve"/>).
 /// </summary>
-/// <param name="ProgramDataPath">Ruta final de <c>%ProgramData%</c> (sin <c>\\?\</c>).</param>
+/// <param name="ProgramDataPath">Ruta final de <c>%ProgramData%</c> (sin <c>\\?\</c>), para los mensajes.</param>
+/// <param name="ProgramDataGuidPath">
+/// Ruta final de <c>%ProgramData%</c> en la forma <c>VOLUME_NAME_GUID</c> (<c>\\?\Volume{guid}\ProgramData</c>): la que se
+/// compara con la ruta final <c>VOLUME_NAME_GUID</c> de cada origen (I-5). Vacía si no se ha podido resolver.
+/// </param>
 /// <param name="DataFolderName">Nombre de la carpeta de datos (<c>Backbone</c>).</param>
 /// <param name="QuarantinedFolderNames">Nombres de las carpetas apartadas reales (como mucho 100).</param>
 /// <param name="IsComplete">
@@ -61,6 +65,7 @@ internal sealed record SourceProtection(SourceProtectionKind Kind, string Protec
 /// </param>
 internal sealed record ProtectedFolderSet(
     string ProgramDataPath,
+    string ProgramDataGuidPath,
     string DataFolderName,
     IReadOnlyList<string> QuarantinedFolderNames,
     bool IsComplete)
@@ -75,6 +80,10 @@ internal sealed record ProtectedFolderSet(
     /// Clasifica la <b>ruta final</b> de un origen (sin puntos de reanálisis, como la de
     /// <see cref="ILocalFileSystemInspector.ResolveFolder"/>), comparando por segmentos completos sin distinguir mayúsculas.
     /// </summary>
+    /// <param name="sourceGuidPath">
+    /// Ruta final del origen en la forma <c>VOLUME_NAME_GUID</c> (<see cref="LocalFolderInfo.GuidPath"/>): se compara con
+    /// <see cref="ProgramDataGuidPath"/>, nunca una letra con un GUID (I-5, §8.3 punto 2).
+    /// </param>
     /// <remarks>
     /// <list type="bullet">
     /// <item>Dentro: la ruta empieza por <c>PD</c> y el segmento siguiente es la carpeta de datos o empieza por el prefijo de
@@ -85,14 +94,20 @@ internal sealed record ProtectedFolderSet(
     /// <item>Contiene: <c>PD</c> es la ruta del origen o está dentro de ella. Si la lista está incompleta, falla cerrado.</item>
     /// </list>
     /// </remarks>
-    public SourceProtection Classify(string sourceFinalPath)
+    public SourceProtection Classify(string sourceGuidPath)
     {
-        ArgumentNullException.ThrowIfNull(sourceFinalPath);
-        var source = Segments(sourceFinalPath);
-        var programData = Segments(ProgramDataPath);
-        if (source.Length == 0 || programData.Length == 0)
+        ArgumentNullException.ThrowIfNull(sourceGuidPath);
+        var source = Segments(sourceGuidPath);
+        var programData = Segments(ProgramDataGuidPath);
+        if (source.Length == 0)
         {
             return SourceProtection.None;
+        }
+
+        if (programData.Length == 0)
+        {
+            // Sin la ruta de volumen de PD no se puede saber si el origen la contiene: falla cerrado.
+            return new SourceProtection(SourceProtectionKind.ProtectedFoldersUnknown, ProgramDataPath, []);
         }
 
         if (source.Length > programData.Length && StartsWith(source, programData))
@@ -173,6 +188,7 @@ internal sealed partial class ProtectedFolderResolver(ServicePaths paths, ILocal
         var parent = Path.GetDirectoryName(paths.Root) ?? paths.Root;
 
         string programData;
+        string programDataGuid;
         try
         {
             if (SourcePath.TryNormalize(parent, out var normalized) != SourcePathCheck.Ok)
@@ -187,11 +203,16 @@ internal sealed partial class ProtectedFolderResolver(ServicePaths paths, ILocal
             }
 
             programData = folder.FinalPath;
+            programDataGuid = folder.GuidPath;
+            if (programDataGuid.Length == 0)
+            {
+                throw new IOException($"The volume path of '{parent}' could not be obtained.");
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or Win32Exception)
         {
             LogProgramDataUnavailable(logger, ex, parent);
-            return new ProtectedFolderSet(parent, dataFolderName, [], IsComplete: false);
+            return new ProtectedFolderSet(parent, string.Empty, dataFolderName, [], IsComplete: false);
         }
 
         var prefix = dataFolderName + DataDirectoryGuard.QuarantineSuffix;
@@ -203,16 +224,16 @@ internal sealed partial class ProtectedFolderResolver(ServicePaths paths, ILocal
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or Win32Exception)
         {
             LogProgramDataUnavailable(logger, ex, programData);
-            return new ProtectedFolderSet(programData, dataFolderName, [], IsComplete: false);
+            return new ProtectedFolderSet(programData, programDataGuid, dataFolderName, [], IsComplete: false);
         }
 
         if (scan.LimitExceeded)
         {
             LogTooManyQuarantined(logger, MaxQuarantinedFolders, Path.Join(programData, prefix + "*"));
-            return new ProtectedFolderSet(programData, dataFolderName, [], IsComplete: false);
+            return new ProtectedFolderSet(programData, programDataGuid, dataFolderName, [], IsComplete: false);
         }
 
-        return new ProtectedFolderSet(programData, dataFolderName, scan.Names, IsComplete: true);
+        return new ProtectedFolderSet(programData, programDataGuid, dataFolderName, scan.Names, IsComplete: true);
     }
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "No se ha podido enumerar {ProgramData} para calcular las carpetas protegidas (§8.3); los orígenes que la contienen se rechazan.")]

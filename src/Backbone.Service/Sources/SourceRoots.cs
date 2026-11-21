@@ -22,12 +22,21 @@ internal sealed class SourceRoot
     private readonly Lock _gate = new();
     private string? _rootFinalNt;
 
-    public SourceRoot(BackupSource source, string readPath, string childBase, string openRoot, SourceRootKind kind, string expectedRootFinal, IReadOnlyList<string[]> exclusions)
+    public SourceRoot(
+        BackupSource source,
+        string readPath,
+        string childBase,
+        string volumeRoot,
+        string[] rootComponents,
+        SourceRootKind kind,
+        string expectedRootFinal,
+        IReadOnlyList<string[]> exclusions)
     {
         Source = source;
         ReadPath = readPath;
         ChildBase = childBase;
-        OpenRoot = openRoot;
+        VolumeRoot = volumeRoot;
+        RootComponents = rootComponents;
         Kind = kind;
         ExpectedRootFinal = expectedRootFinal;
         Exclusions = exclusions;
@@ -41,8 +50,15 @@ internal sealed class SourceRoot
     /// <summary><see cref="ReadPath"/> sin la barra final: la de los hijos es <c>ChildBase\nombre</c>.</summary>
     public string ChildBase { get; }
 
-    /// <summary>Ruta Win32 con la que se abre la raíz (<c>\\?\…</c>, admite rutas largas, RNF-09).</summary>
-    public string OpenRoot { get; }
+    /// <summary>
+    /// Ruta NT de la raíz del volumen o de la instantánea, la única que se abre por ruta (<c>\??\C:\</c>,
+    /// <c>\??\Volume{guid}\</c>, <c>\Device\HarddiskVolumeShadowCopy&lt;n&gt;\</c>); desde ella se abre cada componente de
+    /// <see cref="RootComponents"/> relativo al anterior (§8.2 "Apertura relativa").
+    /// </summary>
+    public string VolumeRoot { get; }
+
+    /// <summary>Componentes de la raíz del origen debajo de <see cref="VolumeRoot"/> (vacío si el origen es un volumen entero).</summary>
+    public IReadOnlyList<string> RootComponents { get; }
 
     public SourceRootKind Kind { get; }
 
@@ -86,9 +102,6 @@ internal sealed class SourceRoot
         }
     }
 
-    public string OpenPathFor(IReadOnlyList<string> relative) =>
-        relative.Count == 0 ? OpenRoot : SourceRoots.Join(OpenRoot, relative);
-
     public bool IsExcluded(IReadOnlyList<string> relative)
     {
         foreach (var exclusion in Exclusions)
@@ -128,6 +141,17 @@ internal readonly record struct ResolvedSourcePath(SourceRoot Root, string[] Rel
 /// por la raíz de un origen o tenga segmentos vacíos, <c>.</c> o <c>..</c> (y caracteres que ningún nombre enumerado puede
 /// tener, como <c>:</c>, que abriría un flujo alternativo).
 /// </summary>
+/// <remarks>
+/// Al crearla se rechaza con <see cref="ArgumentException"/> (error de programación del servicio: la ejecución termina
+/// <c>Failed</c>/<c>Internal</c>):
+/// <list type="bullet">
+/// <item><description>B-2: una raíz <c>\\?\GLOBALROOT\Device\&lt;dispositivo&gt;\…</c> cuyo dispositivo no sea
+/// <c>HarddiskVolumeShadowCopy&lt;n&gt;</c> ni <c>HarddiskVolume&lt;n&gt;</c> (<c>n</c> solo dígitos ASCII, sin ceros a la
+/// izquierda), o una instantánea que no esté entre las creadas para esta ejecución.</description></item>
+/// <item><description>I-4: una exclusión obligatoria vacía o con algún segmento vacío, <c>.</c>, <c>..</c> o no
+/// válido; nunca se descarta en silencio.</description></item>
+/// </list>
+/// </remarks>
 internal sealed class SourceRoots
 {
     private const string Win32Prefix = @"\\?\";
@@ -136,14 +160,20 @@ internal sealed class SourceRoots
 
     private readonly SourceRoot[] _roots;
 
-    public SourceRoots(IReadOnlyList<BackupSource> sources)
+    /// <param name="sources">Orígenes de la ejecución.</param>
+    /// <param name="snapshotDevices">
+    /// Dispositivos de las instantáneas VSS creadas para esta ejecución (<c>HarddiskVolumeShadowCopy&lt;n&gt;</c>); ninguno si
+    /// la copia es en vivo.
+    /// </param>
+    public SourceRoots(IReadOnlyList<BackupSource> sources, IReadOnlyCollection<string>? snapshotDevices = null)
     {
         ArgumentNullException.ThrowIfNull(sources);
+        var allowed = new HashSet<string>(snapshotDevices ?? [], StringComparer.OrdinalIgnoreCase);
         var roots = new List<SourceRoot>(sources.Count);
         foreach (var source in sources)
         {
             ArgumentNullException.ThrowIfNull(source, nameof(sources));
-            roots.Add(Create(source));
+            roots.Add(Create(source, allowed));
         }
 
         // La más larga primero, por si un origen está dentro de otro.
@@ -226,7 +256,35 @@ internal sealed class SourceRoots
     private static SourceAccessException InvalidPath() =>
         new(RunIssueCode.PathInvalid, "La ruta no pertenece a ningún origen de la copia o tiene segmentos no válidos.");
 
-    private static SourceRoot Create(BackupSource source)
+    /// <summary>
+    /// B-2: <c>HarddiskVolumeShadowCopy&lt;n&gt;</c> o <c>HarddiskVolume&lt;n&gt;</c>, con <c>n</c> solo dígitos ASCII decimales,
+    /// sin signo ni ceros a la izquierda.
+    /// </summary>
+    internal static bool IsAllowedDevice(string device, out bool isShadowCopy)
+    {
+        const string ShadowCopy = "HarddiskVolumeShadowCopy";
+        const string Volume = "HarddiskVolume";
+        isShadowCopy = device.StartsWith(ShadowCopy, StringComparison.OrdinalIgnoreCase);
+        var number = isShadowCopy
+            ? device.AsSpan(ShadowCopy.Length)
+            : device.StartsWith(Volume, StringComparison.OrdinalIgnoreCase) ? device.AsSpan(Volume.Length) : [];
+        if (number.IsEmpty || (number.Length > 1 && number[0] == '0') || number.Length > 10)
+        {
+            return false;
+        }
+
+        foreach (var c in number)
+        {
+            if (!char.IsAsciiDigit(c))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static SourceRoot Create(BackupSource source, HashSet<string> snapshotDevices)
     {
         var readPath = source.ReadPath;
         ArgumentException.ThrowIfNullOrEmpty(readPath, nameof(source));
@@ -256,9 +314,19 @@ internal sealed class SourceRoots
             fixedSegments = segments[..1];
             expected = Win32Prefix + JoinVolume(segments);
         }
-        else if (segments.Length >= 3 && segments[0].Equals("GLOBALROOT", StringComparison.OrdinalIgnoreCase)
-            && segments[1].Equals("Device", StringComparison.OrdinalIgnoreCase) && segments[2].Length > 0)
+        else if (segments.Length >= 1 && segments[0].Equals("GLOBALROOT", StringComparison.OrdinalIgnoreCase))
         {
+            if (segments.Length < 3 || !segments[1].Equals("Device", StringComparison.OrdinalIgnoreCase)
+                || !IsAllowedDevice(segments[2], out var isShadowCopy))
+            {
+                throw new ArgumentException($"The read path of source '{source.Alias}' names a device that is not a volume or a shadow copy.", nameof(source));
+            }
+
+            if (isShadowCopy && !snapshotDevices.Contains(segments[2]))
+            {
+                throw new ArgumentException($"The read path of source '{source.Alias}' names a shadow copy that was not created for this run.", nameof(source));
+            }
+
             kind = SourceRootKind.Device;
             fixedSegments = segments[..3];
             expected = "\\" + JoinVolume(segments[1..]);
@@ -282,21 +350,44 @@ internal sealed class SourceRoots
             }
         }
 
-        // La raíz de un volumen se abre con la barra final (\\?\C:\); sin ella se abriría el dispositivo del volumen.
-        var openRoot = Win32Prefix + (segments.Length == fixedSegments.Length ? string.Join('\\', segments) + "\\" : string.Join('\\', segments));
+        // La raíz del volumen se abre con la barra final (\??\C:\); sin ella se abriría el dispositivo del volumen.
+        var volumeRoot = kind == SourceRootKind.Device
+            ? "\\" + string.Join('\\', fixedSegments[1..]) + "\\"
+            : "\\??\\" + string.Join('\\', fixedSegments) + "\\";
+        var rootComponents = segments[fixedSegments.Length..];
 
         ArgumentNullException.ThrowIfNull(source.MandatoryExclusions, nameof(source));
         var exclusions = new List<string[]>(source.MandatoryExclusions.Count);
         foreach (var exclusion in source.MandatoryExclusions)
         {
-            var parts = exclusion.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length > 0)
+            exclusions.Add(ParseExclusion(source, exclusion));
+        }
+
+        return new SourceRoot(source, readPath, childBase, volumeRoot, rootComponents, kind, expected, exclusions);
+    }
+
+    /// <summary>
+    /// I-4: segmentos de una exclusión obligatoria (separador <c>\</c>, o <c>/</c> como el motor). Vacía, o con un segmento
+    /// vacío, <c>.</c>, <c>..</c> o no válido, es un error de programación: una exclusión perdida dejaría leer la carpeta de
+    /// datos.
+    /// </summary>
+    private static string[] ParseExclusion(BackupSource source, string? exclusion)
+    {
+        if (string.IsNullOrEmpty(exclusion))
+        {
+            throw new ArgumentException($"A mandatory exclusion of source '{source.Alias}' is empty.", nameof(source));
+        }
+
+        var parts = exclusion.Split(['\\', '/']);
+        foreach (var part in parts)
+        {
+            if (!IsValidSegment(part))
             {
-                exclusions.Add(parts);
+                throw new ArgumentException($"A mandatory exclusion of source '{source.Alias}' has an empty or invalid segment.", nameof(source));
             }
         }
 
-        return new SourceRoot(source, readPath, childBase, openRoot, kind, expected, exclusions);
+        return parts;
     }
 
     /// <summary>Une los segmentos; si solo está el volumen, con la barra final (como da <c>GetFinalPathNameByHandle</c>).</summary>

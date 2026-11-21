@@ -11,6 +11,52 @@ public sealed class SourceRootsTests
     private static SourceRoots Roots(params string[] readPaths) =>
         new([.. readPaths.Select((p, i) => new BackupSource("o" + i, p, p))]);
 
+    private static SourceRoots Snapshot(string[] devices, params string[] readPaths) =>
+        new([.. readPaths.Select((p, i) => new BackupSource("o" + i, p, p))], devices);
+
+    /// <summary>B-2: solo instantáneas (<c>HarddiskVolumeShadowCopy&lt;n&gt;</c>) o volúmenes (<c>HarddiskVolume&lt;n&gt;</c>).</summary>
+    [Theory]
+    [InlineData(@"\\?\GLOBALROOT\Device\Mup\nas\recurso")]
+    [InlineData(@"\\?\GLOBALROOT\Device\LanmanRedirector\nas\recurso")]
+    [InlineData(@"\\?\GLOBALROOT\Device\NamedPipe\x")]
+    [InlineData(@"\\?\GLOBALROOT\Device\Harddisk0\Partition1\Users")]
+    [InlineData(@"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy07\Users")]
+    [InlineData(@"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy+7\Users")]
+    [InlineData(@"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy\Users")]
+    [InlineData(@"\\?\GLOBALROOT\Device\HarddiskVolume٣\Users")]
+    [InlineData(@"\\?\GLOBALROOT\Device\HarddiskVolume03\Users")]
+    [InlineData(@"\\?\GLOBALROOT\Users")]
+    [InlineData(@"\\?\GLOBALROOT\Device")]
+    public void B2_Device_roots_other_than_a_volume_or_a_shadow_copy_are_a_programming_error(string readPath) =>
+        Assert.Throws<ArgumentException>(() => Snapshot(["HarddiskVolumeShadowCopy7", "HarddiskVolumeShadowCopy07"], readPath));
+
+    [Fact]
+    public void B2_A_shadow_copy_must_be_one_created_for_this_run()
+    {
+        Assert.Throws<ArgumentException>(() => Roots(@"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy7\Users"));
+        Assert.Throws<ArgumentException>(() => Snapshot(["HarddiskVolumeShadowCopy8"], @"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy7\Users"));
+        Assert.Single(Snapshot(["harddiskvolumeshadowcopy7"], @"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy7\Users").Roots);
+        Assert.Equal(@"\Device\HarddiskVolume4\", Roots(@"\\?\GLOBALROOT\Device\HarddiskVolume4\Datos").Roots[0].VolumeRoot);
+    }
+
+    /// <summary>I-4: una exclusión obligatoria que no se puede interpretar nunca se descarta en silencio.</summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData(@"\")]
+    [InlineData(@"ProgramData\")]
+    [InlineData(@"\ProgramData\Backbone")]
+    [InlineData(@"ProgramData\\Backbone")]
+    [InlineData(@"ProgramData\.\Backbone")]
+    [InlineData(@"ProgramData\..\Backbone")]
+    [InlineData(@"C:\ProgramData\Backbone")]
+    [InlineData(@"ProgramData\Backbone:secreto")]
+    public void I4_An_empty_or_malformed_mandatory_exclusion_is_a_programming_error(string exclusion)
+    {
+        var source = new BackupSource("c", @"C:\", @"C:\") { MandatoryExclusions = [exclusion] };
+
+        Assert.Throws<ArgumentException>(() => new SourceRoots([source]));
+    }
+
     [Fact]
     public void The_root_and_its_children_resolve_to_their_relative_path()
     {
@@ -21,7 +67,8 @@ public sealed class SourceRootsTests
 
         Assert.True(root.IsRoot);
         Assert.Equal(["Documentos", "a.txt"], child.Relative);
-        Assert.Equal(@"\\?\C:\Users\ana\Documentos\a.txt", child.Root.OpenPathFor(child.Relative));
+        Assert.Equal(@"\??\C:\", child.Root.VolumeRoot);
+        Assert.Equal(["Users", "ana"], child.Root.RootComponents);
         Assert.Equal(@"\\?\C:\Users\ana", root.Root.ExpectedRootFinal);
         Assert.Equal(SourceRootKind.DriveLetter, root.Root.Kind);
     }
@@ -53,20 +100,22 @@ public sealed class SourceRootsTests
         var root = roots.Resolve(@"C:\");
 
         Assert.Equal(@"C:\Windows", SourceRoots.ChildPath(root, "Windows"));
-        Assert.Equal(@"\\?\C:\", root.Root.OpenRoot);
+        Assert.Equal(@"\??\C:\", root.Root.VolumeRoot);
+        Assert.Empty(root.Root.RootComponents);
         Assert.Equal(["Windows"], roots.Resolve(@"C:\Windows").Relative);
     }
 
     [Fact]
     public void A_shadow_copy_root_is_compared_with_its_nt_device_path()
     {
-        var roots = Roots(@"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy7\Users\ana");
+        var roots = Snapshot(["HarddiskVolumeShadowCopy7"], @"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy7\Users\ana");
         var root = roots.Resolve(@"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy7\Users\ana");
 
         Assert.Equal(SourceRootKind.Device, root.Root.Kind);
         Assert.Equal(@"\Device\HarddiskVolumeShadowCopy7\Users\ana", root.Root.ExpectedRootFinal);
-        Assert.Equal(@"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy7\Users\ana\x", root.Root.OpenPathFor(["x"]));
-        Assert.Equal(@"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy7\", Roots(@"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy7").Roots[0].OpenRoot);
+        Assert.Equal(@"\Device\HarddiskVolumeShadowCopy7\", root.Root.VolumeRoot);
+        Assert.Equal(["Users", "ana"], root.Root.RootComponents);
+        Assert.Equal(@"\Device\HarddiskVolumeShadowCopy7\", Snapshot(["HarddiskVolumeShadowCopy7"], @"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy7").Roots[0].VolumeRoot);
     }
 
     [Fact]

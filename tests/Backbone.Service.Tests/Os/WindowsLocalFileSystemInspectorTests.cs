@@ -417,7 +417,7 @@ public sealed class WindowsLocalFileSystemInspectorTests : IDisposable
         using var guard = TestIo.Guard();
         var protection = new ProtectedFolderResolver(new ServicePaths(dataRoot), _inspector, NullLogger<ProtectedFolderResolver>.Instance)
             .Resolve(guard)
-            .Classify(Resolve(_temp.Path).FinalPath);
+            .Classify(Resolve(_temp.Path).GuidPath);
         Assert.Equal([@"PD\Backbone", @"PD\Backbone.untrusted-0123"], protection.MandatoryExclusions);
     }
 
