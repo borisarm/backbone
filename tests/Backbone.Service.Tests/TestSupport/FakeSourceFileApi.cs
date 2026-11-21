@@ -11,6 +11,24 @@ public enum FakeBlockAt
     Enumerate = 2,
     Read = 3,
     ReOpen = 4,
+    Attributes = 5,
+    FinalPath = 6,
+    FileId = 7,
+    Metadata = 8,
+    AllocatedRanges = 9,
+}
+
+/// <summary>Operación sobre un handle simulado en la que se puede inyectar un fallo.</summary>
+public enum FakeOp
+{
+    Open = 0,
+    Attributes = 1,
+    FinalPath = 2,
+    FileId = 3,
+    Metadata = 4,
+    ReadDirectory = 5,
+    ReOpen = 6,
+    AllocatedRanges = 7,
 }
 
 /// <summary>Cómo se bloquea: atendiendo la cancelación o sin atenderla (un controlador que no responde, R12).</summary>
@@ -18,6 +36,9 @@ internal enum FakeBlockMode
 {
     HonorCancellation = 0,
     IgnoreCancellation = 1,
+
+    /// <summary>Espera a <see cref="FakeSourceFileApi.ReleaseBlocked"/> sin atender la cancelación (operación que tarda N segundos).</summary>
+    WaitForRelease = 2,
 }
 
 /// <summary>Un elemento del origen simulado.</summary>
@@ -58,7 +79,27 @@ internal sealed class FakeNode
 
     public FakeBlockMode BlockMode { get; set; }
 
+    /// <summary>Errores Win32 por operación (inyección de fallos), además de <see cref="OpenError"/> y <see cref="ReOpenError"/>.</summary>
+    public Dictionary<FakeOp, int> Faults { get; } = [];
+
+    /// <summary>Entradas por llamada de enumeración (0 = todas en una).</summary>
+    public int EnumerationBatchSize { get; set; }
+
+    /// <summary>Con <see cref="FakeOp.ReadDirectory"/>, a partir de qué llamada (1 = la primera) falla.</summary>
+    public int ReadDirectoryFaultFromCall { get; set; } = 1;
+
+    /// <summary>Excepción de la lectura que empieza en ese desplazamiento (null = no falla).</summary>
+    public Func<long, Exception?>? ReadFault { get; set; }
+
     public bool IsDirectory => (Attributes & FileAttributes.Directory) != 0;
+
+    internal void ThrowIfFault(FakeOp op, string operation)
+    {
+        if (Faults.TryGetValue(op, out var error))
+        {
+            throw new SourceFileApiException(error, operation);
+        }
+    }
 }
 
 /// <summary>
@@ -90,6 +131,23 @@ internal sealed class FakeSourceFileApi : ISourceFileApi, IDisposable
     public ConcurrentQueue<string> ReOpens { get; } = new();
 
     public ConcurrentQueue<string> AllocatedRangeQueries { get; } = new();
+
+    /// <summary>Longitud pedida en cada consulta de rangos asignados.</summary>
+    public ConcurrentQueue<long> AllocatedRangeLengths { get; } = new();
+
+    private int _readCalls;
+    private int _readDirectoryCalls;
+
+    /// <summary>Lecturas de contenido que han llegado a algún handle (un marcador de nube nunca debe recibir ninguna).</summary>
+    public int ReadCalls => Volatile.Read(ref _readCalls);
+
+    /// <summary>Llamadas de enumeración que han llegado a algún handle.</summary>
+    public int ReadDirectoryCalls => Volatile.Read(ref _readDirectoryCalls);
+
+    private readonly ManualResetEventSlim _gate = new(false);
+
+    /// <summary>Libera las operaciones en <see cref="FakeBlockMode.WaitForRelease"/>.</summary>
+    public void ReleaseBlocked() => _gate.Set();
 
     /// <summary>Handles devueltos tarde (después de vencer el plazo).</summary>
     public int LateHandles { get; private set; }
@@ -145,6 +203,8 @@ internal sealed class FakeSourceFileApi : ISourceFileApi, IDisposable
             throw new SourceFileApiException(node.OpenError, "CreateFile");
         }
 
+        node.ThrowIfFault(FakeOp.Open, "CreateFile");
+
         return NewHandle(node, mode == SourceOpenMode.Content);
     }
 
@@ -170,7 +230,11 @@ internal sealed class FakeSourceFileApi : ISourceFileApi, IDisposable
     internal void Block(FakeNode node, CancellationToken timeoutSignal)
     {
         Blocked.Set();
-        if (node.BlockMode == FakeBlockMode.HonorCancellation)
+        if (node.BlockMode == FakeBlockMode.WaitForRelease)
+        {
+            WaitHandle.WaitAny([_gate.WaitHandle, _release.WaitHandle]);
+        }
+        else if (node.BlockMode == FakeBlockMode.HonorCancellation)
         {
             timeoutSignal.WaitHandle.WaitOne();
         }
@@ -197,47 +261,95 @@ internal sealed class FakeSourceFileApi : ISourceFileApi, IDisposable
 
     private sealed class FakeHandle(FakeSourceFileApi api, FakeNode node, bool overlapped) : ISourceHandle
     {
-        private bool _enumerated;
+        private List<RawDirectoryEntry>? _pending;
+        private int _taken;
+        private int _calls;
         private int _disposed;
 
         public bool Overlapped => overlapped;
 
-        public SourceAttributeTag GetAttributeTag(CancellationToken timeoutSignal) => new(node.Attributes, node.ReparseTag);
+        public SourceAttributeTag GetAttributeTag(CancellationToken timeoutSignal)
+        {
+            Gate(FakeBlockAt.Attributes, FakeOp.Attributes, "GetFileInformationByHandleEx(FileAttributeTagInfo)", timeoutSignal);
+            return new(node.Attributes, node.ReparseTag);
+        }
 
-        public string GetFinalPath(FinalPathFormat format, CancellationToken timeoutSignal) => format switch
+        public string GetFinalPath(FinalPathFormat format, CancellationToken timeoutSignal)
+        {
+            Gate(FakeBlockAt.FinalPath, FakeOp.FinalPath, "GetFinalPathNameByHandle", timeoutSignal);
+            return FinalPathCore(format);
+        }
+
+        private void Gate(FakeBlockAt at, FakeOp op, string operation, CancellationToken timeoutSignal)
+        {
+            if (node.BlockAt == at)
+            {
+                api.Block(node, timeoutSignal);
+            }
+
+            node.ThrowIfFault(op, operation);
+        }
+
+        private string FinalPathCore(FinalPathFormat format) => format switch
         {
             FinalPathFormat.Nt => node.FinalNt,
             FinalPathFormat.Dos => node.FinalNt.Replace(@"\Device\HarddiskVolume3", @"\\?\C:", StringComparison.OrdinalIgnoreCase),
             _ => throw new SourceFileApiException(1, "GetFinalPathNameByHandle"),
         };
 
-        public SourceFileId GetFileId(CancellationToken timeoutSignal) => node.Id;
+        public SourceFileId GetFileId(CancellationToken timeoutSignal)
+        {
+            Gate(FakeBlockAt.FileId, FakeOp.FileId, "GetFileInformationByHandleEx(FileIdInfo)", timeoutSignal);
+            return node.Id;
+        }
 
-        public SourceFileTimes GetSizeAndTime(CancellationToken timeoutSignal) => new(node.IsDirectory ? 0 : node.Content.Length, node.LastWriteTimeUtc);
+        public SourceFileTimes GetSizeAndTime(CancellationToken timeoutSignal)
+        {
+            Gate(FakeBlockAt.Metadata, FakeOp.Metadata, "GetFileInformationByHandleEx(FileStandardInfo)", timeoutSignal);
+            return new(node.IsDirectory ? 0 : node.Content.Length, node.LastWriteTimeUtc);
+        }
 
         public bool ReadDirectory(List<RawDirectoryEntry> entries, CancellationToken timeoutSignal)
         {
+            Interlocked.Increment(ref api._readDirectoryCalls);
+            _calls++;
             if (node.BlockAt == FakeBlockAt.Enumerate)
             {
                 api.Block(node, timeoutSignal);
             }
 
-            if (_enumerated)
+            if (_calls >= node.ReadDirectoryFaultFromCall)
+            {
+                node.ThrowIfFault(FakeOp.ReadDirectory, "GetFileInformationByHandleEx(FileIdBothDirectoryInfo)");
+            }
+
+            _pending ??= BuildListing();
+            if (_taken >= _pending.Count)
             {
                 return false;
             }
 
-            _enumerated = true;
-            entries.Add(new RawDirectoryEntry(".", FileAttributes.Directory, 0, 0, node.LastWriteTimeUtc));
-            entries.Add(new RawDirectoryEntry("..", FileAttributes.Directory, 0, 0, node.LastWriteTimeUtc));
+            var count = node.EnumerationBatchSize <= 0 ? _pending.Count : Math.Min(node.EnumerationBatchSize, _pending.Count - _taken);
+            entries.AddRange(_pending.GetRange(_taken, count));
+            _taken += count;
+            return true;
+        }
+
+        private List<RawDirectoryEntry> BuildListing()
+        {
+            var list = new List<RawDirectoryEntry>
+            {
+                new(".", FileAttributes.Directory, 0, 0, node.LastWriteTimeUtc),
+                new("..", FileAttributes.Directory, 0, 0, node.LastWriteTimeUtc),
+            };
             foreach (var child in api.ChildrenOf(node))
             {
                 var name = child.Win32Path[(child.Win32Path.LastIndexOf('\\') + 1)..];
                 var ea = child.EnumerationEaSize ?? ((child.Attributes & FileAttributes.ReparsePoint) != 0 ? child.ReparseTag : 0u);
-                entries.Add(new RawDirectoryEntry(name, child.Attributes, ea, child.IsDirectory ? 0 : child.Content.Length, child.LastWriteTimeUtc));
+                list.Add(new RawDirectoryEntry(name, child.Attributes, ea, child.IsDirectory ? 0 : child.Content.Length, child.LastWriteTimeUtc));
             }
 
-            return true;
+            return list;
         }
 
         public ISourceHandle ReOpenForContent(CancellationToken timeoutSignal)
@@ -253,12 +365,16 @@ internal sealed class FakeSourceFileApi : ISourceFileApi, IDisposable
                 throw new SourceFileApiException(node.ReOpenError, "ReOpenFile");
             }
 
+            node.ThrowIfFault(FakeOp.ReOpen, "ReOpenFile");
+
             return api.NewHandle(node.SeenThroughSecondHandle ?? node, overlapped: true);
         }
 
         public bool IsFullyAllocated(long length, CancellationToken timeoutSignal)
         {
             api.AllocatedRangeQueries.Enqueue(node.Win32Path);
+            api.AllocatedRangeLengths.Enqueue(length);
+            Gate(FakeBlockAt.AllocatedRanges, FakeOp.AllocatedRanges, "DeviceIoControl(FSCTL_QUERY_ALLOCATED_RANGES)", timeoutSignal);
             return node.FullyAllocated;
         }
 
@@ -269,6 +385,12 @@ internal sealed class FakeSourceFileApi : ISourceFileApi, IDisposable
         public async ValueTask<int> ReadAsync(Memory<byte> buffer, long fileOffset, CancellationToken cancellationToken)
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            Interlocked.Increment(ref api._readCalls);
+            if (node.ReadFault?.Invoke(fileOffset) is { } fault)
+            {
+                throw fault;
+            }
+
             if (node.BlockAt == FakeBlockAt.Read)
             {
                 api.Blocked.Set();

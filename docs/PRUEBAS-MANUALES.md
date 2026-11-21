@@ -324,11 +324,11 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 
 ## PM-HU08-01 · OneDrive real, WOF y puntos de reanálisis: en vivo y desde VSS
 
-**Cubre:** HU-08, criterios 3 y 4 (RF-06, R4, ADR-19, §8.2 "Clasificación por etiqueta", "Archivos y carpetas solo en la nube" y "Apertura para leer el contenido").
+**Cubre:** HU-08, criterios 3 y 4 (RF-06, R4, ADR-19, §8.2 "Clasificación por etiqueta", "Archivos y carpetas solo en la nube", "Apertura para leer el contenido" y "Plazo de las lecturas de los orígenes").
 
-**Por qué es manual:** necesita OneDrive (o otro proveedor de la Cloud Files API) con una cuenta real, la instantánea VSS de un volumen real y el servicio instalado como LocalSystem. Las pruebas automáticas usan simuladores de `ISourceFileSystem` con atributos y etiquetas fijos, y `SourceFileSystem` se prueba con un doble de `ISourceFileApi` (`SourceFileSystemTests`, `SourceReadTimeoutTests`) y, en real y sin elevar, con archivos normales, *junction*, enlace simbólico, WOF, rutas largas, raíz que es enlace, sustitución de una carpeta intermedia, archivo disperso y `CancelSynchronousIo` (`SourceFileSystemIntegrationTests`, `Category=Integration`). El camino del segundo handle (`ReOpenFile`) con un marcador de nube real, Dedup y lo que pasa en VSS solo se ejercita aquí.
+**Por qué es manual:** necesita OneDrive (o otro proveedor de la Cloud Files API) con una cuenta real, la instantánea VSS de un volumen real y el servicio instalado como LocalSystem. Las pruebas automáticas usan simuladores de `ISourceFileSystem` con atributos y etiquetas fijos, y `SourceFileSystem` se prueba con un doble de `ISourceFileApi` (`SourceFileSystemTests`, `SourceFileSystemQaTests`, `SourceReadTimeoutTests`, `SourceReadDeadlineQaTests`, `SourceFileSystemEngineQaTests`) y, en real y sin elevar, con archivos normales, *junction*, enlace simbólico, WOF, rutas largas, miles de entradas, archivos bloqueados o sin permiso, raíz que es enlace, sustitución de un archivo o de una carpeta intermedia por un enlace, archivos dispersos y `CancelSynchronousIo` (`SourceFileSystemIntegrationTests`, `SourceFileSystemRealQaTests`, `Category=Integration`). El camino del segundo handle (`ReOpenFile`) con un marcador de nube real, las carpetas de nube no pobladas, Dedup y lo que pasa en VSS solo se ejercitan aquí.
 
-**Qué mirar además en el log del servicio (HU-08, servicio):** al arrancar no debe aparecer el error "No se han podido exponer los marcadores de la nube"; si aparece, toda copia termina `Failed` con `Internal`. En Windows 11 26320, sin elevar, la enumeración de un archivo WOF da atributos `0x20` y `EaSize` 0 (sin punto de reanálisis): se lee como normal desde el primer handle.
+**Qué mirar además en el log del servicio (HU-08, servicio):** al arrancar no debe aparecer el error "No se han podido exponer los marcadores de la nube"; si aparece, toda copia termina `Failed` con `Internal`. En Windows 11 26320, sin elevar, la enumeración de un archivo WOF da atributos `0x20` y `EaSize` 0 (sin punto de reanálisis): se lee como normal desde el primer handle. Los avisos `ReadError` por etiqueta desconocida llevan la etiqueta en hexadecimal (`0x…`).
 
 **Preparación**
 1. En una máquina con OneDrive iniciado y "Archivos a petición" activado, crear en la carpeta de OneDrive `PruebaBackbone\` con:
@@ -336,28 +336,36 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
    - `descargado.bin`: datos aleatorios, sincronizado y abierto una vez (descargado, sin fijar).
    - `fijado.bin`: datos aleatorios con "Mantener siempre en este dispositivo".
    - Una subcarpeta `sub\` con un archivo descargado.
+   - Una subcarpeta `entera\` con tres archivos de 1 MiB, sincronizados y descargados (para los pasos 8 y 9).
 2. Fuera de OneDrive, en el mismo origen o en otro, crear:
    - `wof.bin` comprimido con `compact /c /exe:xpress4k wof.bin`;
    - un *junction* `mklink /J enlace C:\Windows`;
-   - un enlace simbólico a un archivo.
+   - un enlace simbólico a un archivo y otro a una carpeta.
 3. Anotar el SHA-256 (`Get-FileHash`) de `descargado.bin`, `fijado.bin` y `wof.bin`, y el de `nube.bin` antes de liberar espacio.
 
 **Pasos**
 1. Crear un trabajo con origen `%OneDrive%\PruebaBackbone` y otro con la carpeta del paso 2. Ejecutarlos **con VSS** ("Copiar ahora").
 2. Comprobar en el snapshot y en la ejecución:
-   - `descargado.bin`, `fijado.bin`, `sub\…` y `wof.bin` están, y su `h` es el SHA-256 anotado;
+   - `descargado.bin`, `fijado.bin`, `sub\…`, `entera\…` y `wof.bin` están, y su `h` es el SHA-256 anotado;
    - `nube.bin` no está en el primer snapshot y hay un aviso `CloudOnlySkipped`;
-   - `enlace` y el enlace simbólico tienen aviso `ReparsePointSkipped` y no están;
+   - `enlace` y los dos enlaces simbólicos tienen aviso `ReparsePointSkipped` y no están (ni nada de lo que hay detrás);
    - los atributos de `nube.bin` siguen con `RECALL_ON_DATA_ACCESS` (no se ha descargado) y OneDrive no muestra actividad de descarga.
 3. Descargar `nube.bin`, copiar otra vez y comprobar que ahora está con el SHA-256 anotado. Liberar espacio de nuevo y copiar: la entrada se conserva con el mismo `h` (versión del padre) y hay aviso `CloudOnlySkipped`.
 4. Modificar `nube.bin` desde otro equipo o desde la web de OneDrive sin descargarlo en esta máquina, y copiar: no debe aparecer ninguna versión nueva. Comprobar sobre `objects\` que ningún objeto del tamaño de `nube.bin` es todo ceros.
 5. Repetir los pasos 1 a 4 **sin VSS**, deshabilitando el servicio de instantáneas o con un origen en un volumen sin VSS.
-6. Con el servicio en ejecución, comprobar con Process Monitor que el proceso `Backbone.Service` no genera lecturas de datos sobre `nube.bin`.
-7. Registrar el resultado de leer `wof.bin` y los marcadores de nube **desde VSS**, para confirmar §8.2 "Apertura para leer el contenido", punto 3: ¿abre el segundo handle sin `FILE_FLAG_OPEN_REPARSE_POINT` o falla con `ERROR_CANT_ACCESS_FILE`?
+6. Con el servicio en ejecución, comprobar con Process Monitor que el proceso `Backbone.Service` no genera lecturas de datos sobre `nube.bin` ni consultas de directorio (`QueryDirectory`) sobre las carpetas de nube no pobladas del paso 8.
+7. Registrar el resultado de leer `wof.bin` y los marcadores de nube **desde VSS**, para confirmar §8.2 "Apertura para leer el contenido", punto 3: ¿abre el segundo handle sin `FILE_FLAG_OPEN_REPARSE_POINT` o falla con `ERROR_CANT_ACCESS_FILE`? Con `ERROR_CANT_ACCESS_FILE`, un marcador de nube descargado debe leerse del primer handle y un WOF debe dar `ReadError` conservando su versión anterior.
+8. **Carpeta de nube no poblada.** Con `entera\` ya copiada una vez, elegir "Liberar espacio" sobre la carpeta `entera` entera y copiar (en vivo y con VSS). Resultado: la carpeta y sus tres archivos siguen en el snapshot con el mismo `h` (versión del padre), hay un aviso `CloudOnlySkipped` sobre la carpeta y ninguna descarga. Si la carpeta no existía en ningún snapshot anterior, no aparece (ni nada de lo que tuviera debajo) y el aviso es el mismo.
+9. **Raíz de un origen en la nube.** Crear un trabajo con un segundo origen que sea `%OneDrive%\PruebaBackbone\entera` (ya liberada, paso 8): aviso `SourceRootUnreadable` y ese origen entero conservado del snapshot anterior; los demás orígenes del trabajo se copian con normalidad. Después, descargar la carpeta entera y comprobar que se copia sin avisos. Repetir con la carpeta raíz de OneDrive poblada (el caso normal): se recorre sin avisos de raíz.
+10. **Descarga a medias.** Pausar la sincronización de OneDrive durante la descarga de un archivo grande (archivo parcialmente descargado) y copiar: el archivo se omite con `CloudOnlySkipped` y conserva su versión anterior; no se guarda una versión con ceros (comparar con el SHA-256 anotado).
+11. **Cambio durante la copia.** Con un archivo grande descargado de OneDrive en el origen, lanzar la copia sin VSS y, mientras se lee, elegir "Liberar espacio" sobre él: la copia termina y el archivo, o bien tiene su contenido real, o bien se omite con aviso (`CloudOnlySkipped` o "cambió durante la copia"); nunca una versión con ceros.
+12. **Proveedor ajeno (opcional).** Si hay un proveedor de sincronización o de ProjFS de terceros (p. ej. el ejemplo Cloud Mirror de Microsoft, o la característica opcional *Client-ProjFS* con un proveedor de ejemplo) cuyo directorio raíz esté dentro de un origen: su contenido se omite con `ReadError` y la etiqueta en hexadecimal en el mensaje (ni se lee ni se cuelga la copia) y se conserva su versión anterior.
+13. **Perfil de usuario.** Con un origen que contenga `%LOCALAPPDATA%\Microsoft\WindowsApps` (o el perfil entero) aparecen avisos `ReadError` con la etiqueta `0x8000001B` (alias de ejecución de aplicaciones). Es lo esperado hasta que se decida R13; apuntar cuántos y si algún aviso corresponde a un archivo del usuario.
+14. **Data Deduplication (solo con un Windows Server).** En un volumen con Deduplicación, optimizar un archivo y copiarlo en vivo y con VSS: en vivo debe copiarse con su SHA-256 real y, desde VSS, o bien lo mismo o bien `ReadError` conservando la versión anterior. Registrar cuál de los dos ocurre; nunca el *stub* (comparar tamaño y SHA-256 con el original).
 
-**Resultado esperado:** los archivos descargados, los fijados y los WOF se copian con su contenido real; un archivo no descargado nunca se descarga ni se guarda como ceros, en vivo ni desde VSS, y conserva su versión anterior; los enlaces no se siguen.
+**Resultado esperado:** los archivos descargados, los fijados y los WOF se copian con su contenido real; un archivo no descargado nunca se descarga ni se guarda como ceros, en vivo ni desde VSS, y conserva su versión anterior; las carpetas de nube no pobladas no se recorren y conservan lo que tenían; los enlaces no se siguen; las etiquetas desconocidas se omiten con aviso sin colgar la copia.
 
-**Estado:** pendiente (requiere `SourceFileSystem` de HU-08, servicio instalado y VSS de HU-15).
+**Estado:** pendiente (requiere el servicio instalado con el ejecutor de trabajos de HU-14 y VSS de HU-15). `SourceFileSystem` (commit 4a33da9) ya está disponible; hasta que se conecte al ejecutor no hay forma de lanzar estas copias desde el servicio.
 
 ## PM-HU05-01 · Probar la conexión contra el NAS real (OpenMediaVault)
 

@@ -306,6 +306,33 @@ public sealed class CredentialStoreFaultTests : IDisposable
         Assert.Equal("user" + credential.Password.ToString()[Password.Length..], credential.UserName); // usuario y contraseña de la misma escritura
     }
 
+    /// <summary>
+    /// Causa probable de la intermitencia vista en <see cref="Concurrent_saves_of_the_same_share_leave_exactly_one_complete_credential_and_no_temporaries"/>
+    /// ("could not be replaced (Win32 error 5)"): no se reproduce en 400 x 16 guardados concurrentes sin nadie más, pero sí en
+    /// cuanto otro proceso (antivirus, indexador, agente de copia) tiene el destino abierto un instante sin
+    /// <c>FILE_SHARE_DELETE</c>: el renombrado por handle falla con 32 o 5 sin reintentos, aunque la lectura sí los hace
+    /// (<c>TrustedFile.OpenRetrying</c>). Defecto de producción, no de la prueba.
+    /// </summary>
+    [Fact(Skip = "Falla: TrustedFile.WriteAllBytesAsync no reintenta el renombrado (Win32 32 o 5) si otro proceso tiene el destino abierto sin FILE_SHARE_DELETE — pendiente de backbone-service")]
+    public async Task A_save_survives_another_process_holding_the_target_open_for_a_moment()
+    {
+        using var store = CreateStore();
+        await store.SaveAsync(Share, Input("ana", "antigua"), Ct);
+        var holder = new FileStream(store.PathFor(Share), FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        var release = Task.Run(async () =>
+        {
+            await Task.Delay(150, Ct);
+            await holder.DisposeAsync();
+        }, Ct);
+
+        await store.SaveAsync(Share, Input("eva", Password), Ct);
+        await release;
+
+        using var credential = await store.GetAsync(Share, Ct);
+        Assert.Equal("eva", credential!.UserName);
+        Assert.Single(Directory.GetFileSystemEntries(CredentialsDirectory));
+    }
+
     [Fact]
     public async Task Concurrent_deletes_report_the_file_as_existing_exactly_once()
     {
