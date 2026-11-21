@@ -321,3 +321,38 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 **Resultado esperado:** copias correctas con rutas largas; nada de la carpeta de datos en el NAS; el *junction* se rechaza.
 
 **Estado:** pendiente (requiere servicio, NAS y HU-05, HU-08, HU-14).
+
+## PM-HU08-01 · OneDrive real, WOF y puntos de reanálisis: en vivo y desde VSS
+
+**Cubre:** HU-08, criterios 3 y 4 (RF-06, R4, ADR-19, §8.2 "Clasificación por etiqueta", "Archivos y carpetas solo en la nube" y "Apertura para leer el contenido").
+
+**Por qué es manual:** necesita OneDrive (o otro proveedor de la Cloud Files API) con una cuenta real, la instantánea VSS de un volumen real y el servicio instalado como LocalSystem. Las pruebas automáticas usan simuladores de `ISourceFileSystem` con atributos y etiquetas fijos.
+
+**Preparación**
+1. En una máquina con OneDrive iniciado y "Archivos a petición" activado, crear en la carpeta de OneDrive `PruebaBackbone\` con:
+   - `nube.bin`: unos 5 MiB de datos aleatorios. Esperar a que se sincronice y elegir "Liberar espacio" (solo en la nube; atributos con `RECALL_ON_DATA_ACCESS`).
+   - `descargado.bin`: datos aleatorios, sincronizado y abierto una vez (descargado, sin fijar).
+   - `fijado.bin`: datos aleatorios con "Mantener siempre en este dispositivo".
+   - Una subcarpeta `sub\` con un archivo descargado.
+2. Fuera de OneDrive, en el mismo origen o en otro, crear:
+   - `wof.bin` comprimido con `compact /c /exe:xpress4k wof.bin`;
+   - un *junction* `mklink /J enlace C:\Windows`;
+   - un enlace simbólico a un archivo.
+3. Anotar el SHA-256 (`Get-FileHash`) de `descargado.bin`, `fijado.bin` y `wof.bin`, y el de `nube.bin` antes de liberar espacio.
+
+**Pasos**
+1. Crear un trabajo con origen `%OneDrive%\PruebaBackbone` y otro con la carpeta del paso 2. Ejecutarlos **con VSS** ("Copiar ahora").
+2. Comprobar en el snapshot y en la ejecución:
+   - `descargado.bin`, `fijado.bin`, `sub\…` y `wof.bin` están, y su `h` es el SHA-256 anotado;
+   - `nube.bin` no está en el primer snapshot y hay un aviso `CloudOnlySkipped`;
+   - `enlace` y el enlace simbólico tienen aviso `ReparsePointSkipped` y no están;
+   - los atributos de `nube.bin` siguen con `RECALL_ON_DATA_ACCESS` (no se ha descargado) y OneDrive no muestra actividad de descarga.
+3. Descargar `nube.bin`, copiar otra vez y comprobar que ahora está con el SHA-256 anotado. Liberar espacio de nuevo y copiar: la entrada se conserva con el mismo `h` (versión del padre) y hay aviso `CloudOnlySkipped`.
+4. Modificar `nube.bin` desde otro equipo o desde la web de OneDrive sin descargarlo en esta máquina, y copiar: no debe aparecer ninguna versión nueva. Comprobar sobre `objects\` que ningún objeto del tamaño de `nube.bin` es todo ceros.
+5. Repetir los pasos 1 a 4 **sin VSS**, deshabilitando el servicio de instantáneas o con un origen en un volumen sin VSS.
+6. Con el servicio en ejecución, comprobar con Process Monitor que el proceso `Backbone.Service` no genera lecturas de datos sobre `nube.bin`.
+7. Registrar el resultado de leer `wof.bin` y los marcadores de nube **desde VSS**, para confirmar §8.2 "Apertura para leer el contenido", punto 3: ¿abre el segundo handle sin `FILE_FLAG_OPEN_REPARSE_POINT` o falla con `ERROR_CANT_ACCESS_FILE`?
+
+**Resultado esperado:** los archivos descargados, los fijados y los WOF se copian con su contenido real; un archivo no descargado nunca se descarga ni se guarda como ceros, en vivo ni desde VSS, y conserva su versión anterior; los enlaces no se siguen.
+
+**Estado:** pendiente (requiere `SourceFileSystem` de HU-08, servicio instalado y VSS de HU-15).
