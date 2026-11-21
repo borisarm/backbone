@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Reflection;
 using System.Security.Principal;
 using Backbone.Contracts;
+using Backbone.Service.Nas;
 using Backbone.Service.Os;
 using Backbone.Service.Persistence;
 
@@ -35,14 +36,19 @@ internal sealed class ServiceRuntimeInfo(TimeProvider timeProvider)
 /// <summary>
 /// Operaciones del servicio expuestas por IPC, ya autorizadas y con la entrada genérica validada por
 /// <see cref="ConnectionRpcTarget"/>. En HT-03: información del servicio y usuarios autorizados (HU-31). En HU-04:
-/// credenciales del NAS.
+/// credenciales del NAS. En HU-05: "Probar conexión".
 /// </summary>
 internal sealed class BackboneOperations(
     ServiceRuntimeInfo runtime,
     SettingsStore settings,
     IAccountDirectory accounts,
-    ICredentialStore credentials)
+    ICredentialStore credentials,
+    ConnectionTester connectionTester)
 {
+    /// <summary>HU-05 (RF-61): prueba la conexión con el destino; un fallo es un resultado, no una excepción (§7.4).</summary>
+    public Task<ConnectionTestResult> TestConnectionAsync(string destination, CredentialInput? credential, CancellationToken ct) =>
+        connectionTester.TestAsync(destination, credential, ct);
+
     /// <summary>
     /// HU-04 (RF-60, ADR-07): guarda o sustituye la credencial del recurso. El usuario no puede estar vacío ni tener
     /// caracteres de control; ni el usuario ni la contraseña pueden tener NUL ni suplentes sueltas (no se pasarían intactos a

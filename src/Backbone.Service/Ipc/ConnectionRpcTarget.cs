@@ -95,12 +95,8 @@ internal sealed partial class ConnectionRpcTarget(IpcConnection connection, Back
             operations.DeleteCredentialAsync(IpcInputValidator.Destination(shareRoot), ct));
 
     public Task<ConnectionTestResult> TestConnectionAsync(string destination, CredentialInput? credential, CancellationToken ct = default) =>
-        InvokeAsync<ConnectionTestResult>(nameof(TestConnectionAsync), Write, _ =>
-        {
-            IpcInputValidator.Destination(destination);
-            IpcInputValidator.OptionalCredential(credential);
-            throw NotYet(nameof(TestConnectionAsync));
-        });
+        InvokeAsync(nameof(TestConnectionAsync), Write, _ =>
+            operations.TestConnectionAsync(IpcInputValidator.Destination(destination), IpcInputValidator.OptionalCredential(credential), ct));
 
     public Task<StorageInfo> GetStorageInfoAsync(Guid jobId, CancellationToken ct = default) =>
         InvokeAsync<StorageInfo>(nameof(GetStorageInfoAsync), Read, _ => throw NotYet(nameof(GetStorageInfoAsync)));
