@@ -349,7 +349,7 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 
 **Resultado esperado:** pasan y no aparecen como omitidas.
 
-**Estado:** pendiente.
+**Estado:** superada el 2026-11-21 en PowerShell elevado sobre `main` (`970669c`+), con `dotnet test Backbone.slnx --filter "Category=Integration"`: 16 correctas y 4 omitidas, todas del NAS (`WindowsShareConnectorTests`, sin variables `BACKBONE_IT_SMB_*`); ninguna omitida por falta de elevación.
 
 ## PM-HU07-03 · Validación de orígenes con unidades reales: red, extraíble y no NTFS
 
