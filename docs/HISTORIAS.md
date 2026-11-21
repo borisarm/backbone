@@ -579,7 +579,7 @@ Las historias de una misma fila pueden desarrollarse en paralelo por agentes dis
 | HU-04 | MVP | 5 | backbone-service | Hecha (servicio; criterio 4 pendiente de la app; criterio 5 en PM-HU04-01) |
 | HU-05 | MVP | 3 | backbone-service | Hecha (servicio; botón de la app pendiente; PM-HU05-01 e integración contra el NAS pendientes) |
 | HU-06 | MVP | 3 | backbone-service | Pendiente |
-| HU-07 | MVP | 5 | backbone-app | Pendiente |
+| HU-07 | MVP | 5 | backbone-app | En curso (servicio hecho; interfaz de la app pendiente; PM-HU07-01 a 05 y pruebas elevadas pendientes) |
 | HU-08 | MVP | 3 | backbone-core | Pendiente |
 | HU-09 | MVP | 5 | backbone-service | Pendiente |
 | HU-10 | MVP | 3 | backbone-app | Pendiente |
