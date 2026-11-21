@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace Backbone.Service.Os;
 
@@ -284,6 +285,49 @@ internal static partial class NativeMethods
     [LibraryImport("kernel32.dll")]
     internal static partial nint LocalFree(nint memory);
 
+    // ---- Inspección de carpetas locales (HU-07, §8.3): ruta final, volumen y enumeración por handle ----
+
+    internal const int ErrorNoMoreFiles = 18;
+
+    /// <summary><c>FILE_FULL_DIRECTORY_INFO</c> por handle (minwinbase.h, <c>FileFullDirectoryInfo</c>).</summary>
+    internal const int FileFullDirectoryInfo = 14;
+
+    /// <summary><c>FileFullDirectoryRestartInfo</c>: como <see cref="FileFullDirectoryInfo"/>, desde el principio.</summary>
+    internal const int FileFullDirectoryRestartInfo = 15;
+
+    /// <summary><c>FILE_NAME_NORMALIZED | VOLUME_NAME_DOS</c> (0): ruta normalizada con letra de unidad, en forma <c>\\?\</c>.</summary>
+    internal const uint FileNameNormalizedVolumeNameDos = 0x0;
+
+    /// <summary><c>FILE_NAME_NORMALIZED | VOLUME_NAME_GUID</c>: ruta con <c>\\?\Volume{guid}\</c>.</summary>
+    internal const uint FileNameNormalizedVolumeNameGuid = 0x1;
+
+    internal const uint DriveUnknown = 0;
+    internal const uint DriveNoRootDir = 1;
+    internal const uint DriveRemovable = 2;
+    internal const uint DriveFixed = 3;
+    internal const uint DriveRemote = 4;
+
+    /// <summary><c>GetFinalPathNameByHandleW</c>: longitud sin el nulo final; si no cabe, el tamaño necesario con el nulo; 0 si falla.</summary>
+    [LibraryImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial uint GetFinalPathNameByHandle(SafeHandle file, [Out] char[] filePath, uint filePathLength, uint flags);
+
+    /// <summary><c>GetVolumeInformationByHandleW</c>; solo se pide el nombre del sistema de archivos.</summary>
+    [LibraryImport("kernel32.dll", EntryPoint = "GetVolumeInformationByHandleW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetVolumeInformationByHandle(
+        SafeHandle file,
+        nint volumeNameBuffer,
+        uint volumeNameSize,
+        nint volumeSerialNumber,
+        nint maximumComponentLength,
+        nint fileSystemFlags,
+        [Out] char[] fileSystemNameBuffer,
+        uint fileSystemNameSize);
+
+    /// <summary><c>GetDriveTypeW</c>; la raíz debe terminar en <c>\</c> (letra de unidad o ruta de volumen GUID).</summary>
+    [LibraryImport("kernel32.dll", EntryPoint = "GetDriveTypeW", StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial uint GetDriveType(string rootPathName);
+
     // ---- Creación de carpetas relativa a un handle (winternl.h, ntifs.h, ntdef.h) ----
 
     /// <summary><c>FILE_CREATE</c>: falla si ya existe una entrada con ese nombre (no se abre ni se sigue).</summary>
@@ -459,29 +503,177 @@ internal static partial class NativeMethods
         out DataBlob dataOut);
 
     /// <summary>
-    /// Llamadas de la lectura de los orígenes (<c>SourceFileSystem</c>, HU-08, §8.2). Van en una clase anidada para no chocar
-    /// con las constantes y firmas que añadan otras historias a <see cref="NativeMethods"/>. Firmas y valores comprobados en
-    /// Microsoft Learn (fileapi.h, winbase.h, ioapiset.h, processthreadsapi.h, winioctl.h, cfapi.h, ntifs.h).
+    /// Resolución controlada de los orígenes (ADR-20, §8.3), plazos de las aperturas (CancelSynchronousIo) y Redirection Guard.
+    /// Clase anidada propia para que sus nombres no choquen con los de otras historias que amplían <see cref="NativeMethods"/>.
+    /// Firmas comprobadas en Microsoft Learn: winternl.h/ntifs.h (<c>NtCreateFile</c>, <c>NtQueryVolumeInformationFile</c>,
+    /// <c>FILE_FS_DEVICE_INFORMATION</c>, <c>REPARSE_DATA_BUFFER</c>), ioapiset.h (<c>DeviceIoControl</c>,
+    /// <c>CancelSynchronousIo</c>), processthreadsapi.h (<c>OpenThread</c>, <c>SetProcessMitigationPolicy</c>,
+    /// <c>PROCESS_MITIGATION_REDIRECTION_TRUST_POLICY</c>) y cfapi.h
+    /// (<c>CfGetPlaceholderStateFromAttributeTag</c>).
+    /// </summary>
+    internal static partial class Resolution
+    {
+        // ---- NtCreateFile (CreateDisposition y CreateOptions) ----
+
+        /// <summary><c>FILE_OPEN</c>: abre lo que exista; falla si no existe.</summary>
+        internal const uint FileOpen = 1;
+
+        internal const uint FileSynchronousIoNonAlert = 0x0000_0020;
+        internal const uint FileOpenForBackupIntent = 0x0000_4000;
+        internal const uint FileOpenReparsePoint = 0x0020_0000;
+
+        internal const uint ObjCaseInsensitive = 0x40;
+
+        internal const uint FileReadAttributes = 0x0080;
+        internal const uint FileListDirectory = 0x0001;
+        internal const uint Synchronize = 0x0010_0000;
+        internal const uint FileShareRead = 0x1;
+        internal const uint FileShareWrite = 0x2;
+
+        // ---- NTSTATUS ----
+        internal const int StatusObjectNameInvalid = unchecked((int)0xC000_0033);
+        internal const int StatusObjectNameNotFound = unchecked((int)0xC000_0034);
+        internal const int StatusObjectPathNotFound = unchecked((int)0xC000_003A);
+        internal const int StatusNoSuchFile = unchecked((int)0xC000_000F);
+        internal const int StatusNotADirectory = unchecked((int)0xC000_0103);
+        internal const int StatusCancelled = unchecked((int)0xC000_0120);
+
+        // ---- Volumen (FS_INFORMATION_CLASS, FILE_FS_DEVICE_INFORMATION) ----
+
+        /// <summary><c>FileFsDeviceInformation</c> de <c>FS_INFORMATION_CLASS</c>.</summary>
+        internal const int FileFsDeviceInformationClass = 4;
+
+        /// <summary><c>FILE_DEVICE_DISK</c>.</summary>
+        internal const uint FileDeviceDisk = 0x0000_0007;
+
+        /// <summary><c>FILE_REMOVABLE_MEDIA</c>.</summary>
+        internal const uint FileRemovableMedia = 0x0000_0001;
+
+        /// <summary><c>FILE_REMOTE_DEVICE</c>: sistema de archivos remoto (SMB, CIFS).</summary>
+        internal const uint FileRemoteDevice = 0x0000_0010;
+
+        /// <summary><c>FILE_FS_DEVICE_INFORMATION</c>: <c>DEVICE_TYPE DeviceType; ULONG Characteristics;</c>.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct FileFsDeviceInformation
+        {
+            public uint DeviceType;
+            public uint Characteristics;
+        }
+
+        /// <summary>Devuelve un <c>NTSTATUS</c>.</summary>
+        [LibraryImport("ntdll.dll")]
+        internal static partial int NtQueryVolumeInformationFile(
+            SafeFileHandle fileHandle,
+            out IoStatusBlock ioStatusBlock,
+            out FileFsDeviceInformation fsInformation,
+            uint length,
+            int fsInformationClass);
+
+        // ---- Puntos de reanálisis ----
+
+        /// <summary><c>FSCTL_GET_REPARSE_POINT</c> = <c>CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 42, METHOD_BUFFERED, FILE_ANY_ACCESS)</c>.</summary>
+        internal const uint FsctlGetReparsePoint = 0x0009_00A8;
+
+        /// <summary><c>MAXIMUM_REPARSE_DATA_BUFFER_SIZE</c>.</summary>
+        internal const int MaximumReparseDataBufferSize = 16 * 1024;
+
+        internal const uint IoReparseTagMountPoint = 0xA000_0003;
+        internal const uint IoReparseTagSymlink = 0xA000_000C;
+        internal const uint IoReparseTagWof = 0x8000_0017;
+        internal const uint IoReparseTagDedup = 0x8000_0013;
+        internal const uint IoReparseTagHsm = 0xC000_0004;
+        internal const uint IoReparseTagHsm2 = 0x8000_0006;
+
+        /// <summary>Etiquetas de la Cloud Files API: <c>tag &amp; IO_REPARSE_TAG_CLOUD_MASK</c> (0xFFFF0FFF) = <c>IO_REPARSE_TAG_CLOUD</c>.</summary>
+        internal const uint IoReparseTagCloudMask = 0xFFFF_0FFF;
+        internal const uint IoReparseTagCloud = 0x9000_001A;
+
+        /// <summary>Bit N de una etiqueta: sustituto de nombre (<c>IsReparseTagNameSurrogate</c>).</summary>
+        internal const uint ReparseTagNameSurrogateBit = 0x2000_0000;
+
+        /// <summary><c>SYMLINK_FLAG_RELATIVE</c>.</summary>
+        internal const uint SymlinkFlagRelative = 0x1;
+
+        internal const uint FileAttributeOffline = 0x0000_1000;
+        internal const uint FileAttributeRecallOnOpen = 0x0004_0000;
+        internal const uint FileAttributeRecallOnDataAccess = 0x0040_0000;
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool DeviceIoControl(
+            SafeFileHandle device,
+            uint ioControlCode,
+            nint inBuffer,
+            uint inBufferSize,
+            [Out] byte[] outBuffer,
+            uint outBufferSize,
+            out uint bytesReturned,
+            nint overlapped);
+
+        // ---- Cloud Files API (cldapi.dll) ----
+
+        internal const uint CfPlaceholderStatePartial = 0x10;
+        internal const uint CfPlaceholderStatePartiallyOnDisk = 0x20;
+        internal const uint CfPlaceholderStateInvalid = 0xFFFF_FFFF;
+
+        /// <summary>Solo interpreta los dos valores; no llama al proveedor.</summary>
+        [LibraryImport("cldapi.dll")]
+        internal static partial uint CfGetPlaceholderStateFromAttributeTag(uint fileAttributes, uint reparseTag);
+
+        // ---- Plazos: cancelación de E/S síncrona de un hilo ----
+
+        /// <summary><c>THREAD_TERMINATE</c>: el derecho que exige <c>CancelSynchronousIo</c>.</summary>
+        internal const uint ThreadTerminate = 0x0001;
+
+        [LibraryImport("kernel32.dll")]
+        internal static partial uint GetCurrentThreadId();
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        internal static partial SafeWaitHandle OpenThread(uint desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint threadId);
+
+        /// <summary>Si no hay nada que cancelar, devuelve <see langword="false"/> con <c>ERROR_NOT_FOUND</c>.</summary>
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool CancelSynchronousIo(SafeWaitHandle thread);
+
+        // ---- Redirection Guard ----
+
+        /// <summary><c>ProcessRedirectionTrustPolicy</c> de <c>PROCESS_MITIGATION_POLICY</c> (winnt.h).</summary>
+        internal const int ProcessRedirectionTrustPolicy = 16;
+
+        /// <summary><c>PROCESS_MITIGATION_REDIRECTION_TRUST_POLICY.EnforceRedirectionTrust</c> (bit 0 de <c>Flags</c>).</summary>
+        internal const uint EnforceRedirectionTrust = 0x1;
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool SetProcessMitigationPolicy(int mitigationPolicy, in uint buffer, nuint length);
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool GetProcessMitigationPolicy(nint process, int mitigationPolicy, out uint buffer, nuint length);
+
+        [LibraryImport("kernel32.dll")]
+        internal static partial nint GetCurrentProcess();
+    }
+
+    /// <summary>
+    /// Lectura de los orígenes (<c>SourceFileSystem</c>, HU-08, §8.2) y token de lectura (ADR-21). Solo lo que no está ya en
+    /// <see cref="NativeMethods"/> ni en <see cref="Resolution"/> (<c>NtCreateFile</c>, <c>CancelSynchronousIo</c>,
+    /// <c>OpenThread</c>, <c>CfGetPlaceholderStateFromAttributeTag</c>… se usan de allí). Firmas y valores comprobados en
+    /// Microsoft Learn (winternl.h, ntifs.h, winbase.h, ioapiset.h, winioctl.h, securitybaseapi.h, processthreadsapi.h, winnt.h).
     /// </summary>
     internal static partial class SourceIo
     {
         // ---- Códigos de error Win32 ----
-        internal const int ErrorFileNotFound = 2;
-        internal const int ErrorPathNotFound = 3;
-        internal const int ErrorAccessDenied = 5;
         internal const int ErrorInvalidHandle = 6;
-        internal const int ErrorNoMoreFiles = 18;
-        internal const int ErrorSharingViolation = 32;
         internal const int ErrorLockViolation = 33;
-        internal const int ErrorHandleEof = 38;
         internal const int ErrorInvalidName = 123;
         internal const int ErrorBadPathName = 161;
         internal const int ErrorFilenameExcedRange = 206;
         internal const int ErrorMoreData = 234;
         internal const int ErrorDirectory = 267;
-        internal const int ErrorOperationAborted = 995;
         internal const int ErrorIoPending = 997;
-        internal const int ErrorNotFound = 1168;
+        internal const int ErrorNotAllAssigned = 1300;
 
         /// <summary>
         /// <c>ERROR_CANT_ACCESS_FILE</c>: el filtro propietario de la etiqueta no está en la pila
@@ -489,65 +681,74 @@ internal static partial class NativeMethods
         /// </summary>
         internal const int ErrorCantAccessFile = 1920;
 
-        // ---- Acceso, compartición y marcas de CreateFile ----
-        internal const uint GenericRead = 0x8000_0000;
-        internal const uint Synchronize = 0x0010_0000;
-        internal const uint FileReadAttributes = 0x0080;
-        internal const uint FileListDirectory = 0x0001;
+        // ---- NtCreateFile: CreateOptions que añade la lectura de orígenes (ntifs.h) ----
+        internal const uint FileDirectoryFile = 0x0000_0001;
+        internal const uint FileNonDirectoryFile = 0x0000_0040;
 
-        /// <summary>Lectura y escritura, <b>sin</b> <c>FILE_SHARE_DELETE</c>: nadie puede renombrar ni sustituir el elemento abierto.</summary>
-        internal const uint FileShareReadWrite = 0x1 | 0x2;
+        /// <summary><c>FILE_COMPLETE_IF_OPLOCKED</c>: no espera la ruptura de un oplock (§8.2 "Oplocks").</summary>
+        internal const uint FileCompleteIfOplocked = 0x0000_0100;
 
-        internal const uint OpenExisting = 3;
-        internal const uint FileFlagBackupSemantics = 0x0200_0000;
-        internal const uint FileFlagOpenReparsePoint = 0x0020_0000;
-        internal const uint FileFlagOverlapped = 0x4000_0000;
-        internal const uint FileFlagSequentialScan = 0x0800_0000;
+        /// <summary><c>FILE_DELETE_ON_CLOSE</c>: prohibido en las aperturas de lectura (ADR-21).</summary>
+        internal const uint FileDeleteOnClose = 0x0000_1000;
 
-        internal const uint FileAttributeDirectory = 0x10;
-        internal const uint FileAttributeReparsePoint = 0x400;
+        /// <summary><c>FILE_OPEN_BY_FILE_ID</c>: prohibido en las aperturas de lectura (ADR-21).</summary>
+        internal const uint FileOpenByFileId = 0x0000_2000;
+
+        // ---- NTSTATUS ----
+        /// <summary><c>STATUS_OPLOCK_BREAK_IN_PROGRESS</c>: un éxito (<c>NT_SUCCESS</c>) con <c>FILE_COMPLETE_IF_OPLOCKED</c>.</summary>
+        internal const int StatusOplockBreakInProgress = 0x0000_0108;
+        internal const int StatusAccessDenied = unchecked((int)0xC000_0022);
+        internal const int StatusSharingViolation = unchecked((int)0xC000_0043);
+        internal const int StatusFileIsADirectory = unchecked((int)0xC000_00BA);
+        internal const int StatusIoReparseTagNotHandled = unchecked((int)0xC000_0279);
 
         // ---- FILE_INFO_BY_HANDLE_CLASS ----
         internal const int FileBasicInfo = 0;
-        internal const int FileStandardInfo = 1;
-        internal const int FileAttributeTagInfo = 9;
         internal const int FileIdBothDirectoryInfo = 10;
         internal const int FileIdBothDirectoryRestartInfo = 11;
         internal const int FileIdInfo = 18;
 
-        // ---- GetFinalPathNameByHandle ----
-        /// <summary><c>FILE_NAME_NORMALIZED</c> | <c>VOLUME_NAME_DOS</c>: <c>\\?\C:\…</c>.</summary>
-        internal const uint VolumeNameDos = 0x0;
-
-        /// <summary><c>FILE_NAME_NORMALIZED</c> | <c>VOLUME_NAME_GUID</c>: <c>\\?\Volume{…}\…</c>.</summary>
-        internal const uint VolumeNameGuid = 0x1;
-
         /// <summary><c>FILE_NAME_NORMALIZED</c> | <c>VOLUME_NAME_NT</c>: <c>\Device\HarddiskVolumeN\…</c> (también en VSS).</summary>
-        internal const uint VolumeNameNt = 0x2;
+        internal const uint FileNameNormalizedVolumeNameNt = 0x2;
 
-        // ---- Hilos ----
-        /// <summary><c>THREAD_TERMINATE</c>: el acceso que exige <c>CancelSynchronousIo</c>.</summary>
-        internal const uint ThreadTerminate = 0x0001;
-
-        // ---- FSCTL ----
         /// <summary><c>FSCTL_QUERY_ALLOCATED_RANGES</c> = CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 51, METHOD_NEITHER, FILE_READ_DATA).</summary>
         internal const uint FsctlQueryAllocatedRanges = 0x0009_40CF;
 
-        // ---- Cloud Files API (CF_PLACEHOLDER_STATE) ----
-        internal const uint CfPlaceholderStatePartial = 0x10;
-        internal const uint CfPlaceholderStatePartiallyOnDisk = 0x20;
-        internal const uint CfPlaceholderStateInvalid = 0xFFFF_FFFF;
-
-        // ---- Compatibilidad de marcadores (ntifs.h) ----
         /// <summary><c>PHCM_EXPOSE_PLACEHOLDERS</c>.</summary>
         internal const sbyte PhcmExposePlaceholders = 2;
 
-        /// <summary><c>FILE_ATTRIBUTE_TAG_INFO</c>.</summary>
+        // ---- SECURITY_QUALITY_OF_SERVICE ----
+        /// <summary><c>SecurityIdentification</c> de <c>SECURITY_IMPERSONATION_LEVEL</c>.</summary>
+        internal const int SecurityIdentification = 1;
+
+        /// <summary><c>SecurityImpersonation</c> de <c>SECURITY_IMPERSONATION_LEVEL</c>.</summary>
+        internal const int SecurityImpersonation = 2;
+
+        /// <summary><c>SECURITY_STATIC_TRACKING</c>.</summary>
+        internal const byte SecurityStaticTracking = 0;
+
+        // ---- Tokens ----
+        internal const uint TokenAssignPrimary = 0x0001;
+        internal const uint TokenImpersonate = 0x0004;
+        internal const uint TokenAdjustPrivileges = 0x0020;
+
+        /// <summary><c>TokenImpersonation</c> de <c>TOKEN_TYPE</c>.</summary>
+        internal const int TokenTypeImpersonation = 2;
+
+        /// <summary><c>TokenPrivileges</c> de <c>TOKEN_INFORMATION_CLASS</c>.</summary>
+        internal const int TokenPrivilegesClass = 3;
+
+        internal const uint SePrivilegeEnabled = 0x0000_0002;
+        internal const uint SePrivilegeRemoved = 0x0000_0004;
+
+        /// <summary><c>SECURITY_QUALITY_OF_SERVICE</c>: <c>DWORD Length; SECURITY_IMPERSONATION_LEVEL; BOOLEAN; BOOLEAN</c>.</summary>
         [StructLayout(LayoutKind.Sequential)]
-        internal struct FileAttributeTagInformation
+        internal struct SecurityQualityOfService
         {
-            public uint FileAttributes;
-            public uint ReparseTag;
+            public uint Length;
+            public int ImpersonationLevel;
+            public byte ContextTrackingMode;
+            public byte EffectiveOnly;
         }
 
         /// <summary><c>FILE_BASIC_INFO</c> (cuatro <c>LARGE_INTEGER</c> y un <c>DWORD</c>; 40 bytes con relleno).</summary>
@@ -559,17 +760,6 @@ internal static partial class NativeMethods
             public long LastWriteTime;
             public long ChangeTime;
             public uint FileAttributes;
-        }
-
-        /// <summary><c>FILE_STANDARD_INFO</c>.</summary>
-        [StructLayout(LayoutKind.Sequential)]
-        internal struct FileStandardInformation
-        {
-            public long AllocationSize;
-            public long EndOfFile;
-            public uint NumberOfLinks;
-            public byte DeletePending;
-            public byte Directory;
         }
 
         /// <summary><c>FILE_ID_INFO</c>: número de serie del volumen e identificador de 128 bits (<c>FILE_ID_128</c>).</summary>
@@ -589,26 +779,14 @@ internal static partial class NativeMethods
             public long Length;
         }
 
-        [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
-        internal static partial Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(
-            string fileName,
-            uint desiredAccess,
-            uint shareMode,
-            nint securityAttributes,
-            uint creationDisposition,
-            uint flagsAndAttributes,
-            nint templateFile);
-
-        /// <summary>
-        /// <c>ReOpenFile</c>: abre otra vez el mismo objeto que <paramref name="originalFile"/> sin volver a resolver la ruta;
-        /// <c>INVALID_HANDLE_VALUE</c> si falla.
-        /// </summary>
-        [LibraryImport("kernel32.dll", SetLastError = true)]
-        internal static partial Microsoft.Win32.SafeHandles.SafeFileHandle ReOpenFile(SafeHandle originalFile, uint desiredAccess, uint shareMode, uint flagsAndAttributes);
-
-        [LibraryImport("kernel32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        internal static partial bool GetFileInformationByHandleEx(SafeHandle file, int fileInformationClass, out FileAttributeTagInformation fileInformation, uint bufferSize);
+        /// <summary><c>TOKEN_PRIVILEGES</c> con un solo <c>LUID_AND_ATTRIBUTES</c>.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct TokenPrivilege
+        {
+            public uint PrivilegeCount;
+            public Luid Luid;
+            public uint Attributes;
+        }
 
         [LibraryImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -616,29 +794,15 @@ internal static partial class NativeMethods
 
         [LibraryImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        internal static partial bool GetFileInformationByHandleEx(SafeHandle file, int fileInformationClass, out FileStandardInformation fileInformation, uint bufferSize);
-
-        [LibraryImport("kernel32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
         internal static partial bool GetFileInformationByHandleEx(SafeHandle file, int fileInformationClass, out FileIdInformation fileInformation, uint bufferSize);
 
-        /// <summary>Enumeración de carpetas (<see cref="FileIdBothDirectoryInfo"/>): el búfer debe estar alineado a 8 bytes.</summary>
-        [LibraryImport("kernel32.dll", EntryPoint = "GetFileInformationByHandleEx", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        internal static unsafe partial bool GetFileInformationByHandleExBuffer(SafeHandle file, int fileInformationClass, void* fileInformation, uint bufferSize);
-
         /// <summary>
-        /// <c>GetFinalPathNameByHandleW</c>: longitud sin el NUL si cabe; si no cabe, el tamaño necesario con el NUL; 0 si falla.
+        /// <c>DeviceIoControl</c> con <c>OVERLAPPED</c>: obligatorio si el handle es de E/S asíncrona (sin
+        /// <c>FILE_SYNCHRONOUS_IO_*</c>). Distinta de <see cref="Resolution.DeviceIoControl"/>, que es síncrona.
         /// </summary>
-        [LibraryImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", SetLastError = true)]
-        internal static unsafe partial uint GetFinalPathNameByHandle(SafeHandle file, char* filePath, uint filePathLength, uint flags);
-
-        /// <summary>
-        /// <c>DeviceIoControl</c> con <c>OVERLAPPED</c>: obligatorio si el handle se abrió con <c>FILE_FLAG_OVERLAPPED</c>.
-        /// </summary>
-        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [LibraryImport("kernel32.dll", EntryPoint = "DeviceIoControl", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        internal static unsafe partial bool DeviceIoControl(
+        internal static unsafe partial bool DeviceIoControlOverlapped(
             SafeHandle device,
             uint ioControlCode,
             void* inBuffer,
@@ -658,34 +822,44 @@ internal static partial class NativeMethods
         internal static partial bool CancelIoEx(SafeHandle file, nint overlapped);
 
         /// <summary>
-        /// <c>CancelSynchronousIo</c>: cancela la E/S síncrona pendiente del hilo (handle con <see cref="ThreadTerminate"/>);
-        /// <see langword="false"/> con <see cref="ErrorNotFound"/> si no había ninguna.
-        /// </summary>
-        [LibraryImport("kernel32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        internal static partial bool CancelSynchronousIo(nint thread);
-
-        [LibraryImport("kernel32.dll", SetLastError = true)]
-        internal static partial nint OpenThread(uint desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint threadId);
-
-        [LibraryImport("kernel32.dll")]
-        internal static partial uint GetCurrentThreadId();
-
-        [LibraryImport("kernel32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        internal static partial bool CloseHandle(nint handle);
-
-        /// <summary>
         /// <c>RtlSetProcessPlaceholderCompatibilityMode</c> (Windows 10 1803+): devuelve el modo anterior (<c>PHCM_*</c>) o un
         /// valor negativo si falla (<c>PHCM_ERROR_INVALID_PARAMETER</c> = -1, <c>PHCM_ERROR_NO_TEB</c> = -2).
         /// </summary>
         [LibraryImport("ntdll.dll")]
         internal static partial sbyte RtlSetProcessPlaceholderCompatibilityMode(sbyte mode);
 
+        [LibraryImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool OpenProcessToken(nint processHandle, uint desiredAccess, out nint tokenHandle);
+
+        /// <summary><c>DuplicateTokenEx</c>: <c>lpTokenAttributes</c> siempre NULL.</summary>
+        [LibraryImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool DuplicateTokenEx(SafeHandle existingToken, uint desiredAccess, nint tokenAttributes, int impersonationLevel, int tokenType, out nint newToken);
+
+        [LibraryImport("advapi32.dll", EntryPoint = "LookupPrivilegeValueW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool LookupPrivilegeValue(string? systemName, string name, out Luid luid);
+
         /// <summary>
-        /// <c>CfGetPlaceholderStateFromAttributeTag</c> (cldapi.dll): solo interpreta los dos valores, no llama al proveedor.
+        /// <c>AdjustTokenPrivileges</c>: devuelve <see langword="true"/> también si no ha podido asignar todo; entonces
+        /// <c>GetLastError</c> es <see cref="ErrorNotAllAssigned"/>.
         /// </summary>
-        [LibraryImport("cldapi.dll")]
-        internal static partial uint CfGetPlaceholderStateFromAttributeTag(uint fileAttributes, uint reparseTag);
+        [LibraryImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool AdjustTokenPrivileges(SafeHandle token, [MarshalAs(UnmanagedType.Bool)] bool disableAllPrivileges, in TokenPrivilege newState, uint bufferLength, nint previousState, nint returnLength);
+
+        [LibraryImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool GetTokenInformation(SafeHandle token, int tokenInformationClass, [Out] byte[]? tokenInformation, uint tokenInformationLength, out uint returnLength);
+
+        /// <summary><c>SetThreadToken</c> con <c>Thread</c> = NULL: el hilo actual.</summary>
+        [LibraryImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool SetThreadToken(nint thread, SafeHandle token);
+
+        [LibraryImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool RevertToSelf();
     }
 }

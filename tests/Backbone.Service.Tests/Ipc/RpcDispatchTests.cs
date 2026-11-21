@@ -29,8 +29,7 @@ public sealed partial class RpcDispatchTests : IAsyncLifetime
 
     public static TheoryData<string> MethodsNotYetImplemented =>
     [
-        nameof(IBackboneService.GetStatusAsync), nameof(IBackboneService.GetJobsAsync), nameof(IBackboneService.SaveJobAsync),
-        nameof(IBackboneService.DeleteJobAsync), nameof(IBackboneService.ValidateJobAsync), nameof(IBackboneService.RunNowAsync),
+        nameof(IBackboneService.RunNowAsync),
         nameof(IBackboneService.CancelRunAsync), nameof(IBackboneService.SetPauseAsync),
         nameof(IBackboneService.GetStorageInfoAsync), nameof(IBackboneService.GetHistoryAsync),
         nameof(IBackboneService.GetRunDetailAsync), nameof(IBackboneService.GetSnapshotsAsync), nameof(IBackboneService.BrowseSnapshotAsync),
@@ -57,6 +56,9 @@ public sealed partial class RpcDispatchTests : IAsyncLifetime
             // HU-04.
             nameof(IBackboneService.SaveCredentialAsync), nameof(IBackboneService.GetCredentialInfoAsync),
             nameof(IBackboneService.DeleteCredentialAsync),
+            // HU-07.
+            nameof(IBackboneService.GetStatusAsync), nameof(IBackboneService.GetJobsAsync), nameof(IBackboneService.SaveJobAsync),
+            nameof(IBackboneService.DeleteJobAsync), nameof(IBackboneService.ValidateJobAsync),
             // HU-05.
             nameof(IBackboneService.TestConnectionAsync),
         };
@@ -206,7 +208,7 @@ public sealed partial class RpcDispatchTests : IAsyncLifetime
     [Fact]
     public async Task Business_errors_from_the_real_dispatcher_carry_their_code_on_the_wire()
     {
-        var raw = await RawCallAsync("""{"jsonrpc":"2.0","id":1,"method":"GetStatusAsync","params":[]}""");
+        var raw = await RawCallAsync("""{"jsonrpc":"2.0","id":1,"method":"GetSettingsAsync","params":[]}""");
 
         Assert.Contains($"\"code\":{BackboneErrors.ToJsonRpcErrorCode(BackboneErrorCode.NotSupported)}", raw, StringComparison.Ordinal);
         Assert.DoesNotContain("\"code\":1015", raw, StringComparison.Ordinal);

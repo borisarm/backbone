@@ -41,29 +41,22 @@ internal sealed partial class ConnectionRpcTarget(IpcConnection connection, Back
         InvokeAsync(nameof(GetServiceInfoAsync), Read, caller => operations.GetServiceInfoAsync(caller, ct));
 
     public Task<ServiceStatus> GetStatusAsync(CancellationToken ct = default) =>
-        InvokeAsync<ServiceStatus>(nameof(GetStatusAsync), Read, _ => throw NotYet(nameof(GetStatusAsync)));
+        InvokeAsync(nameof(GetStatusAsync), Read, _ => operations.GetStatusAsync(ct));
 
-    // ---- Trabajos (HU-04) ----
+    // ---- Trabajos (HU-07) ----
 
     public Task<IReadOnlyList<JobDefinition>> GetJobsAsync(CancellationToken ct = default) =>
-        InvokeAsync<IReadOnlyList<JobDefinition>>(nameof(GetJobsAsync), Read, _ => throw NotYet(nameof(GetJobsAsync)));
+        InvokeAsync(nameof(GetJobsAsync), Read, _ => operations.GetJobsAsync(ct));
 
     public Task<JobDefinition> SaveJobAsync(JobDefinition job, CancellationToken ct = default) =>
-        InvokeAsync<JobDefinition>(nameof(SaveJobAsync), Write, _ =>
-        {
-            IpcInputValidator.Job(job);
-            throw NotYet(nameof(SaveJobAsync));
-        });
+        InvokeAsync(nameof(SaveJobAsync), Write, _ => operations.SaveJobAsync(IpcInputValidator.Job(job), ct));
 
     public Task DeleteJobAsync(Guid jobId, CancellationToken ct = default) =>
-        InvokeAsync(nameof(DeleteJobAsync), Write, _ => throw NotYet(nameof(DeleteJobAsync)));
+        InvokeAsync(nameof(DeleteJobAsync), Write, _ => operations.DeleteJobAsync(jobId, ct));
 
+    /// <summary>Escritura (§7.3, revisión de seguridad de HU-07): hace que SYSTEM abra las rutas de origen que indica el cliente.</summary>
     public Task<ValidationResult> ValidateJobAsync(JobDefinition job, CancellationToken ct = default) =>
-        InvokeAsync<ValidationResult>(nameof(ValidateJobAsync), Read, _ =>
-        {
-            IpcInputValidator.Job(job);
-            throw NotYet(nameof(ValidateJobAsync));
-        });
+        InvokeAsync(nameof(ValidateJobAsync), Write, _ => operations.ValidateJobAsync(IpcInputValidator.Job(job), ct));
 
     // ---- Ejecución ----
 

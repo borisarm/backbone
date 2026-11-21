@@ -1,4 +1,6 @@
+using Backbone.Service.Hosting;
 using Backbone.Service.Ipc;
+using Backbone.Service.Jobs;
 using Backbone.Service.Nas;
 using Backbone.Service.Os;
 using Backbone.Service.Persistence;
@@ -27,6 +29,12 @@ internal sealed class IpcTestHarness : IAsyncDisposable
         Directory.CreateDirectory(_temp.Combine("credentials")); // ídem (§8.3)
         Protector = protector ?? new DpapiMachineProtector();
         Credentials = new CredentialStore(_temp.Combine("credentials"), TestFileTrust.CurrentUser, Protector, Time, LoggerFactory.CreateLogger<CredentialStore>());
+        Jobs = new JobStore(_temp.Combine("config", "jobs.json"), TestFileTrust.CurrentUser, LoggerFactory.CreateLogger<JobStore>());
+        FileSystem.MapFinalDirectory((Path.GetDirectoryName(_temp.Path) ?? _temp.Path), (Path.GetDirectoryName(_temp.Path) ?? _temp.Path));
+        ProtectedFolders = new ProtectedFolderResolver(new ServicePaths(_temp.Path), FileSystem, LoggerFactory.CreateLogger<ProtectedFolderResolver>());
+        Runner = new SourceValidationRunner(Time, IoOptions);
+        Validator = new JobValidator(FileSystem, ProtectedFolders, Runner, HostResolver, Time, LoggerFactory.CreateLogger<JobValidator>());
+        Status = new ServiceStatusProvider(Jobs, Activity, Time);
         ConnectionTester = new ConnectionTester(
             new ShareConnectionManager(ShareConnector, LoggerFactory.CreateLogger<ShareConnectionManager>()),
             HostResolver,
@@ -34,10 +42,33 @@ internal sealed class IpcTestHarness : IAsyncDisposable
             Time,
             new ConnectionTestOptions(),
             LoggerFactory.CreateLogger<ConnectionTester>());
-        Operations = new BackboneOperations(Runtime, Settings, Accounts, Credentials, ConnectionTester);
+        Operations = new BackboneOperations(Runtime, Settings, Accounts, Credentials, Jobs, Validator, Activity, Status, ConnectionTester);
         Manager = new IpcConnectionManager(Authorizer, Accounts, Settings, Operations, Options, Time, LoggerFactory);
         Events = new IpcEventPublisher(Manager, Options, Time);
+        Broadcaster = new StatusBroadcaster(Jobs, Status, Events);
+        Broadcaster.Subscribe();
     }
+
+    /// <summary>Carpetas locales simuladas para la validación de trabajos (HU-07).</summary>
+    public FakeLocalFileSystemInspector FileSystem { get; } = new();
+
+    public FakeJobActivity Activity { get; } = new();
+
+    /// <summary>Plazos de la resolución de orígenes (las pruebas de plazo los acortan antes de usar el arnés).</summary>
+    public SourceIoOptions IoOptions { get; } = new();
+
+    /// <summary>Hilos de trabajo de la validación (como mucho 4 a la vez, MEDIA-1).</summary>
+    public SourceValidationRunner Runner { get; }
+
+    public JobValidator Validator { get; }
+
+    public JobStore Jobs { get; }
+
+    public ProtectedFolderResolver ProtectedFolders { get; }
+
+    public ServiceStatusProvider Status { get; }
+
+    public StatusBroadcaster Broadcaster { get; }
 
     public FakeTimeProvider Time { get; } = new(new DateTimeOffset(2026, 11, 15, 10, 0, 0, TimeSpan.Zero));
 
@@ -133,7 +164,9 @@ internal sealed class IpcTestHarness : IAsyncDisposable
         }
 
         await Manager.DisposeAsync();
+        Broadcaster.Dispose();
         Events.Dispose();
+        Jobs.Dispose();
         Settings.Dispose();
         Credentials.Dispose();
         LoggerFactory.Dispose();

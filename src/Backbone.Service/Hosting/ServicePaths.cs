@@ -13,6 +13,9 @@ internal sealed class ServicePaths(string root)
 
     public string SettingsFile => Path.Combine(ConfigDirectory, "settings.json");
 
+    /// <summary><c>config\jobs.json</c>: definición de los trabajos (§8.2, HU-07).</summary>
+    public string JobsFile => Path.Combine(ConfigDirectory, "jobs.json");
+
     /// <summary><c>credentials\</c>: un archivo cifrado por recurso (§8.3, HU-04).</summary>
     public string CredentialsDirectory => Path.Combine(Root, "credentials");
 }

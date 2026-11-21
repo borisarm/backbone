@@ -1,4 +1,5 @@
 using Backbone.Service.Ipc;
+using Backbone.Service.Jobs;
 using Backbone.Service.Nas;
 using Backbone.Service.Os;
 using Backbone.Service.Persistence;
@@ -81,7 +82,8 @@ internal static class BackboneHost
             sp.GetRequiredService<ServicePaths>().SettingsFile,
             sp.GetRequiredService<TrustedFile>(),
             sp.GetRequiredService<ILogger<SettingsStore>>(),
-            sp.GetRequiredService<IAccountDirectory>()));
+            sp.GetRequiredService<IAccountDirectory>(),
+            sp.GetRequiredService<TimeProvider>()));
         services.AddSingleton<IAuthorizedUserList>(sp => sp.GetRequiredService<SettingsStore>());
 
         // Credenciales del NAS (HU-04, ADR-07): DPAPI con ámbito equipo, un archivo por recurso en credentials\.
@@ -93,6 +95,24 @@ internal static class BackboneHost
             sp.GetRequiredService<TimeProvider>(),
             sp.GetRequiredService<ILogger<CredentialStore>>()));
         services.AddSingleton<ShareCredentialProvider>();
+
+        // Trabajos (HU-07): jobs.json, validación (RF-03) y carpetas protegidas (§8.3), reutilizadas por el JobRunner. La
+        // resolución controlada de los orígenes (ADR-20) se hace fuera del hilo RPC, con plazo y como mucho 4 a la vez.
+        services.TryAddSingleton<ILocalFileSystemInspector, WindowsLocalFileSystemInspector>();
+        services.TryAddSingleton(new SourceIoOptions());
+        services.AddSingleton<SourceValidationRunner>();
+        services.TryAddSingleton<IProcessMitigations, WindowsProcessMitigations>();
+        services.AddSingleton(sp => new JobStore(
+            sp.GetRequiredService<ServicePaths>().JobsFile,
+            sp.GetRequiredService<TrustedFile>(),
+            sp.GetRequiredService<ILogger<JobStore>>(),
+            JobStore.MaxFileBytes,
+            sp.GetRequiredService<TimeProvider>()));
+        services.AddSingleton<IJobList>(sp => sp.GetRequiredService<JobStore>());
+        services.AddSingleton<ProtectedFolderResolver>();
+        services.AddSingleton<JobValidator>();
+        services.TryAddSingleton<IJobActivity, NoJobActivity>();
+        services.AddSingleton<ServiceStatusProvider>();
 
         // Conexión al NAS (HU-05, §8.2 ShareConnector).
         services.TryAddSingleton<IShareConnector, WindowsShareConnector>();
@@ -114,8 +134,11 @@ internal static class BackboneHost
         // Lectura de los orígenes (HU-08, §8.2): expone los marcadores de la nube al arrancar.
         services.AddSourceReading();
 
-        // Orden de arranque: comprobación de la carpeta y ajustes (StartingAsync) antes de crear el pipe.
+        // Orden de arranque: Redirection Guard (§8.3), comprobación de la carpeta y ajustes (StartingAsync) antes de crear el pipe.
+        services.AddHostedService<ProcessMitigationStartup>();
         services.AddHostedService<StartupService>();
+        services.AddSingleton<StatusBroadcaster>();
+        services.AddHostedService(sp => sp.GetRequiredService<StatusBroadcaster>());
         services.AddHostedService(sp => sp.GetRequiredService<IpcServer>());
         return services;
     }

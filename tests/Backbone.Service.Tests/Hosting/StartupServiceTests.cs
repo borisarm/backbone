@@ -17,16 +17,22 @@ public sealed class StartupServiceTests : IDisposable
 {
     private readonly TempDirectory _temp = new();
     private readonly FakeEventLogWriter _eventLog = new();
+    private readonly JobStore _jobs;
 
     public StartupServiceTests()
     {
         // Con el guardián real la crea el arranque (§8.3); aquí el guardián es un doble.
         Directory.CreateDirectory(_temp.Combine("config"));
+        _jobs = new JobStore(_temp.Combine("config", "jobs.json"), TestFileTrust.CurrentUser, NullLogger<JobStore>.Instance);
     }
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    public void Dispose() => _temp.Dispose();
+    public void Dispose()
+    {
+        _jobs.Dispose();
+        _temp.Dispose();
+    }
 
     [Fact]
     public async Task A_replaced_data_directory_writes_warning_1003_with_the_moved_aside_path_and_the_service_starts()
@@ -131,6 +137,54 @@ public sealed class StartupServiceTests : IDisposable
     }
 
     [Fact]
+    [Trait("Story", "HU-07")]
+    public async Task The_start_reads_the_saved_jobs()
+    {
+        await File.WriteAllTextAsync(
+            _temp.Combine("config", "jobs.json"),
+            $$"""{ "schemaVersion": 1, "jobs": [ { "id": "{{Guid.NewGuid()}}", "name": "Docs", "sources": [ { "alias": "Docs", "path": "C:\\Docs" } ], "destination": "\\\\nas\\b" } ] }""",
+            Ct);
+        using var settings = new SettingsStore(_temp.Combine("config", "settings.json"), TestFileTrust.CurrentUser, NullLogger<SettingsStore>.Instance);
+
+        await NewStartup(new FakeGuard(DataDirectoryCheck.Secure), settings).StartingAsync(Ct);
+
+        Assert.Equal("Docs", Assert.Single(_jobs.Jobs).Name);
+    }
+
+    [Fact]
+    [Trait("Story", "HU-07")]
+    public async Task A_corrupt_jobs_file_does_not_stop_the_start()
+    {
+        await File.WriteAllTextAsync(_temp.Combine("config", "jobs.json"), "{ roto", Ct);
+        using var settings = new SettingsStore(_temp.Combine("config", "settings.json"), TestFileTrust.CurrentUser, NullLogger<SettingsStore>.Instance);
+
+        await NewStartup(new FakeGuard(DataDirectoryCheck.Secure), settings).StartingAsync(Ct);
+
+        Assert.Empty(_jobs.Jobs);
+
+        // §8.5: 1004 (advertencia) para que no pase desapercibido; nunca lleva el contenido.
+        var entry = Assert.Single(_eventLog.Entries);
+        Assert.Equal((EventLogLevel.Warning, BackboneEventIds.JobsFileCorrupt), (entry.Level, entry.EventId));
+        Assert.DoesNotContain("roto", entry.Message, StringComparison.Ordinal);
+        Assert.Contains("jobs.json.bad-", entry.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    [Trait("Story", "HU-07")]
+    public async Task A_rejected_jobs_file_stops_the_start_with_error_1002_without_reading_it()
+    {
+        Directory.CreateDirectory(_temp.Combine("config", "jobs.json"));
+        using var settings = new SettingsStore(_temp.Combine("config", "settings.json"), TestFileTrust.CurrentUser, NullLogger<SettingsStore>.Instance);
+
+        var ex = await Assert.ThrowsAsync<ServiceStartupException>(() => NewStartup(new FakeGuard(DataDirectoryCheck.Secure), settings).StartingAsync(Ct));
+
+        Assert.Equal(UntrustedFileReason.NotAFile, Assert.IsType<UntrustedFileException>(ex.InnerException).Reason);
+        var entry = Assert.Single(_eventLog.Entries);
+        Assert.Equal(BackboneEventIds.ServiceStartFailed, entry.EventId);
+        Assert.Contains("jobs.json", entry.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task A_missing_config_folder_stops_the_start_with_error_1002()
     {
         Directory.Delete(_temp.Combine("config"));
@@ -158,7 +212,7 @@ public sealed class StartupServiceTests : IDisposable
     }
 
     private StartupService NewStartup(IDataDirectoryGuard guard, SettingsStore settings) =>
-        new(new ServicePaths(_temp.Path), guard, settings, _eventLog, new ServiceRuntimeInfo(TimeProvider.System), NullLogger<StartupService>.Instance);
+        new(new ServicePaths(_temp.Path), guard, settings, _jobs, _eventLog, new ServiceRuntimeInfo(TimeProvider.System), NullLogger<StartupService>.Instance);
 
     private sealed class ThrowingGuard(Exception exception) : IDataDirectoryGuard
     {

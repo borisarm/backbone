@@ -97,8 +97,9 @@ public sealed class TrustedFileElevatedTests : IDisposable
         SetOwner(paths.SettingsFile, WindowsTestEnvironment.CurrentUserSid);
         var eventLog = new FakeEventLogWriter();
         using (var settings = new SettingsStore(paths.SettingsFile, _files, NullLogger<SettingsStore>.Instance))
+        using (var jobs = new JobStore(paths.JobsFile, _files, NullLogger<JobStore>.Instance))
         {
-            var startup = new StartupService(paths, new SecureGuard(), settings, eventLog, new ServiceRuntimeInfo(TimeProvider.System), NullLogger<StartupService>.Instance);
+            var startup = new StartupService(paths, new SecureGuard(), settings, jobs, eventLog, new ServiceRuntimeInfo(TimeProvider.System), NullLogger<StartupService>.Instance);
             await Assert.ThrowsAsync<ServiceStartupException>(() => startup.StartingAsync(Ct));
         }
 
@@ -106,8 +107,9 @@ public sealed class TrustedFileElevatedTests : IDisposable
 
         SetOwner(paths.SettingsFile, Administrators);
         using (var settings = new SettingsStore(paths.SettingsFile, _files, NullLogger<SettingsStore>.Instance))
+        using (var jobs = new JobStore(paths.JobsFile, _files, NullLogger<JobStore>.Instance))
         {
-            var startup = new StartupService(paths, new SecureGuard(), settings, new FakeEventLogWriter(), new ServiceRuntimeInfo(TimeProvider.System), NullLogger<StartupService>.Instance);
+            var startup = new StartupService(paths, new SecureGuard(), settings, jobs, new FakeEventLogWriter(), new ServiceRuntimeInfo(TimeProvider.System), NullLogger<StartupService>.Instance);
             await startup.StartingAsync(Ct);
         }
     }
