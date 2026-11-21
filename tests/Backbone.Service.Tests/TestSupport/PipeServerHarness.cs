@@ -3,6 +3,7 @@ using System.Security.Principal;
 using Backbone.Service.Hosting;
 using Backbone.Service.Ipc;
 using Backbone.Service.Jobs;
+using Backbone.Service.Nas;
 using Backbone.Service.Os;
 using Backbone.Service.Persistence;
 using Microsoft.Extensions.Logging;
@@ -33,7 +34,15 @@ internal sealed class PipeServerHarness : IAsyncDisposable
         var protectedFolders = new ProtectedFolderResolver(new ServicePaths(_temp.Path), fileSystem, LoggerFactory.CreateLogger<ProtectedFolderResolver>());
         var activity = new FakeJobActivity();
         var status = new ServiceStatusProvider(Jobs, activity, TimeProvider.System);
-        var operations = new BackboneOperations(new ServiceRuntimeInfo(TimeProvider.System), Settings, Accounts, Credentials, Jobs, new JobValidator(fileSystem, protectedFolders), activity, status);
+        // Conector real (HU-05): estas pruebas no llaman a TestConnectionAsync, así que nunca conecta.
+        var connectionTester = new ConnectionTester(
+            new ShareConnectionManager(new WindowsShareConnector(LoggerFactory.CreateLogger<WindowsShareConnector>()), LoggerFactory.CreateLogger<ShareConnectionManager>()),
+            new DnsHostResolver(),
+            new ShareCredentialProvider(Credentials, LoggerFactory.CreateLogger<ShareCredentialProvider>()),
+            TimeProvider.System,
+            new ConnectionTestOptions(),
+            LoggerFactory.CreateLogger<ConnectionTester>());
+        var operations = new BackboneOperations(new ServiceRuntimeInfo(TimeProvider.System), Settings, Accounts, Credentials, Jobs, new JobValidator(fileSystem, protectedFolders), activity, status, connectionTester);
         Manager = new IpcConnectionManager(authorizer, Accounts, Settings, operations, options, TimeProvider.System, LoggerFactory);
         Events = new IpcEventPublisher(Manager, options, TimeProvider.System);
         Server = new IpcServer(Manager, Settings, EventLog, options, LoggerFactory.CreateLogger<IpcServer>());

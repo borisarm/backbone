@@ -181,11 +181,28 @@ Como Ana, quiero elegir las carpetas que se copian y el destino en el NAS, para 
   5. `jobs.json` se escribe de forma atómica: matar el servicio a mitad no lo corrompe.
   6. Dado un origen que es `%ProgramData%\Backbone`, una carpeta dentro de ella o un *junction* que apunta a ella o a su interior, cuando valido o guardo el trabajo, entonces `ValidateJobAsync`/`SaveJobAsync` lo rechazan con `SourceNotAllowed` en `Sources[i].Path` (comparando rutas finales, §8.3) y la app muestra el error junto al origen. Dado un origen que la contiene (`C:\`, `C:\ProgramData`), se guarda y la validación devuelve el aviso `SourceContainsDataFolder`. Lo mismo con las carpetas apartadas `%ProgramData%\Backbone.untrusted-<guid>` (ADR-13).
 - **Decidido (revisión de seguridad de HU-04, MEDIA-1)**: la carpeta de datos nunca se copia al NAS (ADR-16, §8.3). backbone-service implementa la comprobación en la validación y su repetición al empezar cada ejecución; backbone-app muestra el error y el aviso. Los códigos `SourceNotAllowed` (26) y `SourceContainsDataFolder` (27) ya están en `Backbone.Contracts` (contrato 1.2). Desde HU-13 la regla cubre también las carpetas apartadas (decisión del coordinador, §8.3 "Carpetas protegidas").
+- **Decidido (coordinador, HU-07)**:
+  - **`jobs.json` rechazado** por las reglas de lectura de la carpeta de datos (propietario no fiable, punto de reanálisis, carpeta o enlace duro): el servicio no arranca y registra el evento 1002, igual que con `settings.json`. Si se rechaza al escribir después del arranque, no se escribe nada y la operación IPC falla (§8.2, ADR-14).
+  - **`jobs.json` dañado** (JSON no válido o más de 64 MiB): el servicio arranca sin trabajos, registra el evento **1004** (Advertencia, §8.5) y lo aparta en la siguiente escritura con las mismas reglas que `settings.json` (§8.2 "Copias apartadas `.bad`"). backbone-app no necesita nada especial: mostrará el asistente de primer uso, y el evento deja constancia.
+- **Decidido (revisión de seguridad de la parte de servicio de HU-07, coordinador)**:
+  - **ALTA-1, resolución controlada de los orígenes** (ADR-20, §8.3). `ILocalFileSystemInspector` deja de abrir siguiendo los puntos de reanálisis. Recorre la ruta componente a componente con `NtCreateFile` relativo al handle del padre y `FILE_OPEN_REPARSE_POINT`. El destino de cada sustituto de nombre se lee con `FSCTL_GET_REPARSE_POINT` y solo se continúa hacia `\??\X:\…` o `\??\Volume{guid}\…`. Cualquier otro destino da `SourceNotLocal` sin abrirlo. Tope de 63 saltos y `GetFinalPathNameByHandle` como defensa en profundidad. La usan la validación, el `JobRunner` al empezar cada ejecución y el cálculo de `%ProgramData%`. Redirection Guard se activa al arrancar como defensa complementaria. Pruebas obligatorias:
+    - enlace simbólico de carpeta hacia `\\host\r`, en el último componente y en uno intermedio;
+    - *junction* hacia `\RPC Control\x`;
+    - enlace relativo que sube por encima de la raíz;
+    - ciclo de enlaces;
+    - *junction* local legítimo hacia otra carpeta NTFS;
+    - en todos los casos de red, comprobar que **no hay ningún intento de conexión** (p. ej. con un doble que registre las aperturas, o con un servidor SMB de prueba en la integración).
+  - **Permiso de `ValidateJobAsync`**: pasa a ser de **escritura** (auditada), como `TestConnectionAsync` (§7.3, tabla de permisos).
+  - **MEDIA-1**: la validación de orígenes no se hace de forma síncrona en el hilo RPC. Hay como mucho 4 validaciones simultáneas en todo el servicio (el `JobRunner` no cuenta), y cada apertura tiene un plazo de 60 s. La búsqueda de `Backbone.untrusted-*` para al encontrar 101 carpetas reales (§8.3).
+  - **BAJA-1, ruta de origen normalizada** (§7.5 "Ruta de origen"): se rechazan con `SourcePathInvalid` (29) los `:` fuera de la posición 1, los segmentos vacíos, `.` y `..`, y los que no cumplen `SnapshotPaths.IsValidSegment` (punto o espacio final…). Lo que se guarda en `jobs.json` y devuelve `SaveJobAsync` es la ruta normalizada. El acceso denegado, el plazo vencido y los componentes que no se atraviesan (solo en la nube, etiqueta no legible) dan `SourceUnreadable` (28) y no `SourceNotFound`. Los dos códigos son del contrato 1.3; backbone-app les da texto en es-ES y en-US.
+  - **BAJA-2**: el `JobRunner` comprueba al empezar que hay credencial guardada y, si no, termina `Failed` con `CredentialRequired` sin conectar (§8.4, paso 2).
+  - **BAJA-3**: las copias `.bad` no se sobrescriben. Se apartan como `<archivo>.bad-<marca UTC>`, con 5 como máximo por archivo y borrando por handle la más antigua. Vale igual para `settings.json` y `jobs.json` (§8.2).
+  - **Destino anidado** (criterio 3): un destino que esté dentro del de otro trabajo o lo contenga (`\\nas\b` frente a `\\nas\b\pc`, en cualquier sentido) cuenta como `DestinationUsedByOtherJob`. Se comparan los destinos normalizados por `UncPaths.TryParse` por segmentos completos, sin distinguir mayúsculas y sin resolver nombres de servidor (RF-03).
 
 ### HU-08 · Excluir archivos y carpetas
 Como Luis, quiero excluir archivos por patrones, para no copiar temporales ni carpetas enormes que no necesito.
 
-- **Fase** MVP · **Puntos** 3 · **Depende de** HU-13 (y HU-07 para el editor de exclusiones) · **Agente** backbone-core (backbone-app) · **Requisitos** RF-04, RF-05 (F2), RF-06
+- **Fase** MVP · **Puntos** 3 · **Depende de** HU-13 (y HU-07 para el editor de exclusiones) · **Agente** backbone-core (backbone-app) · **Requisitos** RF-04, RF-05 (F2), RF-06, RF-07 (F2)
 - **Criterios**
   1. Las exclusiones por defecto de RF-04 vienen precargadas y se pueden quitar.
   2. Los patrones `*.tmp`, `**/node_modules/**` y `Documentos/Privado/**` excluyen exactamente lo esperado (tabla de casos en pruebas, sin distinguir mayúsculas).
@@ -199,6 +216,16 @@ Como Luis, quiero excluir archivos por patrones, para no copiar temporales ni ca
   - M-A: `FILE_FLAG_OPEN_REPARSE_POINT` solo protege el último componente. `SourceFileSystem` (backbone-service), tras abrir cualquier elemento y sobre el mismo handle, comprueba con `GetFinalPathNameByHandle` (`FILE_NAME_NORMALIZED | VOLUME_NAME_NT`) que la ruta final es exactamente la ruta final de la raíz del origen más la ruta relativa, y que la ruta relativa no cae en una exclusión obligatoria; si no, `SourceAccessException(ReparsePointSkipped)` (§8.2, ADR-18). Alternativa válida: abrir relativo al handle del padre (`NtCreateFile` con `RootDirectory`, un componente, `OBJ_DONT_REPARSE`). `ISourceFileSystem` no cambia de firma: la implementación se crea por ejecución con los `BackupSource` y deduce la ruta relativa quitando `ReadPath\`; rechaza con `PathInvalid` rutas fuera de los orígenes o con segmentos vacíos, `.` o `..`. Prueba obligatoria: sustituir una carpeta **intermedia** ya enumerada por un *junction* hacia una carpeta con un archivo "secreto" y comprobar que no se lee.
   - M-B: las carpetas apartadas son solo entradas `Backbone.untrusted-*` de la ruta final de `%ProgramData%` que sean **carpetas reales** (abiertas con `FILE_FLAG_OPEN_REPARSE_POINT`; un *junction* o un archivo con ese nombre se ignora), y su ruta es su ubicación, nunca su destino. Como mucho 100; si hay más, los orígenes que contienen `%ProgramData%` fallan cerrados (`SourceNotAllowed` en la validación, `ValidationFailed` en la ejecución) con aviso en el log (§8.3, ADR-16, R11). Lo implementa backbone-service, donde viva el cálculo de las carpetas protegidas (HU-07/HU-13).
   - B-1: la raíz de un origen que no se puede recorrer da el aviso `SourceRootUnreadable` (13, contrato 1.2) en vez del de la causa (§8.4, R11). Lo emite el motor (backbone-core); backbone-app le da un texto propio en es-ES y en-US.
+- **Decidido (usuario y coordinador, HU-08; ADR-19)**:
+  - **Clasificación por etiqueta** (§8.2 "Clasificación por etiqueta"): solo es enlace (`ReparsePointSkipped`, sin conservar nada) una etiqueta sustituto de nombre (`IsReparseTagNameSurrogate`). Se lee por su contenido lo que no es punto de reanálisis y la lista blanca: `IO_REPARSE_TAG_CLOUD*` totalmente descargado, `IO_REPARSE_TAG_WOF` e `IO_REPARSE_TAG_DEDUP`. Cualquier otra etiqueta es no legible (`ReadError` con la etiqueta en hexadecimal) y conserva la versión del padre (RF-25). backbone-core clasifica en el motor con `SourceEntry.Attributes` y `SourceEntry.ReparseTag` antes de abrir. backbone-service repite la clasificación sobre el handle (`FileAttributeTagInfo`) en `SourceFileSystem`.
+  - **`SourceEntry.ReparseTag`** (`uint`, `init`, por defecto 0): cambio de tipo en Core. La firma de `ISourceFileSystem` no cambia. En la enumeración sale de `EaSize` de `FILE_ID_BOTH_DIR_INFO` cuando hay `FILE_ATTRIBUTE_REPARSE_POINT`. Un punto de reanálisis con etiqueta 0 es no legible.
+  - **OneDrive solo en la nube** (§8.2 "Archivos y carpetas solo en la nube", R4): el servicio llama a `RtlSetProcessPlaceholderCompatibilityMode(PHCM_EXPOSE_PLACEHOLDERS)` al arrancar. Con `RECALL_ON_OPEN`, `RECALL_ON_DATA_ACCESS` u `OFFLINE` (este, solo con etiqueta de nube o HSM), o con estado `PARTIAL` (`CfGetPlaceholderStateFromAttributeTag`), el elemento se omite sin abrirlo con `CloudOnlySkipped` y conserva la versión del padre, en vivo y en VSS. Antes de leer un marcador de nube se comprueba `FSCTL_QUERY_ALLOCATED_RANGES`.
+  - **Carpetas de nube no pobladas** (a raíz de QA): no se recorren (`CloudOnlySkipped`) y conservan del padre lo que tenían debajo. Así no se piden metadatos al proveedor en vivo ni se pierden hijos en VSS.
+  - **Apertura para leer el contenido** (§8.2): la primera apertura se hace con `FILE_FLAG_OPEN_REPARSE_POINT` y la comprobación de ruta final (ADR-18). Lo de la lista blanca se lee de un segundo handle sin esa marca (`ReOpenFile`), comprobando que tiene el mismo identificador, la misma clase de etiqueta y la ruta final esperada.
+  - **Plazo** de 60 s por apertura, enumeración o lectura de bloque, más 30 s para la cancelación. Al vencer el plazo, `ReadError` y se conserva la versión del padre. Si la cancelación no vuelve, `Failed` con `Internal` (R12).
+  - **Vista previa por IPC** (criterio 5, F2, RF-07): se hace con los mismos orígenes validados (§8.3) y las mismas exclusiones obligatorias que una ejecución, leyendo con `SourceFileSystem`.
+  - **Patrones de exclusión** (criterio 2): la semántica y la validación están en §4.1 "Patrones de exclusión", incluidas la normalización NFC y el presupuesto de coste de la lista (`ExclusionMatcher.MaxListCost` = 131 584; una lista que lo supera da `ExclusionPatternInvalid` en `Exclusions`, sin índice; el servicio valida con `ExclusionMatcher.ValidateList`).
+  - **Prueba manual**: PM-HU08-01 (OneDrive real sin descargar, descargado y fijado, WOF y enlaces, en vivo y desde VSS). Avisos habituales de perfiles de usuario: R13 (pendiente de decidir).
 
 ### HU-09 · Programar un trabajo
 Como Ana, quiero que la copia se haga sola a la hora que elija, para no tener que acordarme.
@@ -274,6 +301,13 @@ Como Luis, quiero lanzar una copia en el momento y poder cancelarla, para contro
   1. "Copiar ahora" en Inicio, en la bandeja ("Copiar todo ahora") y en Trabajos lanza o encola la ejecución.
   2. "Cancelar" detiene la ejecución en menos de 5 s; queda `Cancelled`, sin snapshot nuevo.
   3. Tras cancelar, `check` del repositorio es correcto y la siguiente ejecución termina bien.
+- **Requisito previo (revisión final de seguridad de HU-05; decisión del coordinador)**: antes de que las copias usen `ShareConnectionManager`, backbone-service corrige en el gestor (§8.2 "Conexiones al NAS"):
+  - **M-1, oráculo de contraseñas**: la reutilización de una conexión se decide por la **identidad** de la credencial guardada (raíz más `UpdatedUtc`), no por su contenido. Se quita la huella HMAC. Una credencial explícita no guardada nunca comparte una conexión ajena. Si ya hay otra conexión con ese servidor que no se puede compartir, la respuesta es `NasBusy` (1018, contrato 1.3), coincida o no el secreto. Además, tras 5 `CredentialsRejected` seguidos de un SID, sus pruebas con credencial explícita dan `NasBusy` durante 5 min. backbone-app traduce `NasBusy` (es-ES y en-US).
+  - **B-1**: un `AcquireAsync` de una raíz en estado "cerrando" espera a que termine la desconexión pendiente.
+  - **B-2**: en la parada, el gestor queda cerrado (`AcquireAsync` lanza) y las conexiones aún en curso se desconectan a la fuerza cuando terminan. 2250 no se registra como "forzada". El límite de dos pruebas en total cuenta las operaciones abandonadas, y los semáforos por servidor se liberan cuando quedan libres.
+  - **B-3**: la ruta final del archivo de prueba se comprueba sobre su handle ya abierto, antes de escribir. Si no se puede obtener, `AccessDenied`.
+  - Informativo: la sesión de inicio `0x3e7` es común a todos los servicios LocalSystem (§8.2). Riesgo de *DNS rebinding* y de referencias DFS hacia el propio equipo: R14 (§13).
+- **Al empezar cada ejecución** (HU-07, §8.4 paso 2): el `JobRunner` repite la resolución controlada de los orígenes (ADR-20) y la comprobación de la credencial guardada (`CredentialRequired` sin conectar).
 
 ### HU-15 · Copiar archivos abiertos (VSS)
 Como Ana, quiero que se copien también los archivos que tengo abiertos, como el correo de Outlook, para que no queden fuera de la copia.
@@ -543,7 +577,7 @@ Las historias de una misma fila pueden desarrollarse en paralelo por agentes dis
 | HU-02 | MVP | 3 | backbone-installer | Pendiente |
 | HU-03 | F2 | 5 | backbone-app | Pendiente |
 | HU-04 | MVP | 5 | backbone-service | Hecha (servicio; criterio 4 pendiente de la app; criterio 5 en PM-HU04-01) |
-| HU-05 | MVP | 3 | backbone-service | Pendiente |
+| HU-05 | MVP | 3 | backbone-service | Hecha (servicio; botón de la app pendiente; PM-HU05-01 e integración contra el NAS pendientes) |
 | HU-06 | MVP | 3 | backbone-service | Pendiente |
 | HU-07 | MVP | 5 | backbone-app | Pendiente |
 | HU-08 | MVP | 3 | backbone-core | Pendiente |

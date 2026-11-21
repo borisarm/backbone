@@ -383,3 +383,63 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 **Resultado esperado:** los mensajes salen de los textos `.resw` (es-ES y en-US) para los códigos devueltos por el servicio, sin reglas duplicadas en la app (criterio 4).
 
 **Estado:** pendiente (depende de backbone-app).
+
+## PM-HU08-01 · OneDrive real, WOF y puntos de reanálisis: en vivo y desde VSS
+
+**Cubre:** HU-08, criterios 3 y 4 (RF-06, R4, ADR-19, §8.2 "Clasificación por etiqueta", "Archivos y carpetas solo en la nube" y "Apertura para leer el contenido").
+
+**Por qué es manual:** necesita OneDrive (o otro proveedor de la Cloud Files API) con una cuenta real, la instantánea VSS de un volumen real y el servicio instalado como LocalSystem. Las pruebas automáticas usan simuladores de `ISourceFileSystem` con atributos y etiquetas fijos.
+
+**Preparación**
+1. En una máquina con OneDrive iniciado y "Archivos a petición" activado, crear en la carpeta de OneDrive `PruebaBackbone\` con:
+   - `nube.bin`: unos 5 MiB de datos aleatorios. Esperar a que se sincronice y elegir "Liberar espacio" (solo en la nube; atributos con `RECALL_ON_DATA_ACCESS`).
+   - `descargado.bin`: datos aleatorios, sincronizado y abierto una vez (descargado, sin fijar).
+   - `fijado.bin`: datos aleatorios con "Mantener siempre en este dispositivo".
+   - Una subcarpeta `sub\` con un archivo descargado.
+2. Fuera de OneDrive, en el mismo origen o en otro, crear:
+   - `wof.bin` comprimido con `compact /c /exe:xpress4k wof.bin`;
+   - un *junction* `mklink /J enlace C:\Windows`;
+   - un enlace simbólico a un archivo.
+3. Anotar el SHA-256 (`Get-FileHash`) de `descargado.bin`, `fijado.bin` y `wof.bin`, y el de `nube.bin` antes de liberar espacio.
+
+**Pasos**
+1. Crear un trabajo con origen `%OneDrive%\PruebaBackbone` y otro con la carpeta del paso 2. Ejecutarlos **con VSS** ("Copiar ahora").
+2. Comprobar en el snapshot y en la ejecución:
+   - `descargado.bin`, `fijado.bin`, `sub\…` y `wof.bin` están, y su `h` es el SHA-256 anotado;
+   - `nube.bin` no está en el primer snapshot y hay un aviso `CloudOnlySkipped`;
+   - `enlace` y el enlace simbólico tienen aviso `ReparsePointSkipped` y no están;
+   - los atributos de `nube.bin` siguen con `RECALL_ON_DATA_ACCESS` (no se ha descargado) y OneDrive no muestra actividad de descarga.
+3. Descargar `nube.bin`, copiar otra vez y comprobar que ahora está con el SHA-256 anotado. Liberar espacio de nuevo y copiar: la entrada se conserva con el mismo `h` (versión del padre) y hay aviso `CloudOnlySkipped`.
+4. Modificar `nube.bin` desde otro equipo o desde la web de OneDrive sin descargarlo en esta máquina, y copiar: no debe aparecer ninguna versión nueva. Comprobar sobre `objects\` que ningún objeto del tamaño de `nube.bin` es todo ceros.
+5. Repetir los pasos 1 a 4 **sin VSS**, deshabilitando el servicio de instantáneas o con un origen en un volumen sin VSS.
+6. Con el servicio en ejecución, comprobar con Process Monitor que el proceso `Backbone.Service` no genera lecturas de datos sobre `nube.bin`.
+7. Registrar el resultado de leer `wof.bin` y los marcadores de nube **desde VSS**, para confirmar §8.2 "Apertura para leer el contenido", punto 3: ¿abre el segundo handle sin `FILE_FLAG_OPEN_REPARSE_POINT` o falla con `ERROR_CANT_ACCESS_FILE`?
+
+**Resultado esperado:** los archivos descargados, los fijados y los WOF se copian con su contenido real; un archivo no descargado nunca se descarga ni se guarda como ceros, en vivo ni desde VSS, y conserva su versión anterior; los enlaces no se siguen.
+
+**Estado:** pendiente (requiere `SourceFileSystem` de HU-08, servicio instalado y VSS de HU-15).
+
+## PM-HU05-01 · Probar la conexión contra el NAS real (OpenMediaVault)
+
+**Cubre:** HU-05, criterios 1 a 5 (RF-61) con `WNetAddConnection2` y Samba reales, y con el servicio instalado como LocalSystem.
+
+**Por qué es manual:** exige un NAS real con un recurso de lectura y escritura, otro de solo lectura y poder apagar el NAS. Las pruebas automáticas usan un doble (`ConnectionTesterTests`, `ConnectionTestIpcTests`). En `Backbone.IntegrationTests`, `WindowsShareConnectorTests` prueba siempre el servidor inexistente y el resto solo si se definen `BACKBONE_IT_SMB_SHARE`, `BACKBONE_IT_SMB_USER`, `BACKBONE_IT_SMB_PASSWORD` y, opcionalmente, `BACKBONE_IT_SMB_READONLY_SHARE`.
+
+**Pasos**
+1. En PowerShell (no hace falta elevar), definir esas variables para `\\192.168.1.163\<recurso>` y ejecutar `dotnet test tests\Backbone.IntegrationTests --filter "FullyQualifiedName~WindowsShareConnectorTests"`: 5 correctas y 0 omitidas.
+2. Con el servicio instalado y la app (cuando backbone-app implemente el botón), "Probar conexión" con datos correctos: "Conexión correcta", espacio libre y total coherentes con el panel de OMV y la versión SMB (3.1.1 con Samba actual).
+3. Con la contraseña errónea: "El NAS ha rechazado el usuario o la contraseña".
+4. Con un recurso inexistente y la credencial correcta: el mensaje de recurso inexistente. (Con Samba, si además la contraseña es errónea, gana el rechazo de credenciales: el servidor autentica antes de buscar el recurso.)
+5. Con un recurso de solo lectura para ese usuario: el mensaje de "sin permiso de escritura".
+6. Apagar el NAS (o desconectar su cable) y probar: "No se encuentra el NAS en la red" en menos de 15 s, cronometrados desde el clic.
+7. Tras cada paso, en el NAS: ningún archivo `.backbone-prueba-*.tmp` en el recurso ni en la carpeta del destino (`ls -la` por SSH).
+8. Con una conexión del servicio abierta contra el mismo NAS con **otra** cuenta (copia en curso, cuando exista HU-14), probar la conexión: el resultado es `CredentialsRejected` y la copia en curso no se interrumpe. El servicio lo decide sin llamar a Windows (`ShareConnectionManager` compara una huella de la credencial; en el log, "Ya hay una conexión con el servidor … con otra credencial"); Windows daría `ERROR_SESSION_CREDENTIAL_CONFLICT` (1219), porque no admite dos usuarios contra el mismo servidor en la misma sesión de inicio.
+9. Con una conexión ya abierta al recurso con la credencial correcta (copia en curso), probar con la contraseña errónea: `CredentialsRejected`, igual que en el paso 8 (revisión de seguridad de HU-05, BAJA-1). Sin el gestor, Windows reutilizaría la sesión SMB existente y daría la prueba por correcta. Con la contraseña correcta: "Conexión correcta" y, al terminar la prueba, la conexión de la copia sigue abierta (`net use` desde una consola de LocalSystem, p. ej. `psexec -s`).
+10. Buscar la contraseña centinela en `%ProgramData%\Backbone` como en PM-HU04-01, paso 6: ninguna coincidencia.
+11. Resolución al propio equipo (§7.5, ALTA-1): elevado, añadir a `C:\Windows\System32\drivers\etc\hosts` la línea `127.0.0.1 nas-falso` y otra con la IP de la tarjeta de red del equipo (`ipconfig`) para `nas-falso2`. "Probar conexión" con `\\nas-falso\backups` y con `\\nas-falso2\backups`: error de validación (destino no permitido) al momento, sin intentar conectar (en el log, "el servidor resuelve al propio equipo"). Quitar las líneas al terminar.
+12. Con un nombre que no existe en la red (`\\no-existe-hu05\backups`): "No se encuentra el NAS en la red" en menos de 15 s (la resolución falla y no se rechaza: decide la conexión).
+13. Parada con una prueba colgada: apagar el NAS, lanzar "Probar conexión" y, antes de que responda, `Stop-Service BackboneService`. El servicio se detiene en menos de 20 s y en el log aparece, si la limpieza no ha terminado, "quedan limpiezas de pruebas de conexión pendientes" y "cerrada a la fuerza en la parada del servicio". Tras arrancarlo de nuevo, `net use` (como LocalSystem) no muestra conexiones al NAS.
+
+**Resultado esperado:** cada caso con su código y su mensaje, en menos de 15 s; ningún archivo de prueba en el NAS; la contraseña no aparece en ningún archivo.
+
+**Estado:** pendiente. El 2026-11-18, sin elevar: `A_server_that_does_not_exist_is_NasUnreachable_in_less_than_15_seconds` correcta contra 192.0.2.1 (unos 11 s); con `net use` contra 192.168.1.163, un usuario inexistente y una contraseña errónea, Samba devuelve 86 o 1326 (los dos se traducen a `CredentialsRejected`). Pendientes la credencial del NAS y los pasos 1 a 13.

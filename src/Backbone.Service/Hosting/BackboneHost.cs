@@ -106,6 +106,14 @@ internal static class BackboneHost
         services.TryAddSingleton<IJobActivity, NoJobActivity>();
         services.AddSingleton<ServiceStatusProvider>();
 
+        // Conexión al NAS (HU-05, §8.2 ShareConnector).
+        services.TryAddSingleton<IShareConnector, WindowsShareConnector>();
+        services.TryAddSingleton<IHostResolver, DnsHostResolver>();
+        services.AddSingleton<ShareConnectionManager>();
+        services.TryAddSingleton(new ConnectionTestOptions());
+        services.AddSingleton<ConnectionTester>();
+        services.AddHostedService<ShareConnectionShutdown>();
+
         // IPC.
         services.AddSingleton<ServiceRuntimeInfo>();
         services.AddSingleton<CallerAuthorizer>();

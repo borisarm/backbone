@@ -1,6 +1,7 @@
 using Backbone.Service.Hosting;
 using Backbone.Service.Ipc;
 using Backbone.Service.Jobs;
+using Backbone.Service.Nas;
 using Backbone.Service.Os;
 using Backbone.Service.Persistence;
 using Microsoft.Extensions.Logging;
@@ -31,7 +32,14 @@ internal sealed class IpcTestHarness : IAsyncDisposable
         Jobs = new JobStore(_temp.Combine("config", "jobs.json"), TestFileTrust.CurrentUser, LoggerFactory.CreateLogger<JobStore>());
         ProtectedFolders = new ProtectedFolderResolver(new ServicePaths(_temp.Path), FileSystem, LoggerFactory.CreateLogger<ProtectedFolderResolver>());
         Status = new ServiceStatusProvider(Jobs, Activity, Time);
-        Operations = new BackboneOperations(Runtime, Settings, Accounts, Credentials, Jobs, new JobValidator(FileSystem, ProtectedFolders), Activity, Status);
+        ConnectionTester = new ConnectionTester(
+            new ShareConnectionManager(ShareConnector, LoggerFactory.CreateLogger<ShareConnectionManager>()),
+            HostResolver,
+            new ShareCredentialProvider(Credentials, LoggerFactory.CreateLogger<ShareCredentialProvider>()),
+            Time,
+            new ConnectionTestOptions(),
+            LoggerFactory.CreateLogger<ConnectionTester>());
+        Operations = new BackboneOperations(Runtime, Settings, Accounts, Credentials, Jobs, new JobValidator(FileSystem, ProtectedFolders), Activity, Status, ConnectionTester);
         Manager = new IpcConnectionManager(Authorizer, Accounts, Settings, Operations, Options, Time, LoggerFactory);
         Events = new IpcEventPublisher(Manager, Options, Time);
         Broadcaster = new StatusBroadcaster(Jobs, Status, Events);
@@ -75,6 +83,14 @@ internal sealed class IpcTestHarness : IAsyncDisposable
     public IDataProtector Protector { get; }
 
     public CredentialStore Credentials { get; }
+
+    /// <summary>Doble de la conexión SMB (HU-05).</summary>
+    public FakeShareConnector ShareConnector { get; } = new();
+
+    /// <summary>Doble de la resolución DNS del servidor (HU-05, §7.5).</summary>
+    public FakeHostResolver HostResolver { get; } = new();
+
+    public ConnectionTester ConnectionTester { get; }
 
     public CallerAuthorizer Authorizer { get; }
 
