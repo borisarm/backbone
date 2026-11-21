@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Text;
 using Backbone.Contracts;
 using Backbone.Core.Repository;
 
@@ -63,41 +64,111 @@ public sealed class ExclusionMatcher
     /// <summary>Palabras de 64 bits del estado de una carpeta.</summary>
     internal int StateWords { get; }
 
+    /// <summary>
+    /// Cota del coste de una lista (suma de <see cref="ExclusionPattern.Cost"/>), es decir, del trabajo por elemento
+    /// recorrido en el peor caso (revisión de seguridad de HU-08, B-1).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Se acota el coste total y no el número de segmentos o de <c>*</c>, porque es lo que de verdad determina el tiempo:
+    /// un segmento sin texto entre dos <c>*</c> (sin <c>*</c>, o con <c>*</c> solo al principio o al final) cuesta 1 más lo
+    /// que mide, y cada segmento con texto entre dos <c>*</c> cuesta además un recorrido del nombre: 255 pasos por cada 64
+    /// caracteres de su trozo intermedio más largo.
+    /// </para>
+    /// <para>
+    /// El valor es <see cref="ContractLimits.MaxExclusions"/> × (<see cref="ContractLimits.MaxExclusionPatternLength"/> + 2)
+    /// = 256 × 514: el coste máximo de un patrón sin texto entre dos <c>*</c> es 514 (<c>**</c> implícito, 1, más un
+    /// segmento de 512 caracteres, 513), así que <b>una lista de patrones sin <c>*…*</c> se admite siempre</b>, sea cual
+    /// sea. Caben, por ejemplo, 256 patrones como <c>*factura*</c> (257 cada uno) y en total unos 500 segmentos con texto
+    /// entre <c>*</c>; el patrón adversario de la revisión (<c>**/*aaa…ab*/**/*aaa…ab*/…</c>, 1 799) repetido 256 veces
+    /// (unos 460 000) se rechaza con <see cref="ExclusionPatternError.TooComplex"/>. En el peor caso admitido son unos
+    /// 130 000 pasos sencillos por elemento recorrido (fracciones de milisegundo), frente a los ~10⁷ de antes.
+    /// </para>
+    /// </remarks>
+    public const long MaxListCost = (long)ContractLimits.MaxExclusions * (ContractLimits.MaxExclusionPatternLength + 2);
+
+    /// <summary>
+    /// Valida una lista de patrones: cada patrón (<see cref="ExclusionPattern.Validate"/>), el número de patrones y el coste
+    /// total (<see cref="MaxListCost"/>). El servicio la usa en la validación del trabajo.
+    /// </summary>
+    /// <param name="patterns">Patrones del trabajo.</param>
+    /// <param name="index">
+    /// Índice del primer patrón no válido; -1 si el error es de la lista entera (<see cref="ExclusionPatternError.TooMany"/>,
+    /// <see cref="ExclusionPatternError.TooComplex"/>) o si no hay error.
+    /// </param>
+    /// <returns><see cref="ExclusionPatternError.None"/> si la lista es válida; si no, el primer motivo.</returns>
+    public static ExclusionPatternError ValidateList(IReadOnlyList<string?> patterns, out int index)
+    {
+        ArgumentNullException.ThrowIfNull(patterns);
+        return TryCompile(patterns, out _, out index);
+    }
+
     /// <summary>Compila una lista de patrones.</summary>
     /// <param name="patterns">Patrones del trabajo, como mucho <see cref="ContractLimits.MaxExclusions"/>.</param>
     /// <returns>La lista compilada.</returns>
     /// <exception cref="ArgumentException">
-    /// Hay más de <see cref="ContractLimits.MaxExclusions"/> patrones o alguno no es válido (<see cref="ExclusionPattern.Validate"/>).
+    /// Hay más de <see cref="ContractLimits.MaxExclusions"/> patrones, alguno no es válido
+    /// (<see cref="ExclusionPattern.Validate"/>) o la lista supera <see cref="MaxListCost"/>.
     /// </exception>
     public static ExclusionMatcher Create(IReadOnlyList<string> patterns)
     {
         ArgumentNullException.ThrowIfNull(patterns);
+        var error = TryCompile(patterns, out var matcher, out var index);
+        if (error == ExclusionPatternError.None && matcher is not null)
+        {
+            return matcher;
+        }
+
+        throw error switch
+        {
+            ExclusionPatternError.TooMany => new ArgumentException(
+                $"Hay {patterns.Count} patrones de exclusión; el máximo es {ContractLimits.MaxExclusions} ({error}).",
+                nameof(patterns)),
+            ExclusionPatternError.TooComplex => new ArgumentException(
+                $"La lista de exclusiones es demasiado compleja: su coste supera {MaxListCost} ({error}).",
+                nameof(patterns)),
+            _ => new ArgumentException(
+                $"El patrón de exclusión {index} no es válido ({error}): {Untrusted.Describe(patterns[index])}",
+                nameof(patterns)),
+        };
+    }
+
+    private static ExclusionPatternError TryCompile(IReadOnlyList<string?> patterns, out ExclusionMatcher? matcher, out int index)
+    {
+        matcher = null;
+        index = -1;
         if (patterns.Count == 0)
         {
-            return Empty;
+            matcher = Empty;
+            return ExclusionPatternError.None;
         }
 
         if (patterns.Count > ContractLimits.MaxExclusions)
         {
-            throw new ArgumentException(
-                $"Hay {patterns.Count} patrones de exclusión; el máximo es {ContractLimits.MaxExclusions} ({ExclusionPatternError.TooMany}).",
-                nameof(patterns));
+            return ExclusionPatternError.TooMany;
         }
 
         var compiled = new ExclusionPattern[patterns.Count];
+        var cost = 0L;
         for (var i = 0; i < patterns.Count; i++)
         {
             if (!ExclusionPattern.TryParse(patterns[i], out var pattern, out var error))
             {
-                throw new ArgumentException(
-                    $"El patrón de exclusión {i} no es válido ({error}): {Untrusted.Describe(patterns[i])}",
-                    nameof(patterns));
+                index = i;
+                return error;
             }
 
             compiled[i] = pattern;
+            cost += pattern.Cost;
         }
 
-        return new ExclusionMatcher(compiled);
+        if (cost > MaxListCost)
+        {
+            return ExclusionPatternError.TooComplex;
+        }
+
+        matcher = new ExclusionMatcher(compiled);
+        return ExclusionPatternError.None;
     }
 
     /// <summary>Estado de la raíz de un origen (tras consumir su alias). El alias nunca se excluye.</summary>
@@ -118,6 +189,7 @@ public sealed class ExclusionMatcher
     /// <returns>Índice del primer patrón que excluye el elemento, o -1 si ninguno.</returns>
     internal int Step(ReadOnlySpan<ulong> parent, ReadOnlySpan<char> name, bool isDirectory, Span<ulong> child)
     {
+        name = ToNfc(name);
         var first = -1;
         for (var p = 0; p < patterns.Length; p++)
         {
@@ -227,6 +299,29 @@ public sealed class ExclusionMatcher
 
             (current, next) = (next, current);
             rest = rest[(slash + 1)..];
+        }
+    }
+
+    /// <summary>
+    /// El nombre en NFC (B-2), como el patrón. Sin copia si todos sus caracteres son anteriores a U+0300, que no cambian al
+    /// normalizar; un nombre que no es UTF-16 válido se devuelve tal cual (no se puede normalizar, y un patrón válido
+    /// nunca casa con una suplente suelta).
+    /// </summary>
+    internal static ReadOnlySpan<char> ToNfc(ReadOnlySpan<char> name)
+    {
+        if (!name.ContainsAnyInRange((char)0x0300, char.MaxValue))
+        {
+            return name;
+        }
+
+        try
+        {
+            // La comprobación no copia: solo se crea una cadena si el nombre no está ya en NFC (lo raro en Windows).
+            return name.IsNormalized(NormalizationForm.FormC) ? name : name.ToString().Normalize(NormalizationForm.FormC);
+        }
+        catch (ArgumentException)
+        {
+            return name;
         }
     }
 

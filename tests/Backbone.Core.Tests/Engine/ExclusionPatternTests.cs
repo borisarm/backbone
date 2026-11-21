@@ -209,7 +209,10 @@ public sealed class ExclusionPatternTests
     [Trait("Requirement", "RNF-03")]
     public void HU08_Perf_256_patterns_over_a_million_names_stay_within_a_few_seconds()
     {
-        // Peor caso de la lista (256 patrones, la mitad con **) sobre 1 000 000 de nombres: coste por elemento constante.
+        // Lista grande y realista (256 patrones, la mitad con **) sobre 1 000 000 de nombres: coste por elemento constante.
+        // No es el peor caso: el coste de la lista (ExclusionPattern.Cost) es pequeño. El peor caso admitido, una lista
+        // cerca de ExclusionMatcher.MaxListCost con segmentos *…* activos en cada nivel, está en
+        // ExclusionSecurityReviewTests.HU08_B1_The_most_expensive_accepted_list_stays_within_a_time_limit_on_adversarial_folders.
         var patterns = Enumerable.Range(0, 256).Select(i => i % 2 == 0 ? $"*.ext{i}" : $"**/carpeta{i}/**").ToList();
         var matcher = ExclusionMatcher.Create(patterns);
         var parent = matcher.RootState("Documentos");

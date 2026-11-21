@@ -27,6 +27,9 @@ public sealed class ExclusionPreview
     /// <summary>Presupuesto de los listados pendientes (las pruebas lo reducen); por defecto el del motor.</summary>
     internal long ListingBudgetBytes { get; set; } = BackupEngine.DefaultListingBudgetBytes;
 
+    /// <summary>Solo para pruebas: se llama con cada carpeta (un objeto interno) al sacarla de la pila, ya recorrida.</summary>
+    internal Action<object>? FramePopped { get; set; }
+
     /// <summary>Calcula la vista previa.</summary>
     /// <param name="source">Acceso a los orígenes (en vivo; la vista previa no usa VSS).</param>
     /// <param name="sources">Orígenes del trabajo, con sus exclusiones obligatorias.</param>
@@ -87,26 +90,34 @@ public sealed class ExclusionPreview
         public long UnreadableDirectories { get; set; }
     }
 
-    /// <summary>Carpeta en recorrido: su estado, los patrones que excluyen a ella o a una carpeta de encima, y sus subcarpetas.</summary>
-    private sealed class Frame(string fullPath, string snapshotPath, ulong[] state, bool[] matched, bool anyMatched)
+    /// <summary>
+    /// Subcarpeta pendiente de recorrer, en el listado de su carpeta: solo sus datos, sin listado propio. El
+    /// <see cref="Frame"/> se crea al apilarla, así que un <see cref="Frame"/> ya recorrido (y su listado) no queda
+    /// referenciado desde su carpeta y se puede liberar (revisión de seguridad de HU-08, M-1).
+    /// </summary>
+    private readonly record struct Pending(string FullPath, string SnapshotPath, ulong[] State, bool[] Matched, bool AnyMatched)
     {
-        public string FullPath { get; } = fullPath;
+        public long Cost => (2L * ((long)FullPath.Length + SnapshotPath.Length)) + (8L * State.Length) + Matched.Length + OverheadBytes;
+    }
 
-        public string SnapshotPath { get; } = snapshotPath;
+    /// <summary>Carpeta en recorrido: su estado, los patrones que excluyen a ella o a una carpeta de encima, y sus subcarpetas.</summary>
+    private sealed class Frame(Pending entry)
+    {
+        public string FullPath { get; } = entry.FullPath;
 
-        public ulong[] State { get; } = state;
+        public string SnapshotPath { get; } = entry.SnapshotPath;
 
-        public bool[] Matched { get; } = matched;
+        public ulong[] State { get; } = entry.State;
 
-        public bool AnyMatched { get; } = anyMatched;
+        public bool[] Matched { get; } = entry.Matched;
 
-        public List<Frame>? Subdirectories { get; set; }
+        public bool AnyMatched { get; } = entry.AnyMatched;
+
+        public List<Pending>? Subdirectories { get; set; }
 
         public int Next { get; set; }
 
         public long Bytes { get; set; }
-
-        public long Cost => (2L * ((long)FullPath.Length + SnapshotPath.Length)) + (8L * State.Length) + Matched.Length + OverheadBytes;
     }
 
     private sealed class Walk(ExclusionPreview owner, ISourceFileSystem source, ExclusionMatcher matcher, MandatoryExclusionSet mandatory, Counter counts)
@@ -117,7 +128,7 @@ public sealed class ExclusionPreview
         public async Task RunAsync(BackupSource backupSource, CancellationToken cancellationToken)
         {
             var stack = new Stack<Frame>();
-            var root = new Frame(backupSource.ReadPath, backupSource.Alias, matcher.RootState(backupSource.Alias), new bool[matcher.Patterns.Count], anyMatched: false);
+            var root = new Frame(new Pending(backupSource.ReadPath, backupSource.Alias, matcher.RootState(backupSource.Alias), new bool[matcher.Patterns.Count], AnyMatched: false));
             stack.Push(root);
             while (stack.TryPeek(out var frame))
             {
@@ -134,19 +145,23 @@ public sealed class ExclusionPreview
 
                 if (frame.Next < frame.Subdirectories.Count)
                 {
-                    stack.Push(frame.Subdirectories[frame.Next++]);
+                    var next = frame.Subdirectories[frame.Next];
+                    frame.Subdirectories[frame.Next++] = default; // el listado no retiene lo ya apilado
+                    stack.Push(new Frame(next));
                     continue;
                 }
 
                 stack.Pop();
                 listingBytes -= frame.Bytes;
+                frame.Subdirectories = null;
+                owner.FramePopped?.Invoke(frame);
             }
         }
 
         /// <summary>Cuenta los archivos de la carpeta y devuelve sus subcarpetas; <see langword="null"/> si no se puede leer.</summary>
-        private async Task<List<Frame>?> ListAsync(Frame frame, CancellationToken cancellationToken)
+        private async Task<List<Pending>?> ListAsync(Frame frame, CancellationToken cancellationToken)
         {
-            var subdirectories = new List<Frame>();
+            var subdirectories = new List<Pending>();
             var cost = 0L;
             var checkMandatory = mandatory.HasExclusionsIn(frame.SnapshotPath);
             try
@@ -185,7 +200,7 @@ public sealed class ExclusionPreview
 
                     if (matched is not null)
                     {
-                        var sub = new Frame(child.FullPath, childPath, state, matched, any);
+                        var sub = new Pending(child.FullPath, childPath, state, matched, any);
                         cost += sub.Cost;
                         if (listingBytes + cost > owner.ListingBudgetBytes)
                         {

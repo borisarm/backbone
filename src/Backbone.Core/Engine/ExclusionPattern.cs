@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Text;
 using Backbone.Contracts;
 using Backbone.Core.Repository;
 
@@ -35,9 +36,18 @@ namespace Backbone.Core.Engine;
 /// </description></item>
 /// </list>
 /// <para>
-/// <b>Coste</b> (§7.5 M-2): no se traduce a una expresión regular. Cada segmento se compara con un algoritmo voraz por
-/// trozos entre <c>*</c>, sin retroceso, O(n·m) en el peor caso (n = longitud del nombre, m = del patrón); los <c>**</c>
-/// se evalúan como un autómata de estados (<see cref="ExclusionMatcher"/>), un segmento cada vez.
+/// <b>Normalización</b> (revisión de seguridad de HU-08, B-2): el patrón y cada nombre se comparan en forma NFC, así que
+/// <c>Café</c> escrito con el acento combinado (NFD) casa con el patrón escrito con <c>é</c> precompuesta, y al revés. Un
+/// nombre que no es UTF-16 válido (suplentes sueltas) se compara sin normalizar.
+/// </para>
+/// <para>
+/// <b>Coste</b> (§7.5 M-2, revisión de seguridad de HU-08, B-1): no se traduce a una expresión regular. Cada segmento se
+/// compara con un algoritmo voraz por trozos entre <c>*</c>, sin retroceso: el prefijo y el sufijo se comparan una vez y
+/// los trozos intermedios se buscan con Shift-And (paralelismo de bits, admite <c>?</c>), empezando cada uno donde terminó
+/// el anterior, así que el nombre se recorre <b>una sola vez</b> por segmento del patrón: O(n·⌈k/64⌉), con n la longitud del
+/// nombre y k la del trozo intermedio más largo. Los <c>**</c> se evalúan como un autómata
+/// (<see cref="ExclusionMatcher"/>), un segmento de la ruta cada vez. <see cref="Cost"/> es la cota por elemento del
+/// patrón y la lista entera está acotada por <see cref="ExclusionMatcher.MaxListCost"/>.
 /// </para>
 /// </remarks>
 public sealed class ExclusionPattern
@@ -58,6 +68,13 @@ public sealed class ExclusionPattern
     /// <summary>Segmentos compilados; <see langword="null"/> es <c>**</c> (cero o más segmentos).</summary>
     internal SegmentPattern?[] Tokens { get; }
 
+    /// <summary>
+    /// Cota del trabajo (comparaciones de caracteres o pasos de Shift-And) que hace el patrón por cada elemento recorrido,
+    /// suponiendo que todos sus segmentos están activos a la vez: la suma de los costes de sus segmentos más 1 por cada
+    /// <c>**</c> (B-1).
+    /// </summary>
+    public long Cost => Tokens.Sum(t => t?.Cost ?? 1L);
+
     /// <summary>Valida y compila un patrón.</summary>
     /// <param name="text">Texto del patrón.</param>
     /// <param name="pattern">Patrón compilado, si es válido.</param>
@@ -72,7 +89,7 @@ public sealed class ExclusionPattern
             return false;
         }
 
-        var normalized = text.Replace('\\', '/');
+        var normalized = text.Normalize(NormalizationForm.FormC).Replace('\\', '/');
         var directoryOnly = false;
         if (normalized.EndsWith('/'))
         {
@@ -219,30 +236,51 @@ public enum ExclusionPatternError
 
     /// <summary>La lista tiene más de <see cref="ContractLimits.MaxExclusions"/> patrones.</summary>
     TooMany = 8,
+
+    /// <summary>
+    /// La suma de los costes de la lista (<see cref="ExclusionPattern.Cost"/>) supera <see cref="ExclusionMatcher.MaxListCost"/>:
+    /// demasiados segmentos con texto entre <c>*</c> para evaluarla en un tiempo acotado por elemento (B-1). Es un error de
+    /// la lista entera, no de un patrón concreto.
+    /// </summary>
+    TooComplex = 9,
 }
 
 /// <summary>
-/// Un segmento de un patrón (sin <c>/</c>), con <c>*</c> y <c>?</c>. Se compara con un algoritmo voraz por trozos: el trozo
-/// anterior al primer <c>*</c> se ancla al principio, el posterior al último al final, y cada trozo intermedio se busca en
-/// su posición más a la izquierda posible (lo que siempre es correcto con <c>*</c>), sin retroceso.
+/// Un segmento de un patrón (sin <c>/</c>), con <c>*</c> y <c>?</c>, en NFC y mayúsculas. El trozo anterior al primer
+/// <c>*</c> se ancla al principio y el posterior al último al final; cada trozo intermedio se busca en su posición más a la
+/// izquierda posible (lo que siempre es correcto con <c>*</c>) con Shift-And, empezando donde terminó el anterior, así que
+/// el nombre se recorre como mucho una vez y nunca se retrocede.
 /// </summary>
 internal sealed class SegmentPattern
 {
+    /// <summary>Longitud máxima de un nombre que se usa para la cota de coste (§7.5: segmentos de 255).</summary>
+    internal const int MaxNameLength = 255;
+
     private readonly string prefix;
     private readonly string suffix;
-    private readonly string[] middles;
+    private readonly Chunk[] middles;
     private readonly bool hasStar;
     private readonly int minLength;
 
-    private SegmentPattern(string prefix, string suffix, string[] middles, bool hasStar)
+    private SegmentPattern(string prefix, string suffix, Chunk[] middles, bool hasStar)
     {
         this.prefix = prefix;
         this.suffix = suffix;
         this.middles = middles;
         this.hasStar = hasStar;
         minLength = prefix.Length + suffix.Length + middles.Sum(m => m.Length);
+        var maxWords = middles.Length == 0 ? 0 : middles.Max(m => m.Words);
+        Cost = 1L + prefix.Length + suffix.Length + ((long)MaxNameLength * maxWords);
     }
 
+    /// <summary>
+    /// Cota de pasos para comparar un nombre: prefijo y sufijo, más un recorrido del nombre (como mucho
+    /// <see cref="MaxNameLength"/> caracteres) con tantas palabras de 64 bits como el trozo intermedio más largo.
+    /// </summary>
+    public long Cost { get; }
+
+    /// <summary>Compila un segmento.</summary>
+    /// <param name="segment">Segmento ya normalizado a NFC.</param>
     public static SegmentPattern Compile(string segment)
     {
         var upper = string.Create(segment.Length, segment, static (span, s) =>
@@ -258,9 +296,11 @@ internal sealed class SegmentPattern
             return new SegmentPattern(parts[0], string.Empty, [], hasStar: false);
         }
 
-        return new SegmentPattern(parts[0], parts[^1], [.. parts[1..^1].Where(p => p.Length > 0)], hasStar: true);
+        return new SegmentPattern(parts[0], parts[^1], [.. parts[1..^1].Where(p => p.Length > 0).Select(p => new Chunk(p))], hasStar: true);
     }
 
+    /// <summary>Si el nombre casa con el segmento.</summary>
+    /// <param name="name">Nombre ya normalizado a NFC (lo hace <see cref="ExclusionMatcher"/>).</param>
     public bool Matches(ReadOnlySpan<char> name)
     {
         if (!hasStar)
@@ -282,22 +322,11 @@ internal sealed class SegmentPattern
         var position = prefix.Length;
         foreach (var middle in middles)
         {
-            var found = -1;
-            for (var i = position; i + middle.Length <= end; i++)
-            {
-                if (MatchesAt(name, i, middle))
-                {
-                    found = i;
-                    break;
-                }
-            }
-
-            if (found < 0)
+            position = middle.FindEnd(name, position, end);
+            if (position < 0)
             {
                 return false;
             }
-
-            position = found + middle.Length;
         }
 
         return true;
@@ -316,5 +345,68 @@ internal sealed class SegmentPattern
         }
 
         return true;
+    }
+
+    /// <summary>Trozo entre dos <c>*</c>, preparado para Shift-And: un bit por posición del trozo.</summary>
+    private sealed class Chunk
+    {
+        private readonly Dictionary<char, ulong[]> masks = [];
+        private readonly ulong[] wildcard;
+
+        public Chunk(string text)
+        {
+            Length = text.Length;
+            Words = (text.Length + 63) / 64;
+            wildcard = new ulong[Words];
+            for (var i = 0; i < text.Length; i++)
+            {
+                if (text[i] == '?')
+                {
+                    wildcard[i >> 6] |= 1UL << (i & 63);
+                    continue;
+                }
+
+                if (!masks.TryGetValue(text[i], out var mask))
+                {
+                    mask = new ulong[Words];
+                    masks[text[i]] = mask;
+                }
+
+                mask[i >> 6] |= 1UL << (i & 63);
+            }
+        }
+
+        public int Length { get; }
+
+        public int Words { get; }
+
+        /// <summary>
+        /// Posición siguiente al final de la primera aparición del trozo en <c>name[start..end)</c>, o -1. Con trozos de
+        /// longitud fija, la aparición que termina antes es la que empieza antes (la más a la izquierda).
+        /// </summary>
+        public int FindEnd(ReadOnlySpan<char> name, int start, int end)
+        {
+            Span<ulong> state = stackalloc ulong[Words];
+            state.Clear();
+            var last = Length - 1;
+            for (var i = start; i < end; i++)
+            {
+                masks.TryGetValue(char.ToUpperInvariant(name[i]), out var mask);
+                var carry = 1UL; // en cada posición puede empezar una aparición
+                for (var w = 0; w < state.Length; w++)
+                {
+                    var shifted = (state[w] << 1) | carry;
+                    carry = state[w] >> 63;
+                    state[w] = shifted & (wildcard[w] | (mask is null ? 0UL : mask[w]));
+                }
+
+                if ((state[last >> 6] & (1UL << (last & 63))) != 0)
+                {
+                    return i + 1;
+                }
+            }
+
+            return -1;
+        }
     }
 }
