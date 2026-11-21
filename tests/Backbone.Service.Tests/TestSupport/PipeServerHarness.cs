@@ -30,7 +30,7 @@ internal sealed class PipeServerHarness : IAsyncDisposable
         Directory.CreateDirectory(_temp.Combine("credentials"));
         Credentials = new CredentialStore(_temp.Combine("credentials"), TestFileTrust.CurrentUser, new DpapiMachineProtector(), TimeProvider.System, LoggerFactory.CreateLogger<CredentialStore>());
         Jobs = new JobStore(_temp.Combine("config", "jobs.json"), TestFileTrust.CurrentUser, LoggerFactory.CreateLogger<JobStore>());
-        var fileSystem = new FakeLocalFileSystemInspector();
+        var fileSystem = new FakeLocalFileSystemInspector().MapFinalDirectory((Path.GetDirectoryName(_temp.Path) ?? _temp.Path), (Path.GetDirectoryName(_temp.Path) ?? _temp.Path));
         var protectedFolders = new ProtectedFolderResolver(new ServicePaths(_temp.Path), fileSystem, LoggerFactory.CreateLogger<ProtectedFolderResolver>());
         var activity = new FakeJobActivity();
         var status = new ServiceStatusProvider(Jobs, activity, TimeProvider.System);
@@ -42,7 +42,10 @@ internal sealed class PipeServerHarness : IAsyncDisposable
             TimeProvider.System,
             new ConnectionTestOptions(),
             LoggerFactory.CreateLogger<ConnectionTester>());
-        var operations = new BackboneOperations(new ServiceRuntimeInfo(TimeProvider.System), Settings, Accounts, Credentials, Jobs, new JobValidator(fileSystem, protectedFolders), activity, status, connectionTester);
+        var operations = new BackboneOperations(new ServiceRuntimeInfo(TimeProvider.System), Settings, Accounts, Credentials, Jobs, new JobValidator(
+                fileSystem, protectedFolders, new SourceValidationRunner(TimeProvider.System, new SourceIoOptions()), new DnsHostResolver(), TimeProvider.System,
+                LoggerFactory.CreateLogger<JobValidator>()),
+            activity, status, connectionTester);
         Manager = new IpcConnectionManager(authorizer, Accounts, Settings, operations, options, TimeProvider.System, LoggerFactory);
         Events = new IpcEventPublisher(Manager, options, TimeProvider.System);
         Server = new IpcServer(Manager, Settings, EventLog, options, LoggerFactory.CreateLogger<IpcServer>());

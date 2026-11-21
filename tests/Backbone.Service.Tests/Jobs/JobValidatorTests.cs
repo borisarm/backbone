@@ -26,9 +26,9 @@ public sealed class JobValidatorTests
         .AddFolder(@"C:\ProgramData\Backbone\credentials")
         .AddFolder(@"C:\ProgramData\Backbone.untrusted-0123456789abcdef0123456789abcdef");
 
-    private JobValidator Validator => new(
-        _fileSystem,
-        new ProtectedFolderResolver(new ServicePaths(@"C:\ProgramData\Backbone"), _fileSystem, NullLogger<ProtectedFolderResolver>.Instance));
+    private readonly FakeHostResolver _hosts = new();
+
+    private JobValidator Validator => TestJobValidators.Create(_fileSystem, @"C:\ProgramData\Backbone", _hosts);
 
     private static JobDefinition ValidJob(params JobSource[] sources) =>
         JobDefaults.NewJob() with
@@ -39,9 +39,9 @@ public sealed class JobValidatorTests
         };
 
     [Fact]
-    public void A_valid_job_has_no_errors_or_warnings()
+    public async Task A_valid_job_has_no_errors_or_warnings()
     {
-        var result = Validator.Validate(ValidJob(), []);
+        var result = await Validator.CheckAsync(ValidJob(), []);
 
         Assert.True(result.IsValid);
         Assert.Empty(result.Warnings);
@@ -50,35 +50,35 @@ public sealed class JobValidatorTests
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
-    public void The_name_is_required(string name)
+    public async Task The_name_is_required(string name)
     {
-        AssertSingleError(ValidJob() with { Name = name }, "Name", ValidationIssueCode.NameRequired);
+        await AssertSingleErrorAsync(ValidJob() with { Name = name }, "Name", ValidationIssueCode.NameRequired);
     }
 
     [Fact]
-    public void A_name_with_control_characters_or_lone_surrogates_is_rejected()
+    public async Task A_name_with_control_characters_or_lone_surrogates_is_rejected()
     {
         // Las suplentes sueltas no se pueden escribir en un atributo (los textos de los atributos se guardan en UTF-8).
         foreach (var name in new[] { "Docs\u0007", "Docs\ud800", "\udc00Docs" })
         {
-            AssertSingleError(ValidJob() with { Name = name }, "Name", ValidationIssueCode.ValueOutOfRange);
+            await AssertSingleErrorAsync(ValidJob() with { Name = name }, "Name", ValidationIssueCode.ValueOutOfRange);
         }
 
-        Assert.True(Validator.Validate(ValidJob() with { Name = "Fotos 📷" }, []).IsValid);
+        Assert.True((await Validator.CheckAsync(ValidJob() with { Name = "Fotos 📷" }, [])).IsValid);
     }
 
     [Fact]
-    public void At_least_one_source_is_required()
+    public async Task At_least_one_source_is_required()
     {
-        AssertSingleError(ValidJob() with { Sources = [] }, "Sources", ValidationIssueCode.SourcesRequired);
+        await AssertSingleErrorAsync(ValidJob() with { Sources = [] }, "Sources", ValidationIssueCode.SourcesRequired);
     }
 
     [Theory]
     [InlineData("")]
     [InlineData("  ")]
-    public void The_alias_is_required(string alias)
+    public async Task The_alias_is_required(string alias)
     {
-        AssertSingleError(ValidJob(new JobSource { Alias = alias, Path = Documents }), "Sources[0].Alias", ValidationIssueCode.AliasRequired);
+        await AssertSingleErrorAsync(ValidJob(new JobSource { Alias = alias, Path = Documents }), "Sources[0].Alias", ValidationIssueCode.AliasRequired);
     }
 
     [Theory]
@@ -89,79 +89,82 @@ public sealed class JobValidatorTests
     [InlineData("..")]
     [InlineData("Docs.")]
     [InlineData("Docs ")]
-    public void An_alias_that_is_not_a_valid_folder_name_is_rejected(string alias)
+    public async Task An_alias_that_is_not_a_valid_folder_name_is_rejected(string alias)
     {
-        AssertSingleError(ValidJob(new JobSource { Alias = alias, Path = Documents }), "Sources[0].Alias", ValidationIssueCode.AliasInvalid);
+        await AssertSingleErrorAsync(ValidJob(new JobSource { Alias = alias, Path = Documents }), "Sources[0].Alias", ValidationIssueCode.AliasInvalid);
     }
 
     [Fact]
-    public void Two_equal_aliases_ignoring_case_mark_the_repeated_one_with_its_value()
+    public async Task Two_equal_aliases_ignoring_case_mark_the_repeated_one_with_its_value()
     {
         var job = ValidJob(
             new JobSource { Alias = "Fotos", Path = Documents },
             new JobSource { Alias = "Imágenes", Path = Pictures },
             new JobSource { Alias = "FOTOS", Path = Pictures });
 
-        var error = AssertSingleError(job, "Sources[2].Alias", ValidationIssueCode.AliasDuplicate);
+        var error = await AssertSingleErrorAsync(job, "Sources[2].Alias", ValidationIssueCode.AliasDuplicate);
         Assert.Equal("FOTOS", error.Value);
     }
 
     [Fact]
-    public void A_missing_folder_is_rejected_on_its_path()
+    public async Task A_missing_folder_is_rejected_on_its_path()
     {
         var job = ValidJob(
             new JobSource { Alias = "Documentos", Path = Documents },
             new JobSource { Alias = "Otra", Path = @"C:\no\existe" });
 
-        AssertSingleError(job, "Sources[1].Path", ValidationIssueCode.SourceNotFound);
+        await AssertSingleErrorAsync(job, "Sources[1].Path", ValidationIssueCode.SourceNotFound);
     }
 
     [Theory]
-    [InlineData((int)LocalFolderStatus.NotFound)]
-    [InlineData((int)LocalFolderStatus.NotADirectory)]
-    [InlineData((int)LocalFolderStatus.Unreadable)]
-    public void A_path_that_is_not_an_openable_folder_is_SourceNotFound(int status)
+    [InlineData((int)LocalFolderStatus.NotFound, (int)ValidationIssueCode.SourceNotFound)]
+    [InlineData((int)LocalFolderStatus.Unreadable, (int)ValidationIssueCode.SourceUnreadable)]
+    [InlineData((int)LocalFolderStatus.NotLocal, (int)ValidationIssueCode.SourceNotLocal)]
+    public async Task Each_resolution_result_has_its_own_code(int status, int code)
     {
+        // BAJA-1 (contrato 1.3): acceso denegado, plazo vencido o componentes que no se atraviesan dan SourceUnreadable.
         _fileSystem.AddStatus(@"C:\x", (LocalFolderStatus)status);
 
-        AssertSingleError(ValidJob(new JobSource { Alias = "X", Path = @"C:\x" }), "Sources[0].Path", ValidationIssueCode.SourceNotFound);
+        await AssertSingleErrorAsync(ValidJob(new JobSource { Alias = "X", Path = @"C:\x" }), "Sources[0].Path", (ValidationIssueCode)code);
     }
 
     [Theory]
     [InlineData("")]
     [InlineData("Documentos")]
     [InlineData(@"relativa\carpeta")]
-    public void An_empty_or_relative_path_is_SourceNotFound(string path)
+    [InlineData("C:docs")]
+    [InlineData("C:")]
+    public async Task An_empty_or_relative_path_is_SourcePathInvalid(string path)
     {
-        AssertSingleError(ValidJob(new JobSource { Alias = "X", Path = path }), "Sources[0].Path", ValidationIssueCode.SourceNotFound);
+        await AssertSingleErrorAsync(ValidJob(new JobSource { Alias = "X", Path = path }), "Sources[0].Path", ValidationIssueCode.SourcePathInvalid);
     }
 
     [Theory]
     [InlineData(@"\\nas\fotos")]
     [InlineData(@"\\?\C:\Users")]
     [InlineData(@"\\.\C:\Users")]
-    public void A_UNC_or_device_path_is_not_local(string path)
+    public async Task A_UNC_or_device_path_is_not_local(string path)
     {
-        AssertSingleError(ValidJob(new JobSource { Alias = "X", Path = path }), "Sources[0].Path", ValidationIssueCode.SourceNotLocal);
+        await AssertSingleErrorAsync(ValidJob(new JobSource { Alias = "X", Path = path }), "Sources[0].Path", ValidationIssueCode.SourceNotLocal);
     }
 
     [Fact]
-    public void A_mapped_network_drive_is_not_local()
+    public async Task A_mapped_network_drive_is_not_local()
     {
-        _fileSystem.AddStatus(@"Z:\Fotos", LocalFolderStatus.Remote);
+        _fileSystem.AddStatus(@"Z:\Fotos", LocalFolderStatus.NotLocal);
 
-        AssertSingleError(ValidJob(new JobSource { Alias = "Fotos", Path = @"Z:\Fotos" }), "Sources[0].Path", ValidationIssueCode.SourceNotLocal);
+        await AssertSingleErrorAsync(ValidJob(new JobSource { Alias = "Fotos", Path = @"Z:\Fotos" }), "Sources[0].Path", ValidationIssueCode.SourceNotLocal);
     }
 
     [Theory]
-    [InlineData((int)LocalVolumeKind.Remote)]
-    [InlineData((int)LocalVolumeKind.Removable)]
-    [InlineData((int)LocalVolumeKind.Other)]
-    public void A_folder_whose_final_path_is_not_on_a_fixed_disk_is_not_local(int volume)
+    [InlineData((int)FakeVolumeKind.Remote)]
+    [InlineData((int)FakeVolumeKind.Removable)]
+    [InlineData((int)FakeVolumeKind.Other)]
+    public async Task A_folder_whose_final_path_is_not_on_a_fixed_disk_is_not_local(int volume)
     {
-        _fileSystem.AddFolder(@"C:\Users\ana\Enlace", @"E:\Fotos", volume: (LocalVolumeKind)volume);
+        _fileSystem.AddFolder(@"C:\Users\ana\Enlace", @"E:\Fotos", volume: (FakeVolumeKind)volume);
 
-        AssertSingleError(ValidJob(new JobSource { Alias = "Fotos", Path = @"C:\Users\ana\Enlace" }), "Sources[0].Path", ValidationIssueCode.SourceNotLocal);
+        await AssertSingleErrorAsync(ValidJob(new JobSource { Alias = "Fotos", Path = @"C:\Users\ana\Enlace" }), "Sources[0].Path", ValidationIssueCode.SourceNotLocal);
     }
 
     [Theory]
@@ -169,25 +172,25 @@ public sealed class JobValidatorTests
     [InlineData("exFAT")]
     [InlineData("ReFS")]
     [InlineData("")]
-    public void A_folder_on_a_volume_that_is_not_NTFS_is_rejected(string fileSystem)
+    public async Task A_folder_on_a_volume_that_is_not_NTFS_is_rejected(string fileSystem)
     {
         _fileSystem.AddFolder(@"D:\Fotos", fileSystem: fileSystem);
 
-        AssertSingleError(ValidJob(new JobSource { Alias = "Fotos", Path = @"D:\Fotos" }), "Sources[0].Path", ValidationIssueCode.SourceNotNtfs);
+        await AssertSingleErrorAsync(ValidJob(new JobSource { Alias = "Fotos", Path = @"D:\Fotos" }), "Sources[0].Path", ValidationIssueCode.SourceNotNtfs);
     }
 
     [Theory]
     [InlineData(@"C:\ProgramData\Backbone", @"C:\ProgramData\Backbone")]
     [InlineData(@"C:\ProgramData\Backbone\credentials", @"C:\ProgramData\Backbone")]
     [InlineData(@"C:\ProgramData\Backbone.untrusted-0123456789abcdef0123456789abcdef", @"C:\ProgramData\Backbone.untrusted-0123456789abcdef0123456789abcdef")]
-    public void The_data_folder_a_folder_inside_it_or_a_quarantined_folder_is_SourceNotAllowed(string path, string protectedPath)
+    public async Task The_data_folder_a_folder_inside_it_or_a_quarantined_folder_is_SourceNotAllowed(string path, string protectedPath)
     {
-        var error = AssertSingleError(ValidJob(new JobSource { Alias = "X", Path = path }), "Sources[0].Path", ValidationIssueCode.SourceNotAllowed);
+        var error = await AssertSingleErrorAsync(ValidJob(new JobSource { Alias = "X", Path = path }), "Sources[0].Path", ValidationIssueCode.SourceNotAllowed);
         Assert.Equal(protectedPath, error.Value);
     }
 
     [Fact]
-    public void A_junction_to_the_data_folder_is_SourceNotAllowed_comparing_final_paths()
+    public async Task A_junction_to_the_data_folder_is_SourceNotAllowed_comparing_final_paths()
     {
         _fileSystem.AddFolder(@"C:\Users\ana\Atajo", finalPath: @"C:\ProgramData\Backbone\credentials");
 
@@ -195,15 +198,15 @@ public sealed class JobValidatorTests
             new JobSource { Alias = "Documentos", Path = Documents },
             new JobSource { Alias = "Atajo", Path = @"C:\Users\ana\Atajo" });
 
-        AssertSingleError(job, "Sources[1].Path", ValidationIssueCode.SourceNotAllowed);
+        await AssertSingleErrorAsync(job, "Sources[1].Path", ValidationIssueCode.SourceNotAllowed);
     }
 
     [Theory]
     [InlineData(@"C:\")]
     [InlineData(@"C:\ProgramData")]
-    public void A_source_containing_the_data_folder_is_saved_with_the_SourceContainsDataFolder_warning(string path)
+    public async Task A_source_containing_the_data_folder_is_saved_with_the_SourceContainsDataFolder_warning(string path)
     {
-        var result = Validator.Validate(ValidJob(new JobSource { Alias = "Disco", Path = path }), []);
+        var result = await Validator.CheckAsync(ValidJob(new JobSource { Alias = "Disco", Path = path }), []);
 
         Assert.True(result.IsValid);
         var warning = Assert.Single(result.Warnings);
@@ -213,7 +216,7 @@ public sealed class JobValidatorTests
     }
 
     [Fact]
-    public void A_source_containing_ProgramData_fails_closed_with_more_than_100_quarantined_folders()
+    public async Task A_source_containing_ProgramData_fails_closed_with_more_than_100_quarantined_folders()
     {
         _fileSystem.QuarantinedFolders.AddRange(Enumerable.Range(0, 101).Select(i => $"Backbone.untrusted-{i}"));
 
@@ -221,18 +224,18 @@ public sealed class JobValidatorTests
             new JobSource { Alias = "Documentos", Path = Documents },
             new JobSource { Alias = "Disco", Path = @"C:\" });
 
-        var error = AssertSingleError(job, "Sources[1].Path", ValidationIssueCode.SourceNotAllowed);
+        var error = await AssertSingleErrorAsync(job, "Sources[1].Path", ValidationIssueCode.SourceNotAllowed);
         Assert.Equal(@"C:\ProgramData", error.Value);
     }
 
     [Fact]
-    public void The_protected_folders_are_computed_once_per_validation()
+    public async Task The_protected_folders_are_computed_once_per_validation()
     {
         var job = ValidJob(
             new JobSource { Alias = "Documentos", Path = Documents },
             new JobSource { Alias = "Imágenes", Path = Pictures });
 
-        Validator.Validate(job, []);
+        await Validator.CheckAsync(job, []);
 
         Assert.Equal(1, _fileSystem.EnumerationCount);
     }
@@ -247,28 +250,79 @@ public sealed class JobValidatorTests
     [InlineData(@"\\127.0.0.1\backups", ValidationIssueCode.DestinationNotAllowed)]
     [InlineData(@"\\nas\C$", ValidationIssueCode.DestinationNotAllowed)]
     [InlineData(@"\\nas\backups\con", ValidationIssueCode.DestinationNotAllowed)]
-    public void A_destination_that_is_not_an_allowed_UNC_path_is_rejected(string destination, ValidationIssueCode code)
+    public async Task A_destination_that_is_not_an_allowed_UNC_path_is_rejected(string destination, ValidationIssueCode code)
     {
-        AssertSingleError(ValidJob() with { Destination = destination }, "Destination", code);
+        await AssertSingleErrorAsync(ValidJob() with { Destination = destination }, "Destination", code);
     }
 
     [Fact]
-    public void This_machine_is_not_an_allowed_destination()
+    public async Task This_machine_is_not_an_allowed_destination()
     {
-        AssertSingleError(ValidJob() with { Destination = $@"\\{Environment.MachineName}\copias" }, "Destination", ValidationIssueCode.DestinationNotAllowed);
+        await AssertSingleErrorAsync(ValidJob() with { Destination = $@"\\{Environment.MachineName}\copias" }, "Destination", ValidationIssueCode.DestinationNotAllowed);
     }
 
     [Fact]
-    public void A_destination_inside_a_source_is_rejected()
+    public async Task A_source_that_leads_to_the_network_is_only_SourceNotLocal()
     {
-        // Solo es posible si el origen lleva a la red (que además no es local).
-        _fileSystem.AddFolder(@"C:\Users\ana\Red", finalPath: @"\\nas\backups", volume: LocalVolumeKind.Remote);
+        // Antes de ADR-20 el enlace se seguía y su ruta final daba además DestinationInsideSource. Ahora el destino del enlace
+        // no se abre: no hay ruta final con la que comparar el destino.
+        _fileSystem.AddFolder(@"C:\Users\ana\Red", finalPath: @"\\nas\backups", volume: FakeVolumeKind.Remote);
         var job = ValidJob(new JobSource { Alias = "Red", Path = @"C:\Users\ana\Red" }) with { Destination = @"\\NAS\backups\pc" };
 
-        var result = Validator.Validate(job, []);
+        await AssertSingleErrorAsync(job, "Sources[0].Path", ValidationIssueCode.SourceNotLocal);
+    }
 
-        Assert.Contains(result.Errors, e => e.Field == "Destination" && e.Code == ValidationIssueCode.DestinationInsideSource);
-        Assert.Contains(result.Errors, e => e.Field == "Sources[0].Path" && e.Code == ValidationIssueCode.SourceNotLocal);
+    [Theory]
+    [InlineData(@"c:/Users/ana/Documentos/", @"C:\Users\ana\Documentos")]
+    [InlineData(@"c:\", @"C:\")]
+    public async Task The_saved_job_has_the_normalized_source_path(string path, string expected)
+    {
+        _fileSystem.AddFolder(expected);
+        var validation = await Validator.ValidateAsync(ValidJob(new JobSource { Alias = "X", Path = path }), [], TestContext.Current.CancellationToken);
+
+        Assert.True(validation.Issues.IsValid);
+        Assert.Equal(expected, validation.Job.Sources[0].Path);
+        Assert.Equal(expected, Assert.Single(_fileSystem.Resolved, p => p == expected));
+    }
+
+    [Theory]
+    [InlineData(@"C:\ProgramData::$INDEX_ALLOCATION")]
+    [InlineData(@"C:\a:b")]
+    [InlineData(@"C:\a\\b")]
+    [InlineData(@"C:\a\.\b")]
+    [InlineData(@"C:\a\..\b")]
+    [InlineData(@"C:\docs.")]
+    [InlineData(@"C:\docs ")]
+    [InlineData(@"C:\a\CON")]
+    [InlineData("C:\\a\u0001b")]
+    public async Task A_path_that_is_not_normalized_is_SourcePathInvalid_and_never_opened(string path)
+    {
+        await AssertSingleErrorAsync(ValidJob(new JobSource { Alias = "X", Path = path }), "Sources[0].Path", ValidationIssueCode.SourcePathInvalid);
+        Assert.Empty(_fileSystem.Resolved);
+    }
+
+    [Theory]
+    [InlineData(@"\??\C:\Users")]
+    [InlineData("//nas/fotos")]
+    public async Task Device_and_forward_slash_UNC_paths_are_not_local(string path)
+    {
+        await AssertSingleErrorAsync(ValidJob(new JobSource { Alias = "X", Path = path }), "Sources[0].Path", ValidationIssueCode.SourceNotLocal);
+    }
+
+    [Fact]
+    public async Task A_destination_whose_name_resolves_to_this_machine_is_not_allowed()
+    {
+        _hosts.Addresses["nas-falso"] = [System.Net.IPAddress.Loopback];
+
+        await AssertSingleErrorAsync(ValidJob() with { Destination = @"\\nas-falso\copias" }, "Destination", ValidationIssueCode.DestinationNotAllowed);
+    }
+
+    [Fact]
+    public async Task A_destination_whose_name_does_not_resolve_is_not_rejected_for_it()
+    {
+        _hosts.Errors["no-existe"] = FakeHostResolver.HostNotFound();
+
+        Assert.True((await Validator.CheckAsync(ValidJob() with { Destination = @"\\no-existe\copias" }, [])).IsValid);
     }
 
     [Theory]
@@ -276,47 +330,47 @@ public sealed class JobValidatorTests
     [InlineData(@"\\NAS\Backups\PC-Salon\")]
     [InlineData(@"\\nas\backups")]
     [InlineData(@"\\nas\backups\pc-salon\sub")]
-    public void A_destination_used_by_another_job_is_rejected(string otherDestination)
+    public async Task A_destination_used_by_another_job_is_rejected(string otherDestination)
     {
         var other = ValidJob() with { Id = Guid.NewGuid(), Destination = otherDestination };
 
-        AssertSingleError(ValidJob(), [other], "Destination", ValidationIssueCode.DestinationUsedByOtherJob);
+        await AssertSingleErrorAsync(ValidJob(), [other], "Destination", ValidationIssueCode.DestinationUsedByOtherJob);
     }
 
     [Theory]
     [InlineData(@"\\nas\backups\pc-salon2")]
     [InlineData(@"\\nas2\backups\pc-salon")]
     [InlineData(@"\\nas\otras\pc-salon")]
-    public void A_different_destination_of_another_job_is_allowed(string otherDestination)
+    public async Task A_different_destination_of_another_job_is_allowed(string otherDestination)
     {
         var other = ValidJob() with { Id = Guid.NewGuid(), Destination = otherDestination };
 
-        Assert.True(Validator.Validate(ValidJob(), [other]).IsValid);
+        Assert.True((await Validator.CheckAsync(ValidJob(), [other])).IsValid);
     }
 
     [Fact]
-    public void The_job_being_edited_does_not_conflict_with_its_own_destination()
+    public async Task The_job_being_edited_does_not_conflict_with_its_own_destination()
     {
         var saved = ValidJob() with { Id = Guid.NewGuid() };
 
-        Assert.True(Validator.Validate(saved with { Name = "Otro nombre" }, [saved]).IsValid);
+        Assert.True((await Validator.CheckAsync(saved with { Name = "Otro nombre" }, [saved])).IsValid);
     }
 
     [Theory]
     [InlineData("")]
     [InlineData("  ")]
     [InlineData("*.tmp\n")]
-    public void An_empty_exclusion_pattern_or_one_with_control_characters_is_rejected(string pattern)
+    public async Task An_empty_exclusion_pattern_or_one_with_control_characters_is_rejected(string pattern)
     {
-        AssertSingleError(ValidJob() with { Exclusions = ["*.tmp", pattern] }, "Exclusions[1]", ValidationIssueCode.ExclusionPatternInvalid);
+        await AssertSingleErrorAsync(ValidJob() with { Exclusions = ["*.tmp", pattern] }, "Exclusions[1]", ValidationIssueCode.ExclusionPatternInvalid);
     }
 
     [Fact]
-    public void A_daily_schedule_without_times_or_days_is_incomplete()
+    public async Task A_daily_schedule_without_times_or_days_is_incomplete()
     {
         var job = ValidJob() with { Schedule = new JobSchedule { Kind = ScheduleKind.Daily, TimesOfDay = [], Days = DaysOfWeek.None } };
 
-        var result = Validator.Validate(job, []);
+        var result = await Validator.CheckAsync(job, []);
 
         Assert.Equal(
             [("Schedule.TimesOfDay", ValidationIssueCode.ScheduleIncomplete), ("Schedule.Days", ValidationIssueCode.ScheduleIncomplete)],
@@ -327,15 +381,15 @@ public sealed class JobValidatorTests
     [InlineData(0)]
     [InlineData(25)]
     [InlineData(-1)]
-    public void An_interval_outside_1_to_24_hours_is_out_of_range(int hours)
+    public async Task An_interval_outside_1_to_24_hours_is_out_of_range(int hours)
     {
         var job = ValidJob() with { Schedule = new JobSchedule { Kind = ScheduleKind.Interval, IntervalHours = hours } };
 
-        AssertSingleError(job, "Schedule.IntervalHours", ValidationIssueCode.ValueOutOfRange);
+        await AssertSingleErrorAsync(job, "Schedule.IntervalHours", ValidationIssueCode.ValueOutOfRange);
     }
 
     [Fact]
-    public void Negative_retention_bad_battery_threshold_and_non_positive_limits_are_out_of_range()
+    public async Task Negative_retention_bad_battery_threshold_and_non_positive_limits_are_out_of_range()
     {
         var job = ValidJob() with
         {
@@ -345,7 +399,7 @@ public sealed class JobValidatorTests
             BandwidthLimitBytesPerSecond = -5,
         };
 
-        var result = Validator.Validate(job, []);
+        var result = await Validator.CheckAsync(job, []);
 
         Assert.Equal(
             ["Retention.KeepLast", "Conditions.MinBatteryPercent", "MaxFileSizeBytes", "BandwidthLimitBytesPerSecond"],
@@ -354,7 +408,7 @@ public sealed class JobValidatorTests
     }
 
     [Fact]
-    public void Every_problem_is_reported_at_once_with_its_own_field()
+    public async Task Every_problem_is_reported_at_once_with_its_own_field()
     {
         var job = new JobDefinition
         {
@@ -368,7 +422,7 @@ public sealed class JobValidatorTests
             Destination = @"C:\copias",
         };
 
-        var result = Validator.Validate(job, []);
+        var result = await Validator.CheckAsync(job, []);
 
         Assert.Equal(
             [
@@ -391,12 +445,12 @@ public sealed class JobValidatorTests
         Assert.Equal(expected, normalized);
     }
 
-    private ValidationIssue AssertSingleError(JobDefinition job, string field, ValidationIssueCode code) =>
-        AssertSingleError(job, [], field, code);
+    private Task<ValidationIssue> AssertSingleErrorAsync(JobDefinition job, string field, ValidationIssueCode code) =>
+        AssertSingleErrorAsync(job, [], field, code);
 
-    private ValidationIssue AssertSingleError(JobDefinition job, IReadOnlyList<JobDefinition> saved, string field, ValidationIssueCode code)
+    private async Task<ValidationIssue> AssertSingleErrorAsync(JobDefinition job, IReadOnlyList<JobDefinition> saved, string field, ValidationIssueCode code)
     {
-        var result = Validator.Validate(job, saved);
+        var result = await Validator.CheckAsync(job, saved);
         var error = Assert.Single(result.Errors);
         Assert.Equal(field, error.Field);
         Assert.Equal(code, error.Code);

@@ -332,9 +332,9 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 1. Con la app (o un cliente de pruebas), guardar un trabajo y anotar su nombre.
 2. Lanzar en bucle guardados del mismo trabajo cambiando el nombre (p. ej. 200 llamadas a `SaveJobAsync` desde un script con el cliente IPC) y, mientras tanto, ejecutar varias veces `Stop-Process -Name Backbone.Service -Force`; el SCM lo reinicia (RNF-02).
 3. Tras cada reinicio, comprobar en el log que el servicio ha arrancado ("Trabajos leídos: 1"), que `GetJobsAsync` devuelve el trabajo con uno de los nombres guardados y que `%ProgramData%\Backbone\config\jobs.json` es JSON válido (`Get-Content … | ConvertFrom-Json`).
-4. Comprobar que en `config\` no quedan archivos `.jobs.json.*.tmp` después del arranque y que no ha aparecido `jobs.json.bad`.
+4. Comprobar que en `config\` no quedan archivos `.jobs.json.*.tmp` después del arranque y que no ha aparecido ningún `jobs.json.bad-*`.
 
-**Resultado esperado:** el servicio arranca siempre con un `jobs.json` completo (el anterior o el nuevo), sin `.bad` ni temporales.
+**Resultado esperado:** el servicio arranca siempre con un `jobs.json` completo (el anterior o el nuevo), sin copias `.bad-*` ni temporales.
 
 **Estado:** pendiente (requiere el servicio instalado, HU-01).
 
@@ -361,11 +361,29 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 1. Validar un trabajo con un origen en una memoria USB (`E:\Fotos`): error `SourceNotLocal` en `Sources[0].Path`.
 2. Validar un origen en una partición o tarjeta FAT32/exFAT de disco fijo: error `SourceNotNtfs`.
 3. Asignar una unidad de red `Z:` (`net use Z: \\nas\fotos`) en la sesión del usuario y validar `Z:\`. Las letras asignadas son de cada sesión de inicio: el servicio (SYSTEM, sesión 0) no ve la `Z:` del usuario y responde `SourceNotFound`; con `--console` en la sesión del usuario, `SourceNotLocal`. Anotar el resultado de los dos.
-4. Crear (como administrador) un enlace simbólico de carpeta `mklink /D C:\RedFotos \\nas\fotos` y validar `C:\RedFotos`: error `SourceNotLocal`. Anotar si el registro del NAS muestra un intento de acceso de la cuenta del equipo: al abrir el enlace siguiéndolo, Windows resuelve la ruta de red como SYSTEM (riesgo residual señalado en el informe de HU-07).
+4. Crear (como administrador) un enlace simbólico de carpeta `mklink /D C:\RedFotos \\nas\fotos` y validar `C:\RedFotos` y `C:\RedFotos\2024`: error `SourceNotLocal` al momento. Con la resolución controlada (ADR-20) el destino del enlace no se abre: en el registro del NAS (`/var/log/samba/` o el panel de OMV) **no** debe aparecer ningún intento de acceso de la cuenta del equipo (`PC$`), y en el log del servicio sí "se rechaza un enlace cuyo destino no es un volumen local". Repetirlo con un *junction* creado como usuario estándar hacia `\RPC Control\x` (p. ej. con `CreateMountPoint` de symboliclink-testing-tools): `SourceNotLocal`, sin actividad de red.
+5. Validar `C:\ProgramData::$INDEX_ALLOCATION` y `C:\Users\ana\Documentos.` (punto final): `SourcePathInvalid`. Guardar un trabajo con `c:/Users/ana/Documentos/` y comprobar en `jobs.json` y en la respuesta que la ruta es `C:\Users\ana\Documentos`.
 
 **Resultado esperado:** cada caso con su código junto al campo del origen.
 
 **Estado:** pendiente.
+
+## PM-HU07-05 · Redirection Guard con el servicio instalado
+
+**Cubre:** HU-07, revisión de seguridad (§8.3 "Redirection Guard", ADR-20): defensa complementaria activada al arrancar.
+
+**Por qué es manual:** la mitigación se aplica al proceso del servicio y no puede activarse en el proceso de pruebas (dejaría de seguir los *junctions* que crean las propias pruebas). `ProcessMitigationStartupTests` solo comprueba que se llama al arrancar, antes de `StartupService`, y que un fallo es un aviso.
+
+**Pasos** (PowerShell **elevado**, servicio instalado y en ejecución; un usuario estándar `luis` y un administrador `ana`)
+1. En el log del servicio tras arrancar: "Redirection Guard activado". `Get-ProcessMitigation -Id (Get-Process Backbone.Service).Id` muestra la política de *redirection trust* aplicada. Si la versión de Windows no la admite, en el log aparece "No se ha podido activar Redirection Guard" y el servicio sigue funcionando.
+2. Como `luis` (sin elevar), crear `mklink /J C:\Users\Public\enlace-luis C:\Users\Public\Documents`. Como `ana`, iniciar una restauración (cuando exista HU-21) con destino `C:\Users\Public\enlace-luis\restaurado`: falla con `RestoreTargetNotWritable` y el Visor de eventos registra el intento bloqueado por RedirectionGuard.
+3. Validar como origen `C:\Users\Public\enlace-luis`: la resolución controlada lo sigue ella misma (destino local) y es válido; Redirection Guard no interfiere porque ADR-20 abre los enlaces con `FILE_OPEN_REPARSE_POINT`.
+4. Validar como origen `C:\Users\ana\Mis documentos` (junction de compatibilidad creado por el sistema): se resuelve hacia `C:\Users\ana\Documents` y no aparece ningún bloqueo de RedirectionGuard en el Visor.
+5. Ejecutar una copia (cuando exista HU-14) de un origen que contenga *junctions* del perfil: siguen apareciendo como `ReparsePointSkipped` (RF-06), sin errores nuevos.
+
+**Resultado esperado:** mitigación activa (o aviso si no se admite); los *junctions* creados por usuarios estándar no se siguen en aperturas del sistema y los del perfil no producen errores.
+
+**Estado:** pendiente (requiere el servicio instalado, HU-01; los pasos 2 y 5, HU-21 y HU-14).
 
 ## PM-HU07-04 · Parte visual de la creación de un trabajo (pendiente de backbone-app)
 

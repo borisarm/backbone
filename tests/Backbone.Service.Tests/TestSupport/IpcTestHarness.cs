@@ -30,7 +30,10 @@ internal sealed class IpcTestHarness : IAsyncDisposable
         Protector = protector ?? new DpapiMachineProtector();
         Credentials = new CredentialStore(_temp.Combine("credentials"), TestFileTrust.CurrentUser, Protector, Time, LoggerFactory.CreateLogger<CredentialStore>());
         Jobs = new JobStore(_temp.Combine("config", "jobs.json"), TestFileTrust.CurrentUser, LoggerFactory.CreateLogger<JobStore>());
+        FileSystem.MapFinalDirectory((Path.GetDirectoryName(_temp.Path) ?? _temp.Path), (Path.GetDirectoryName(_temp.Path) ?? _temp.Path));
         ProtectedFolders = new ProtectedFolderResolver(new ServicePaths(_temp.Path), FileSystem, LoggerFactory.CreateLogger<ProtectedFolderResolver>());
+        Runner = new SourceValidationRunner(Time, IoOptions);
+        Validator = new JobValidator(FileSystem, ProtectedFolders, Runner, HostResolver, Time, LoggerFactory.CreateLogger<JobValidator>());
         Status = new ServiceStatusProvider(Jobs, Activity, Time);
         ConnectionTester = new ConnectionTester(
             new ShareConnectionManager(ShareConnector, LoggerFactory.CreateLogger<ShareConnectionManager>()),
@@ -39,7 +42,7 @@ internal sealed class IpcTestHarness : IAsyncDisposable
             Time,
             new ConnectionTestOptions(),
             LoggerFactory.CreateLogger<ConnectionTester>());
-        Operations = new BackboneOperations(Runtime, Settings, Accounts, Credentials, Jobs, new JobValidator(FileSystem, ProtectedFolders), Activity, Status, ConnectionTester);
+        Operations = new BackboneOperations(Runtime, Settings, Accounts, Credentials, Jobs, Validator, Activity, Status, ConnectionTester);
         Manager = new IpcConnectionManager(Authorizer, Accounts, Settings, Operations, Options, Time, LoggerFactory);
         Events = new IpcEventPublisher(Manager, Options, Time);
         Broadcaster = new StatusBroadcaster(Jobs, Status, Events);
@@ -50,6 +53,14 @@ internal sealed class IpcTestHarness : IAsyncDisposable
     public FakeLocalFileSystemInspector FileSystem { get; } = new();
 
     public FakeJobActivity Activity { get; } = new();
+
+    /// <summary>Plazos de la resolución de orígenes (las pruebas de plazo los acortan antes de usar el arnés).</summary>
+    public SourceIoOptions IoOptions { get; } = new();
+
+    /// <summary>Hilos de trabajo de la validación (como mucho 4 a la vez, MEDIA-1).</summary>
+    public SourceValidationRunner Runner { get; }
+
+    public JobValidator Validator { get; }
 
     public JobStore Jobs { get; }
 

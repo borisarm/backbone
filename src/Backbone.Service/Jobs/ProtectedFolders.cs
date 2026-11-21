@@ -73,7 +73,7 @@ internal sealed record ProtectedFolderSet(
 
     /// <summary>
     /// Clasifica la <b>ruta final</b> de un origen (sin puntos de reanálisis, como la de
-    /// <see cref="ILocalFileSystemInspector.InspectFolder"/>), comparando por segmentos completos sin distinguir mayúsculas.
+    /// <see cref="ILocalFileSystemInspector.ResolveFolder"/>), comparando por segmentos completos sin distinguir mayúsculas.
     /// </summary>
     /// <remarks>
     /// <list type="bullet">
@@ -156,22 +156,37 @@ internal sealed record ProtectedFolderSet(
 /// </summary>
 /// <remarks>
 /// <c>PD</c> es la ruta final de la carpeta que contiene la carpeta de datos (<c>%ProgramData%</c> en producción; una
-/// carpeta temporal en las pruebas), abierta siguiendo enlaces: solo un administrador puede cambiarla.
+/// carpeta temporal en las pruebas), obtenida con la misma resolución controlada que los orígenes
+/// (<see cref="ILocalFileSystemInspector.ResolveFolder"/>, ADR-20): ningún código del servicio deja que el sistema siga un
+/// enlace al abrir una ruta. Se llama desde el hilo de trabajo de la validación (<see cref="SourceValidationRunner"/>).
 /// </remarks>
 internal sealed partial class ProtectedFolderResolver(ServicePaths paths, ILocalFileSystemInspector fileSystem, ILogger<ProtectedFolderResolver> logger)
 {
     /// <summary>Máximo de carpetas apartadas; con más, los orígenes que contienen <c>PD</c> fallan cerrados (M-B).</summary>
     public const int MaxQuarantinedFolders = 100;
 
-    public ProtectedFolderSet Resolve()
+    /// <exception cref="OperationCanceledException">Se ha cancelado la llamada.</exception>
+    public ProtectedFolderSet Resolve(SourceIoGuard guard)
     {
+        ArgumentNullException.ThrowIfNull(guard);
         var dataFolderName = Path.GetFileName(paths.Root);
         var parent = Path.GetDirectoryName(paths.Root) ?? paths.Root;
 
         string programData;
         try
         {
-            programData = fileSystem.GetFinalDirectoryPath(parent);
+            if (SourcePath.TryNormalize(parent, out var normalized) != SourcePathCheck.Ok)
+            {
+                throw new IOException($"The folder '{parent}' is not a normalized local path.");
+            }
+
+            var folder = fileSystem.ResolveFolder(normalized, guard);
+            if (folder.Status != LocalFolderStatus.Ok)
+            {
+                throw new IOException($"The folder '{parent}' could not be resolved ({folder.Status}: {folder.Detail}).");
+            }
+
+            programData = folder.FinalPath;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or Win32Exception)
         {
@@ -183,7 +198,7 @@ internal sealed partial class ProtectedFolderResolver(ServicePaths paths, ILocal
         RealDirectoryScan scan;
         try
         {
-            scan = fileSystem.FindRealDirectories(programData, prefix, MaxQuarantinedFolders);
+            scan = fileSystem.FindRealDirectories(programData, prefix, MaxQuarantinedFolders, guard);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or Win32Exception)
         {
@@ -191,9 +206,9 @@ internal sealed partial class ProtectedFolderResolver(ServicePaths paths, ILocal
             return new ProtectedFolderSet(programData, dataFolderName, [], IsComplete: false);
         }
 
-        if (scan.TotalCount > MaxQuarantinedFolders)
+        if (scan.LimitExceeded)
         {
-            LogTooManyQuarantined(logger, scan.TotalCount, MaxQuarantinedFolders, Path.Join(programData, prefix + "*"));
+            LogTooManyQuarantined(logger, MaxQuarantinedFolders, Path.Join(programData, prefix + "*"));
             return new ProtectedFolderSet(programData, dataFolderName, [], IsComplete: false);
         }
 
@@ -203,6 +218,6 @@ internal sealed partial class ProtectedFolderResolver(ServicePaths paths, ILocal
     [LoggerMessage(Level = LogLevel.Warning, Message = "No se ha podido enumerar {ProgramData} para calcular las carpetas protegidas (§8.3); los orígenes que la contienen se rechazan.")]
     private static partial void LogProgramDataUnavailable(ILogger logger, Exception exception, string programData);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Hay {Count} carpetas apartadas (máximo {Max}): los orígenes que contienen %ProgramData% se rechazan hasta que un administrador revise {Pattern} (§8.3, R11).")]
-    private static partial void LogTooManyQuarantined(ILogger logger, int count, int max, string pattern);
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Hay más de {Max} carpetas apartadas: los orígenes que contienen %ProgramData% se rechazan hasta que un administrador revise {Pattern} (§8.3, R11).")]
+    private static partial void LogTooManyQuarantined(ILogger logger, int max, string pattern);
 }

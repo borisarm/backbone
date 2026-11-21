@@ -132,7 +132,7 @@ public sealed class JobStoreTests : IDisposable
 
         await store.UpdateAsync(list => (list.Add(Job("Docs")), 0), Ct);
 
-        Assert.Equal("{ \"jobs\": [ { \"id\": ", await File.ReadAllTextAsync(JobsPath + ".bad", Ct));
+        Assert.Equal("{ \"jobs\": [ { \"id\": ", await File.ReadAllTextAsync(BadCopies.Single(JobsPath), Ct));
         using var document = JsonDocument.Parse(await File.ReadAllBytesAsync(JobsPath, Ct));
         Assert.Single(document.RootElement.GetProperty("jobs").EnumerateArray());
     }

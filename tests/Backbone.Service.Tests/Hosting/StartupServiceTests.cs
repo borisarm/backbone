@@ -161,7 +161,12 @@ public sealed class StartupServiceTests : IDisposable
         await NewStartup(new FakeGuard(DataDirectoryCheck.Secure), settings).StartingAsync(Ct);
 
         Assert.Empty(_jobs.Jobs);
-        Assert.Empty(_eventLog.Entries);
+
+        // §8.5: 1004 (advertencia) para que no pase desapercibido; nunca lleva el contenido.
+        var entry = Assert.Single(_eventLog.Entries);
+        Assert.Equal((EventLogLevel.Warning, BackboneEventIds.JobsFileCorrupt), (entry.Level, entry.EventId));
+        Assert.DoesNotContain("roto", entry.Message, StringComparison.Ordinal);
+        Assert.Contains("jobs.json.bad-", entry.Message, StringComparison.Ordinal);
     }
 
     [Fact]

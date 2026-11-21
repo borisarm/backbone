@@ -1,5 +1,6 @@
 using Backbone.Service.Hosting;
 using Backbone.Service.Jobs;
+using Backbone.Service.Os;
 using Backbone.Service.Tests.TestSupport;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -98,7 +99,7 @@ public sealed class ProtectedFoldersTests
         fileSystem.QuarantinedFolders.AddRange(["Backbone.untrusted-1", "Otra.untrusted-2"]);
         var resolver = new ProtectedFolderResolver(new ServicePaths(@"C:\Datos\Backbone"), fileSystem, NullLogger<ProtectedFolderResolver>.Instance);
 
-        var set = resolver.Resolve();
+        var set = resolver.Resolve(TestIo.Guard());
 
         Assert.Equal(@"E:\Real\Datos", set.ProgramDataPath);
         Assert.Equal("Backbone", set.DataFolderName);
@@ -112,7 +113,7 @@ public sealed class ProtectedFoldersTests
         var fileSystem = new FakeLocalFileSystemInspector();
         fileSystem.QuarantinedFolders.AddRange(Enumerable.Range(0, ProtectedFolderResolver.MaxQuarantinedFolders).Select(i => $"Backbone.untrusted-{i:D3}"));
 
-        var set = NewResolver(fileSystem).Resolve();
+        var set = NewResolver(fileSystem).Resolve(TestIo.Guard());
 
         Assert.True(set.IsComplete);
         Assert.Equal(100, set.QuarantinedFolderNames.Count);
@@ -123,16 +124,32 @@ public sealed class ProtectedFoldersTests
     public void More_than_100_quarantined_folders_fail_closed_and_log_a_warning_with_the_count()
     {
         var fileSystem = new FakeLocalFileSystemInspector();
-        fileSystem.QuarantinedFolders.AddRange(Enumerable.Range(0, 101).Select(i => $"Backbone.untrusted-{i:D3}"));
+        fileSystem.MapFinalDirectory(@"C:\ProgramData", @"C:\ProgramData");
+        fileSystem.QuarantinedFolders.AddRange(Enumerable.Range(0, 150).Select(i => $"Backbone.untrusted-{i:D3}"));
         var logs = new CapturingLoggerProvider();
         using var factory = LoggerFactory.Create(b => b.AddProvider(logs));
 
-        var set = new ProtectedFolderResolver(new ServicePaths(@"C:\ProgramData\Backbone"), fileSystem, factory.CreateLogger<ProtectedFolderResolver>()).Resolve();
+        var set = new ProtectedFolderResolver(new ServicePaths(@"C:\ProgramData\Backbone"), fileSystem, factory.CreateLogger<ProtectedFolderResolver>()).Resolve(TestIo.Guard());
 
         Assert.False(set.IsComplete);
         Assert.Empty(set.QuarantinedFolderNames);
         Assert.Equal(SourceProtectionKind.ProtectedFoldersUnknown, set.Classify(@"C:\").Kind);
-        Assert.Contains(logs.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("101", StringComparison.Ordinal));
+        Assert.Contains(logs.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("100", StringComparison.Ordinal));
+
+        // MEDIA-1: deja de abrir entradas en cuanto encuentra la 101.
+        Assert.Equal(101, fileSystem.OpenedEntries);
+    }
+
+    [Fact]
+    public void ProgramData_is_resolved_with_the_controlled_resolution_and_fails_closed_if_it_cannot_be_resolved()
+    {
+        var fileSystem = new FakeLocalFileSystemInspector().AddStatus(@"C:\ProgramData", LocalFolderStatus.NotLocal);
+
+        var set = new ProtectedFolderResolver(new ServicePaths(@"C:\ProgramData\Backbone"), fileSystem, NullLogger<ProtectedFolderResolver>.Instance).Resolve(TestIo.Guard());
+
+        Assert.Equal([@"C:\ProgramData"], fileSystem.Resolved);
+        Assert.False(set.IsComplete);
+        Assert.Equal(0, fileSystem.EnumerationCount);
     }
 
     [Fact]
@@ -140,7 +157,7 @@ public sealed class ProtectedFoldersTests
     {
         var fileSystem = new FakeLocalFileSystemInspector { EnumerationFailure = new IOException("denied") };
 
-        var set = NewResolver(fileSystem).Resolve();
+        var set = NewResolver(fileSystem).Resolve(TestIo.Guard());
 
         Assert.False(set.IsComplete);
         Assert.True(set.Classify(@"C:\ProgramData").IsNotAllowed);
@@ -152,13 +169,13 @@ public sealed class ProtectedFoldersTests
         var fileSystem = new FakeLocalFileSystemInspector();
         var resolver = NewResolver(fileSystem);
 
-        Assert.Empty(resolver.Resolve().QuarantinedFolderNames);
+        Assert.Empty(resolver.Resolve(TestIo.Guard()).QuarantinedFolderNames);
         fileSystem.QuarantinedFolders.Add("Backbone.untrusted-nueva");
 
-        Assert.Equal(["Backbone.untrusted-nueva"], resolver.Resolve().QuarantinedFolderNames);
+        Assert.Equal(["Backbone.untrusted-nueva"], resolver.Resolve(TestIo.Guard()).QuarantinedFolderNames);
         Assert.Equal(2, fileSystem.EnumerationCount);
     }
 
     private static ProtectedFolderResolver NewResolver(FakeLocalFileSystemInspector fileSystem) =>
-        new(new ServicePaths(@"C:\ProgramData\Backbone"), fileSystem, NullLogger<ProtectedFolderResolver>.Instance);
+        new(new ServicePaths(@"C:\ProgramData\Backbone"), fileSystem.MapFinalDirectory(@"C:\ProgramData", @"C:\ProgramData"), NullLogger<ProtectedFolderResolver>.Instance);
 }

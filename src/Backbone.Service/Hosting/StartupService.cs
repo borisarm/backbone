@@ -9,7 +9,8 @@ namespace Backbone.Service.Hosting;
 /// <summary>
 /// Primer servicio alojado: comprueba la carpeta de datos (HT-03 I-1) y, solo si es segura, lee <c>settings.json</c> y
 /// <c>jobs.json</c> (HU-07). Registra en el Visor de eventos el arranque (1000), la parada (1001), el fallo de arranque (1002:
-/// carpeta insegura, o <c>settings.json</c> o <c>jobs.json</c> rechazados) y la carpeta apartada y sustituida (1003).
+/// carpeta insegura, o <c>settings.json</c> o <c>jobs.json</c> rechazados), la carpeta apartada y sustituida (1003) y el
+/// <c>jobs.json</c> dañado (1004).
 /// </summary>
 internal sealed partial class StartupService(
     ServicePaths paths,
@@ -91,7 +92,7 @@ internal sealed partial class StartupService(
         catch (UntrustedFileException ex)
         {
             var rejected = ex.FilePath ?? jobs.JobsPath;
-            LogSettingsRejected(logger, ex, rejected);
+            LogJobsRejected(logger, ex, rejected);
             eventLog.Write(
                 EventLogLevel.Error,
                 BackboneEventIds.ServiceStartFailed,
@@ -100,12 +101,21 @@ internal sealed partial class StartupService(
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            LogSettingsUnreadable(logger, ex, jobs.JobsPath);
+            LogJobsUnreadable(logger, ex, jobs.JobsPath);
             eventLog.Write(
                 EventLogLevel.Error,
                 BackboneEventIds.ServiceStartFailed,
                 $"Backbone does not start: '{jobs.JobsPath}' could not be read ({ex.GetType().Name}).");
             throw new ServiceStartupException("jobs.json could not be read.", ex);
+        }
+
+        if (jobs.LoadedFileWasCorrupt)
+        {
+            // §8.5: sin el evento pasaría desapercibido (la app, sin trabajos, mostraría el asistente de primer uso).
+            eventLog.Write(
+                EventLogLevel.Warning,
+                BackboneEventIds.JobsFileCorrupt,
+                $"'{jobs.JobsPath}' is damaged (invalid JSON or larger than {JobStore.MaxFileBytes / (1024 * 1024)} MiB): Backbone started without jobs. The file will be moved aside as '{Path.GetFileName(jobs.JobsPath)}{TrustedFile.SetAsideMarker}<UTC timestamp>' before the next write, without overwriting earlier copies (at most {TrustedFile.MaxSetAsideCopies}).");
         }
     }
 
@@ -133,11 +143,17 @@ internal sealed partial class StartupService(
     [LoggerMessage(Level = LogLevel.Warning, Message = "La carpeta de datos {Root} tenía un propietario no fiable: se ha apartado como {MovedAside} y se ha creado una nueva.")]
     private static partial void LogReplaced(ILogger logger, string root, string movedAside);
 
-    [LoggerMessage(Level = LogLevel.Critical, Message = "{Path} se ha rechazado (§8.2); el servicio no arranca.")]
+    [LoggerMessage(Level = LogLevel.Critical, Message = "settings.json ({Path}) se ha rechazado (§8.2); el servicio no arranca.")]
     private static partial void LogSettingsRejected(ILogger logger, Exception exception, string path);
 
     [LoggerMessage(Level = LogLevel.Critical, Message = "No se ha podido leer {Path}; el servicio no arranca.")]
     private static partial void LogSettingsUnreadable(ILogger logger, Exception exception, string path);
+
+    [LoggerMessage(Level = LogLevel.Critical, Message = "jobs.json ({Path}) se ha rechazado (§8.2); el servicio no arranca.")]
+    private static partial void LogJobsRejected(ILogger logger, Exception exception, string path);
+
+    [LoggerMessage(Level = LogLevel.Critical, Message = "No se ha podido leer jobs.json ({Path}); el servicio no arranca.")]
+    private static partial void LogJobsUnreadable(ILogger logger, Exception exception, string path);
 
     [LoggerMessage(Level = LogLevel.Critical, Message = "La carpeta de datos {Root} no es segura; el servicio no arranca.")]
     private static partial void LogInsecure(ILogger logger, Exception exception, string root);

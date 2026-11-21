@@ -68,12 +68,12 @@ internal sealed class BackboneOperations(
         return Task.FromResult(list);
     }
 
-    /// <summary>RF-03 (HU-07 criterios 2, 3, 4 y 6): errores y avisos del trabajo, sin guardar nada.</summary>
-    public Task<ValidationResult> ValidateJobAsync(JobDefinition job, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        return Task.FromResult(jobValidator.Validate(job, jobs.Jobs));
-    }
+    /// <summary>
+    /// RF-03 (HU-07 criterios 2, 3, 4 y 6): errores y avisos del trabajo, sin guardar nada. Es de escritura (§7.3): abre como
+    /// SYSTEM las rutas que indica el cliente. La resolución de los orígenes se hace fuera del hilo RPC (MEDIA-1).
+    /// </summary>
+    public async Task<ValidationResult> ValidateJobAsync(JobDefinition job, CancellationToken ct) =>
+        (await jobValidator.ValidateAsync(job, jobs.Jobs, ct).ConfigureAwait(false)).Issues;
 
     /// <summary>
     /// Crea (<c>Id</c> vacío: el servicio asigna uno) o sustituye un trabajo (§7.2, §7.5):
@@ -83,12 +83,13 @@ internal sealed class BackboneOperations(
     /// impiden);</item>
     /// <item><see cref="BackboneErrorCode.CredentialRequired"/> si no hay credencial guardada para el recurso del destino
     /// (§7.5 A-3: nunca se usa la cuenta del equipo);</item>
-    /// <item>escritura atómica de <c>jobs.json</c>, con el destino normalizado, y <c>StatusChanged</c>.</item>
+    /// <item>escritura atómica de <c>jobs.json</c>, con las rutas de origen y el destino <b>normalizados</b> (§7.5 "Ruta de
+    /// origen", BAJA-1), y <c>StatusChanged</c>.</item>
     /// </list>
-    /// Existencia y destino repetido se comprueban otra vez bajo el bloqueo de escritura, por si otro cliente ha guardado
-    /// entretanto.
+    /// Existencia, destino repetido y credencial (BAJA-2) se comprueban otra vez bajo el bloqueo de escritura, por si otro
+    /// cliente ha guardado o borrado entretanto.
     /// </summary>
-    /// <returns>El trabajo tal como se ha guardado.</returns>
+    /// <returns>El trabajo tal como se ha guardado (con las rutas normalizadas).</returns>
     public async Task<JobDefinition> SaveJobAsync(JobDefinition job, CancellationToken ct)
     {
         if (job.Id != Guid.Empty && jobs.Find(job.Id) is null)
@@ -96,26 +97,23 @@ internal sealed class BackboneOperations(
             throw JobNotFound();
         }
 
-        var validation = jobValidator.Validate(job, jobs.Jobs);
-        if (!validation.IsValid)
+        var validation = await jobValidator.ValidateAsync(job, jobs.Jobs, ct).ConfigureAwait(false);
+        if (!validation.Issues.IsValid)
         {
-            throw BackboneException.ValidationFailed(validation);
+            throw BackboneException.ValidationFailed(validation.Issues);
         }
 
-        if (!JobValidator.TryNormalizeDestination(job.Destination, out var destination, out var issue)
-            || !CredentialStore.TryNormalizeShareRoot(destination, out var shareRoot, out issue))
+        var destination = validation.Job.Destination;
+        if (!CredentialStore.TryNormalizeShareRoot(destination, out var shareRoot, out var issue))
         {
             throw BackboneException.ValidationFailed(nameof(JobDefinition.Destination), issue);
         }
 
-        if (await credentials.GetInfoAsync(shareRoot, ct).ConfigureAwait(false) is null)
-        {
-            throw new BackboneException(BackboneErrorCode.CredentialRequired, "No credential is saved for the destination share.");
-        }
+        await RequireCredentialAsync(shareRoot, ct).ConfigureAwait(false);
 
-        var toSave = job with { Id = job.Id == Guid.Empty ? Guid.NewGuid() : job.Id, Destination = destination };
+        var toSave = validation.Job with { Id = job.Id == Guid.Empty ? Guid.NewGuid() : job.Id };
         return await jobs.UpdateAsync(
-            list =>
+            async (list, token) =>
             {
                 var index = IndexOf(list, toSave.Id);
                 if (job.Id != Guid.Empty && index < 0)
@@ -128,9 +126,19 @@ internal sealed class BackboneOperations(
                     throw BackboneException.ValidationFailed(nameof(JobDefinition.Destination), ValidationIssueCode.DestinationUsedByOtherJob);
                 }
 
+                // BAJA-2: la credencial puede haberse borrado mientras se validaba.
+                await RequireCredentialAsync(shareRoot, token).ConfigureAwait(false);
                 return (index < 0 ? list.Add(toSave) : list.SetItem(index, toSave), toSave);
             },
             ct).ConfigureAwait(false);
+    }
+
+    private async Task RequireCredentialAsync(string shareRoot, CancellationToken ct)
+    {
+        if (await credentials.GetInfoAsync(shareRoot, ct).ConfigureAwait(false) is null)
+        {
+            throw new BackboneException(BackboneErrorCode.CredentialRequired, "No credential is saved for the destination share.");
+        }
     }
 
     /// <summary>

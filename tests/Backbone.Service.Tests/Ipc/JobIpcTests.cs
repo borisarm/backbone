@@ -241,4 +241,57 @@ public sealed class JobIpcTests : IAsyncLifetime
         Assert.DoesNotContain(Documents, all, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(@"\nas\", all, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public async Task ValidateJob_is_a_write_and_is_audited_without_arguments()
+    {
+        // §7.3 (revisión de seguridad de HU-07): hace que SYSTEM abra las rutas que indica el cliente.
+        await _ana.Proxy.ValidateJobAsync(NewJob(), Ct);
+
+        var all = _server.Logs.AllText();
+        Assert.Contains(nameof(Contracts.IBackboneService.ValidateJobAsync), all, StringComparison.Ordinal);
+        Assert.DoesNotContain(Documents, all, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SaveJob_stores_and_returns_the_normalized_source_path()
+    {
+        // BAJA-1 (§7.5 "Ruta de origen"): / como separador, letra en minúsculas y barra final.
+        var job = NewJob() with { Sources = [new JobSource { Alias = "Docs", Path = "c:/Users/ana/Documentos/" }] };
+
+        var saved = await _ana.Proxy.SaveJobAsync(job, Ct);
+
+        Assert.Equal(Documents, saved.Sources[0].Path);
+        Assert.Equal(Documents, Assert.Single(_server.Jobs.Jobs).Sources[0].Path);
+        var json = await File.ReadAllTextAsync(Path.Combine(_server.DataRoot, "config", "jobs.json"), Ct);
+        Assert.Contains(JsonSerializer.Serialize(Documents), json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_source_path_with_an_alternate_stream_or_a_trailing_dot_is_SourcePathInvalid_and_not_saved()
+    {
+        foreach (var path in new[] { @"C:\ProgramData::$INDEX_ALLOCATION", Documents + "." })
+        {
+            var job = NewJob() with { Sources = [new JobSource { Alias = "Docs", Path = path }] };
+
+            var validation = await _ana.Proxy.ValidateJobAsync(job, Ct);
+            var ex = await Assert.ThrowsAsync<StreamJsonRpc.RemoteInvocationException>(() => _ana.Proxy.SaveJobAsync(job, Ct));
+
+            Assert.Equal(("Sources[0].Path", ValidationIssueCode.SourcePathInvalid), (Assert.Single(validation.Errors).Field, validation.Errors[0].Code));
+            Assert.True(BackboneErrors.TryGetErrorCode(ex.ErrorCode, out var code));
+            Assert.Equal(BackboneErrorCode.ValidationFailed, code);
+        }
+
+        Assert.Empty(_server.Jobs.Jobs);
+    }
+
+    [Fact]
+    public async Task A_destination_that_resolves_to_this_machine_is_rejected_by_validation()
+    {
+        _server.HostResolver.Addresses["nas-falso"] = [System.Net.IPAddress.Loopback];
+
+        var validation = await _ana.Proxy.ValidateJobAsync(NewJob(destination: @"\\nas-falso\backups"), Ct);
+
+        Assert.Equal(("Destination", ValidationIssueCode.DestinationNotAllowed), (Assert.Single(validation.Errors).Field, validation.Errors[0].Code));
+    }
 }

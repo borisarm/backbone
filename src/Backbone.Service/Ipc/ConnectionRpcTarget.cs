@@ -54,8 +54,9 @@ internal sealed partial class ConnectionRpcTarget(IpcConnection connection, Back
     public Task DeleteJobAsync(Guid jobId, CancellationToken ct = default) =>
         InvokeAsync(nameof(DeleteJobAsync), Write, _ => operations.DeleteJobAsync(jobId, ct));
 
+    /// <summary>Escritura (§7.3, revisión de seguridad de HU-07): hace que SYSTEM abra las rutas de origen que indica el cliente.</summary>
     public Task<ValidationResult> ValidateJobAsync(JobDefinition job, CancellationToken ct = default) =>
-        InvokeAsync(nameof(ValidateJobAsync), Read, _ => operations.ValidateJobAsync(IpcInputValidator.Job(job), ct));
+        InvokeAsync(nameof(ValidateJobAsync), Write, _ => operations.ValidateJobAsync(IpcInputValidator.Job(job), ct));
 
     // ---- Ejecución ----
 

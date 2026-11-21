@@ -28,8 +28,10 @@ internal interface IJobList
 /// <item>Si al arrancar <c>jobs.json</c> se rechaza (punto de reanálisis, carpeta, enlace duro o propietario no fiable),
 /// <see cref="LoadAsync"/> lanza <see cref="UntrustedFileException"/> sin leer nada y el servicio no arranca (1002), igual que
 /// con <c>settings.json</c>.</item>
-/// <item>Si está dañado (JSON no válido o más de <see cref="MaxFileBytes"/>), la lista queda vacía y, antes de la
-/// siguiente escritura, el archivo se aparta por handle como <c>jobs.json.bad</c> (no se borra ni se vuelve a leer).</item>
+/// <item>Si está dañado (JSON no válido o más de <see cref="MaxFileBytes"/>), la lista queda vacía
+/// (<see cref="LoadedFileWasCorrupt"/>: el arranque registra el evento 1004) y, antes de la siguiente escritura, el archivo
+/// se aparta por handle como <c>jobs.json.bad-&lt;marca UTC&gt;</c> sin sobrescribir copias anteriores y con 5 como máximo
+/// (<see cref="TrustedFile.SetAsideCorrupt"/>, §8.2 "Copias apartadas <c>.bad</c>"; no se borra ni se vuelve a leer).</item>
 /// <item>Las entradas que no son un trabajo utilizable (nulas, sin identificador, con identificador repetido o fuera de los
 /// límites de <see cref="ContractLimits"/>) se ignoran con aviso; las demás se cargan tal cual, sin volver a comprobar los
 /// orígenes (pueden no estar disponibles en el arranque; lo comprueba cada ejecución).</item>
@@ -38,7 +40,8 @@ internal interface IJobList
 /// para no escribir nunca algo que no se podría volver a leer.</item>
 /// </list>
 /// </remarks>
-internal sealed partial class JobStore(string jobsPath, TrustedFile files, ILogger<JobStore> logger, int maxFileBytes = JobStore.MaxFileBytes)
+internal sealed partial class JobStore(
+    string jobsPath, TrustedFile files, ILogger<JobStore> logger, int maxFileBytes = JobStore.MaxFileBytes, TimeProvider? timeProvider = null)
     : IJobList, IDisposable
 {
     /// <summary>Tamaño máximo de <c>jobs.json</c> (las pruebas pueden indicar otro en el constructor).</summary>
@@ -66,6 +69,12 @@ internal sealed partial class JobStore(string jobsPath, TrustedFile files, ILogg
     public string JobsPath { get; } = Path.GetFullPath(jobsPath);
 
     public ImmutableArray<JobDefinition> Jobs => _jobs;
+
+    /// <summary>
+    /// El <c>jobs.json</c> leído al arrancar estaba dañado (JSON no válido o demasiado grande): se arranca sin trabajos, el
+    /// arranque registra el evento 1004 (§8.5) y el archivo se aparta antes de la siguiente escritura.
+    /// </summary>
+    public bool LoadedFileWasCorrupt { get; private set; }
 
     public void Dispose() => _writeLock.Dispose();
 
@@ -108,7 +117,19 @@ internal sealed partial class JobStore(string jobsPath, TrustedFile files, ILogg
     /// </summary>
     /// <exception cref="UntrustedFileException">El <c>jobs.json</c> existente se rechaza: no se escribe nada.</exception>
     /// <exception cref="BackboneException">La función la lanza (se propaga sin escribir), o el archivo superaría el límite.</exception>
-    public async Task<T> UpdateAsync<T>(Func<ImmutableArray<JobDefinition>, (ImmutableArray<JobDefinition> Jobs, T Result)> change, CancellationToken ct)
+    public Task<T> UpdateAsync<T>(Func<ImmutableArray<JobDefinition>, (ImmutableArray<JobDefinition> Jobs, T Result)> change, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(change);
+        return UpdateAsync((list, _) => Task.FromResult(change(list)), ct);
+    }
+
+    /// <summary>
+    /// Como <see cref="UpdateAsync{T}(Func{ImmutableArray{JobDefinition}, ValueTuple{ImmutableArray{JobDefinition}, T}}, CancellationToken)"/>,
+    /// con una función asíncrona que se ejecuta bajo el bloqueo de escritura (p. ej. para volver a comprobar la credencial
+    /// del destino justo antes de escribir, BAJA-2).
+    /// </summary>
+    public async Task<T> UpdateAsync<T>(
+        Func<ImmutableArray<JobDefinition>, CancellationToken, Task<(ImmutableArray<JobDefinition> Jobs, T Result)>> change, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(change);
         bool changed;
@@ -116,7 +137,7 @@ internal sealed partial class JobStore(string jobsPath, TrustedFile files, ILogg
         await _writeLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            (var updated, result) = change(_jobs);
+            (var updated, result) = await change(_jobs, ct).ConfigureAwait(false);
             changed = !updated.SequenceEqual(_jobs);
             if (changed)
             {
@@ -175,6 +196,7 @@ internal sealed partial class JobStore(string jobsPath, TrustedFile files, ILogg
     {
         LogCorrupt(logger, JobsPath, ex.GetType().Name);
         _loadedFileWasCorrupt = true;
+        LoadedFileWasCorrupt = true;
         return new JobsDocument();
     }
 
@@ -190,8 +212,14 @@ internal sealed partial class JobStore(string jobsPath, TrustedFile files, ILogg
         {
             if (_loadedFileWasCorrupt)
             {
-                // Se aparta el archivo dañado por handle (validado como en la lectura), sin volver a leerlo.
-                files.MoveReplacing(JobsPath, JobsPath + ".bad");
+                // Se aparta el archivo dañado por handle (validado como en la lectura), sin volver a leerlo ni sobrescribir
+                // copias anteriores (§8.2, BAJA-3).
+                var setAside = files.SetAsideCorrupt(JobsPath, (timeProvider ?? TimeProvider.System).GetUtcNow());
+                if (setAside is not null)
+                {
+                    LogSetAside(logger, setAside);
+                }
+
                 _loadedFileWasCorrupt = false;
             }
 
@@ -273,10 +301,13 @@ internal sealed partial class JobStore(string jobsPath, TrustedFile files, ILogg
         }
     }
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "El jobs.json dañado se ha apartado como {Path}.")]
+    private static partial void LogSetAside(ILogger logger, string path);
+
     [LoggerMessage(Level = LogLevel.Information, Message = "Trabajos leídos: {Count}.")]
     private static partial void LogLoaded(ILogger logger, int count);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "{Path} no es válido ({ErrorType}): se arranca sin trabajos y se apartará como jobs.json.bad antes de la siguiente escritura.")]
+    [LoggerMessage(Level = LogLevel.Error, Message = "{Path} no es válido ({ErrorType}): se arranca sin trabajos y se apartará como jobs.json.bad-<marca UTC> antes de la siguiente escritura.")]
     private static partial void LogCorrupt(ILogger logger, string path, string errorType);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Se rechaza {Path} ({Reason}): no se lee ni se reemplaza (§8.2).")]

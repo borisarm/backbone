@@ -100,12 +100,12 @@ public sealed class JobStoreFaultTests : IDisposable
             cts.Token));
 
         Assert.Empty(store.Jobs);
-        Assert.Equal("{ corrupto", await File.ReadAllTextAsync(JobsPath + ".bad", Ct));
+        Assert.Equal("{ corrupto", await File.ReadAllTextAsync(BadCopies.Single(JobsPath), Ct));
         Assert.False(File.Exists(JobsPath));
 
         await store.UpdateAsync(list => (list.Add(Job("Docs")), 0), Ct);
 
-        Assert.Equal("{ corrupto", await File.ReadAllTextAsync(JobsPath + ".bad", Ct));
+        Assert.Equal("{ corrupto", await File.ReadAllTextAsync(BadCopies.Single(JobsPath), Ct));
         Assert.Equal(["Docs"], (await ReloadAsync()).Select(j => j.Name));
     }
 
@@ -190,7 +190,7 @@ public sealed class JobStoreFaultTests : IDisposable
 
         await store.UpdateAsync(list => (list.Add(Job("Docs")), 0), Ct);
 
-        Assert.Equal("{ corrupto", await File.ReadAllTextAsync(JobsPath + ".bad", Ct));
+        Assert.Equal("{ corrupto", await File.ReadAllTextAsync(BadCopies.Single(JobsPath), Ct));
         Assert.Equal(["Docs"], (await ReloadAsync()).Select(j => j.Name));
     }
 
@@ -325,13 +325,13 @@ public sealed class JobStoreFaultTests : IDisposable
 
         await store.UpdateAsync(list => (list.Add(Job("Docs")), 0), Ct);
 
-        Assert.True(File.Exists(JobsPath + ".bad"));
-        Assert.Equal(0, new FileInfo(JobsPath + ".bad").Length);
+        Assert.Equal(0, new FileInfo(BadCopies.Single(JobsPath)).Length);
     }
 
     [Fact]
-    public async Task A_previous_bad_file_is_replaced_by_a_newer_one_without_failing()
+    public async Task A_previous_unstamped_bad_file_is_not_touched_and_the_new_copy_gets_a_stamp()
     {
+        // BAJA-3: nunca se sobrescribe una copia anterior; un jobs.json.bad sin marca, de una versión anterior, no se toca.
         await File.WriteAllTextAsync(JobsPath + ".bad", "viejo", Ct);
         await File.WriteAllTextAsync(JobsPath, "{ nuevo corrupto", Ct);
         using var store = NewStore();
@@ -339,7 +339,8 @@ public sealed class JobStoreFaultTests : IDisposable
 
         await store.UpdateAsync(list => (list.Add(Job("Docs")), 0), Ct);
 
-        Assert.Equal("{ nuevo corrupto", await File.ReadAllTextAsync(JobsPath + ".bad", Ct));
+        Assert.Equal("viejo", await File.ReadAllTextAsync(JobsPath + ".bad", Ct));
+        Assert.Equal("{ nuevo corrupto", await File.ReadAllTextAsync(BadCopies.Single(JobsPath), Ct));
     }
 
     [Fact]
@@ -471,7 +472,7 @@ public sealed class JobStoreFaultTests : IDisposable
     /// <summary>En <c>config\</c> solo está <c>jobs.json</c> (y, si procede, <c>jobs.json.bad</c>): ningún temporal.</summary>
     private void AssertOnlyJobsJson()
     {
-        var names = Directory.GetFileSystemEntries(ConfigDirectory).Select(p => Path.GetFileName(p)).Where(n => n != "jobs.json.bad").ToList();
+        var names = Directory.GetFileSystemEntries(ConfigDirectory).Select(p => Path.GetFileName(p)).Where(n => !n.StartsWith("jobs.json.bad", StringComparison.Ordinal)).ToList();
         Assert.Equal(["jobs.json"], names);
         AssertFileIsValidJson();
     }

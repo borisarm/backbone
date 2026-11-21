@@ -100,7 +100,7 @@ public sealed class SettingsStoreTests : IDisposable
         Assert.Empty(store.Sids);
 
         await store.AddAuthorizedUserAsync(new SecurityIdentifier(TestSids.Ana), Ct);
-        Assert.Equal(content, await File.ReadAllTextAsync(_path + ".bad", Ct));
+        Assert.Equal(content, await File.ReadAllTextAsync(BadCopies.Single(_path), Ct));
         Assert.Equal([TestSids.Ana], (await LoadAsync()).Sids.ToArray());
     }
 
