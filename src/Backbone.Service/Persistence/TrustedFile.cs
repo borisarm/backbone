@@ -194,6 +194,123 @@ internal sealed class TrustedFile(FileTrustPolicy policy)
         return true;
     }
 
+    /// <summary>Copias apartadas que se conservan por archivo (§8.2 "Copias apartadas <c>.bad</c>").</summary>
+    internal const int MaxSetAsideCopies = 5;
+
+    /// <summary>Sufijo de una copia apartada antes de la marca: <c>&lt;archivo&gt;.bad-&lt;marca&gt;</c>.</summary>
+    internal const string SetAsideMarker = ".bad-";
+
+    /// <summary>Formato de la marca: UTC con precisión de 100 ns, de modo que el orden ordinal de los nombres es el cronológico.</summary>
+    internal const string SetAsideStampFormat = "yyyyMMdd'T'HHmmssfffffff'Z'";
+
+    /// <summary>
+    /// Aparta un archivo dañado (§8.2 "Copias apartadas <c>.bad</c>", revisión de seguridad de HU-07, BAJA-3): común a
+    /// <c>settings.json</c> y <c>jobs.json</c>.
+    /// </summary>
+    /// <remarks>
+    /// <list type="number">
+    /// <item>Con la carpeta abierta y validada (<see cref="OpenParent"/>), se enumeran <b>por su handle</b> las entradas
+    /// <c>&lt;archivo&gt;.bad-*</c>. Un <c>&lt;archivo&gt;.bad</c> sin marca (de una versión anterior) no se toca ni cuenta.</item>
+    /// <item>El archivo dañado se abre y se valida con las reglas de lectura (sin leer el contenido).</item>
+    /// <item>Si ya hay <see cref="MaxSetAsideCopies"/> o más, se borran por handle las más antiguas (orden ordinal) hasta
+    /// dejar sitio, cada una validada antes. Si una no es fiable, no se borra, no se aparta nada y se lanza
+    /// <see cref="UntrustedFileException"/>.</item>
+    /// <item>Se renombra por handle, en la misma carpeta y <b>sin reemplazar</b>, a <c>&lt;archivo&gt;.bad-&lt;marca&gt;</c>.
+    /// Si el nombre ya existe, falla y no se escribe nada.</item>
+    /// </list>
+    /// </remarks>
+    /// <returns>La ruta de la copia, o <see langword="null"/> si el archivo ya no existe.</returns>
+    /// <exception cref="UntrustedFileException">El archivo, su carpeta o una copia antigua que había que borrar se rechazan.</exception>
+    /// <exception cref="IOException">La enumeración, el borrado o el renombrado fallan (p. ej. la copia ya existe).</exception>
+    public string? SetAsideCorrupt(string path, DateTimeOffset nowUtc)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var directory = ParentOf(fullPath);
+        var prefix = Path.GetFileName(fullPath) + SetAsideMarker;
+        using var parent = OpenParent(fullPath);
+
+        var copies = ListByHandle(parent, directory)
+            .Where(n => n.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            .Order(StringComparer.Ordinal)
+            .ToList();
+
+        using var handle = OpenRetrying(fullPath, Delete | ReadControl | FileReadAttributes | Synchronize, FileShareRead | FileShareWrite | FileShareDelete, out var error);
+        if (handle is null)
+        {
+            return error is ErrorFileNotFound or ErrorPathNotFound ? null : throw ToException(error, fullPath, "opened");
+        }
+
+        Validate(handle, fullPath);
+
+        // Primero se validan todas las que hay que borrar: si alguna no es fiable, no se toca nada.
+        var excess = copies.Count - (MaxSetAsideCopies - 1);
+        var toDelete = new List<(SafeFileHandle Handle, string Path)>();
+        try
+        {
+            for (var i = 0; i < excess; i++)
+            {
+                var old = Path.Combine(directory, copies[i]);
+                var oldHandle = OpenRetrying(old, Delete | ReadControl | FileReadAttributes | Synchronize, FileShareRead | FileShareWrite | FileShareDelete, out var oldError);
+                if (oldHandle is null)
+                {
+                    if (oldError is ErrorFileNotFound or ErrorPathNotFound)
+                    {
+                        continue;
+                    }
+
+                    throw ToException(oldError, old, "opened");
+                }
+
+                toDelete.Add((oldHandle, old));
+                Validate(oldHandle, old);
+            }
+
+            foreach (var (oldHandle, old) in toDelete)
+            {
+                var deleteError = MarkForDeletion(oldHandle);
+                if (deleteError != ErrorSuccess)
+                {
+                    throw ToException(deleteError, old, "deleted");
+                }
+            }
+        }
+        finally
+        {
+            foreach (var (oldHandle, _) in toDelete)
+            {
+                oldHandle.Dispose();
+            }
+        }
+
+        var target = Path.Combine(directory, prefix + nowUtc.UtcDateTime.ToString(SetAsideStampFormat, System.Globalization.CultureInfo.InvariantCulture));
+        Rename(handle, target, replace: false);
+        return target;
+    }
+
+    /// <summary>Nombres de las entradas de una carpeta abierta (con <c>FILE_LIST_DIRECTORY</c>), enumerada por su handle.</summary>
+    private static List<string> ListByHandle(SafeFileHandle directoryHandle, string directory)
+    {
+        var names = new List<string>();
+        var buffer = new byte[64 * 1024];
+        var infoClass = FileFullDirectoryRestartInfo;
+        while (true)
+        {
+            if (!GetFileInformationByHandleExBuffer(directoryHandle, infoClass, buffer, (uint)buffer.Length))
+            {
+                var code = Marshal.GetLastPInvokeError();
+                if (code == ErrorNoMoreFiles)
+                {
+                    return names;
+                }
+
+                throw ToException(code, directory, "enumerated");
+            }
+
+            infoClass = FileFullDirectoryInfo;
+            names.AddRange(DirectoryListing.ReadNames(buffer).Where(n => n is not "." and not ".."));
+        }
+    }
+
     /// <summary>
     /// Borra el archivo por handle (<c>FileDispositionInfo</c>), validándolo antes como en la lectura: un punto de reanálisis,
     /// una carpeta, un enlace duro o un archivo de propietario no fiable se rechazan y no se borran (no se sigue ningún enlace
@@ -477,10 +594,13 @@ internal sealed class TrustedFile(FileTrustPolicy policy)
         }
     }
 
-    /// <summary>Renombra el objeto abierto a <paramref name="target"/>, reemplazando la entrada existente sin seguirla.</summary>
-    private static void Rename(SafeFileHandle handle, string target)
+    /// <summary>
+    /// Renombra el objeto abierto a <paramref name="target"/>. Con <paramref name="replace"/>, reemplaza la entrada existente
+    /// sin seguirla; sin él, falla si ya existe (<c>ERROR_ALREADY_EXISTS</c>).
+    /// </summary>
+    private static void Rename(SafeFileHandle handle, string target, bool replace = true)
     {
-        var info = BuildRenameInfo(target, FileRenameFlagReplaceIfExists | FileRenameFlagPosixSemantics);
+        var info = BuildRenameInfo(target, (replace ? FileRenameFlagReplaceIfExists : 0) | FileRenameFlagPosixSemantics);
         if (SetFileInformationByHandle(handle, FileRenameInfoEx, info, (uint)info.Length))
         {
             return;
@@ -489,8 +609,8 @@ internal sealed class TrustedFile(FileTrustPolicy policy)
         var error = Marshal.GetLastPInvokeError();
         if (error is ErrorInvalidParameter or ErrorNotSupported)
         {
-            // Volumen sin FileRenameInfoEx: ReplaceIfExists = TRUE (BOOLEAN en el mismo desplazamiento que Flags).
-            info = BuildRenameInfo(target, 1);
+            // Volumen sin FileRenameInfoEx: ReplaceIfExists (BOOLEAN en el mismo desplazamiento que Flags).
+            info = BuildRenameInfo(target, replace ? 1u : 0u);
             if (SetFileInformationByHandle(handle, FileRenameInfo, info, (uint)info.Length))
             {
                 return;

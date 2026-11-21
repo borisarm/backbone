@@ -322,6 +322,86 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 
 **Estado:** pendiente (requiere servicio, NAS y HU-05, HU-08, HU-14).
 
+## PM-HU07-01 · Servicio instalado: matar el servicio a mitad de guardar `jobs.json`
+
+**Cubre:** HU-07, criterio 5 (§8.2, escritura atómica).
+
+**Por qué es manual:** las pruebas automáticas (`JobStoreTests` y `JobStoreFaultTests`) inyectan fallos en cada paso de la escritura (crear el temporal, escribir, validar el destino, renombrar), comprueban que un lector concurrente ve siempre un archivo completo, que los temporales huérfanos se borran al cargar y que un archivo dañado se aparta como `.bad`, pero no matan de verdad el proceso del servicio instalado como SYSTEM.
+
+**Pasos** (PowerShell **elevado**, servicio instalado y en ejecución)
+1. Con la app (o un cliente de pruebas), guardar un trabajo y anotar su nombre.
+2. Lanzar en bucle guardados del mismo trabajo cambiando el nombre (p. ej. 200 llamadas a `SaveJobAsync` desde un script con el cliente IPC) y, mientras tanto, ejecutar varias veces `Stop-Process -Name Backbone.Service -Force`; el SCM lo reinicia (RNF-02).
+3. Tras cada reinicio, comprobar en el log que el servicio ha arrancado ("Trabajos leídos: 1"), que `GetJobsAsync` devuelve el trabajo con uno de los nombres guardados y que `%ProgramData%\Backbone\config\jobs.json` es JSON válido (`Get-Content … | ConvertFrom-Json`).
+4. Comprobar que en `config\` no quedan archivos `.jobs.json.*.tmp` después del arranque y que no ha aparecido ningún `jobs.json.bad-*`.
+
+**Resultado esperado:** el servicio arranca siempre con un `jobs.json` completo (el anterior o el nuevo), sin copias `.bad-*` ni temporales.
+
+**Estado:** pendiente (requiere el servicio instalado, HU-01).
+
+## PM-HU07-02 · Pruebas automáticas de `jobs.json` que requieren elevación
+
+**Cubre:** HU-07, criterio 5 con la política de producción: `JobStoreElevatedTests` (`Backbone.IntegrationTests`): propietario Administradores y DACL de RNF-07 en `jobs.json`, y servicio que no arranca (1002) con un `jobs.json` de propietario usuario.
+
+**Por qué es manual:** sin elevar no se puede asignar Administradores como propietario; las pruebas se omiten (`Skip`).
+
+**Pasos** (PowerShell **elevado**, en la raíz del repositorio)
+1. `dotnet test tests\Backbone.IntegrationTests --filter "FullyQualifiedName~JobStoreElevatedTests|FullyQualifiedName~TrustedFileElevatedTests"`.
+
+**Resultado esperado:** pasan y no aparecen como omitidas.
+
+**Estado:** pendiente.
+
+## PM-HU07-03 · Validación de orígenes con unidades reales: red, extraíble y no NTFS
+
+**Cubre:** HU-07, criterio 3 (RF-03: "no NTFS, unidades de red").
+
+**Por qué es manual:** las pruebas automáticas simulan el tipo de volumen (`JobValidatorTests`) y solo ejercitan con la API real un disco fijo NTFS (`WindowsLocalFileSystemInspectorTests`); hacen falta una memoria USB, una unidad FAT32/exFAT y una unidad de red asignada.
+
+**Pasos** (servicio instalado, app o cliente IPC)
+1. Validar un trabajo con un origen en una memoria USB (`E:\Fotos`): error `SourceNotLocal` en `Sources[0].Path`.
+2. Validar un origen en una partición o tarjeta FAT32/exFAT de disco fijo: error `SourceNotNtfs`.
+3. Asignar una unidad de red `Z:` (`net use Z: \\nas\fotos`) en la sesión del usuario y validar `Z:\`. Las letras asignadas son de cada sesión de inicio: el servicio (SYSTEM, sesión 0) no ve la `Z:` del usuario y responde `SourceNotFound`; con `--console` en la sesión del usuario, `SourceNotLocal`. Anotar el resultado de los dos.
+4. Crear (como administrador) un enlace simbólico de carpeta `mklink /D C:\RedFotos \\nas\fotos` y validar `C:\RedFotos` y `C:\RedFotos\2024`: error `SourceNotLocal` al momento. Con la resolución controlada (ADR-20) el destino del enlace no se abre: en el registro del NAS (`/var/log/samba/` o el panel de OMV) **no** debe aparecer ningún intento de acceso de la cuenta del equipo (`PC$`), y en el log del servicio sí "se rechaza un enlace cuyo destino no es un volumen local". Repetirlo con un *junction* creado como usuario estándar hacia `\RPC Control\x` (p. ej. con `CreateMountPoint` de symboliclink-testing-tools): `SourceNotLocal`, sin actividad de red.
+5. Validar `C:\ProgramData::$INDEX_ALLOCATION` y `C:\Users\ana\Documentos.` (punto final): `SourcePathInvalid`. Guardar un trabajo con `c:/Users/ana/Documentos/` y comprobar en `jobs.json` y en la respuesta que la ruta es `C:\Users\ana\Documentos`.
+
+**Resultado esperado:** cada caso con su código junto al campo del origen.
+
+**Estado:** pendiente.
+
+## PM-HU07-05 · Redirection Guard con el servicio instalado
+
+**Cubre:** HU-07, revisión de seguridad (§8.3 "Redirection Guard", ADR-20): defensa complementaria activada al arrancar.
+
+**Por qué es manual:** la mitigación se aplica al proceso del servicio y no puede activarse en el proceso de pruebas (dejaría de seguir los *junctions* que crean las propias pruebas). `ProcessMitigationStartupTests` solo comprueba que se llama al arrancar, antes de `StartupService`, y que un fallo es un aviso.
+
+**Pasos** (PowerShell **elevado**, servicio instalado y en ejecución; un usuario estándar `luis` y un administrador `ana`)
+1. En el log del servicio tras arrancar: "Redirection Guard activado". `Get-ProcessMitigation -Id (Get-Process Backbone.Service).Id` muestra la política de *redirection trust* aplicada. Si la versión de Windows no la admite, en el log aparece "No se ha podido activar Redirection Guard" y el servicio sigue funcionando.
+2. Como `luis` (sin elevar), crear `mklink /J C:\Users\Public\enlace-luis C:\Users\Public\Documents`. Como `ana`, iniciar una restauración (cuando exista HU-21) con destino `C:\Users\Public\enlace-luis\restaurado`: falla con `RestoreTargetNotWritable` y el Visor de eventos registra el intento bloqueado por RedirectionGuard.
+3. Validar como origen `C:\Users\Public\enlace-luis`: la resolución controlada lo sigue ella misma (destino local) y es válido; Redirection Guard no interfiere porque ADR-20 abre los enlaces con `FILE_OPEN_REPARSE_POINT`.
+4. Validar como origen `C:\Users\ana\Mis documentos` (junction de compatibilidad creado por el sistema): se resuelve hacia `C:\Users\ana\Documents` y no aparece ningún bloqueo de RedirectionGuard en el Visor.
+5. Ejecutar una copia (cuando exista HU-14) de un origen que contenga *junctions* del perfil: siguen apareciendo como `ReparsePointSkipped` (RF-06), sin errores nuevos.
+
+**Resultado esperado:** mitigación activa (o aviso si no se admite); los *junctions* creados por usuarios estándar no se siguen en aperturas del sistema y los del perfil no producen errores.
+
+**Estado:** pendiente (requiere el servicio instalado, HU-01; los pasos 2 y 5, HU-21 y HU-14).
+
+## PM-HU07-04 · Parte visual de la creación de un trabajo (pendiente de backbone-app)
+
+**Cubre:** HU-07, criterio 1 (el trabajo aparece en Trabajos y en Inicio), criterio 2 (alias propuesto y editable, error en línea por alias repetido sin distinguir mayúsculas), criterio 3 (cada error junto a su campo) y criterio 6 (error `SourceNotAllowed` junto al origen y aviso `SourceContainsDataFolder`).
+
+**Por qué es manual:** la parte de servicio está cubierta por `JobIpcTests`, `JobValidatorTests`, `JobValidatorCriteriaGapTests` y `ProtectedFoldersTests`; la interfaz (WinUI 3, `FolderPicker`) aún no está implementada y no se automatiza.
+
+**Pasos** (servicio en marcha, app WinUI 3 con el editor de trabajos, cuando backbone-app lo entregue)
+1. Crear un trabajo con nombre, una carpeta elegida con `FolderPicker` y un destino UNC válido; guardar. Comprobar que aparece en Trabajos y en Inicio.
+2. Añadir dos carpetas con el mismo nombre final (p. ej. `D:\Fotos` y `E:\fotos`): el alias propuesto de la segunda debe poder editarse; dejar `Fotos` y `FOTOS` y comprobar el error en línea bajo el segundo alias y que no se puede guardar.
+3. Probar un destino no UNC (`C:\copias`), uno dentro de un origen y uno usado por otro trabajo: cada error aparece junto al campo Destino.
+4. Elegir como origen `C:\ProgramData\Backbone` y un *junction* creado por el usuario que apunte a su interior: error `SourceNotAllowed` junto a ese origen.
+5. Elegir `C:\` y `C:\ProgramData`: el trabajo se guarda y se muestra el aviso `SourceContainsDataFolder` junto al origen.
+
+**Resultado esperado:** los mensajes salen de los textos `.resw` (es-ES y en-US) para los códigos devueltos por el servicio, sin reglas duplicadas en la app (criterio 4).
+
+**Estado:** pendiente (depende de backbone-app).
+
 ## PM-HU08-01 · OneDrive real, WOF y puntos de reanálisis: en vivo y desde VSS
 
 **Cubre:** HU-08, criterios 3 y 4 (RF-06, R4, ADR-19, §8.2 "Clasificación por etiqueta", "Archivos y carpetas solo en la nube" y "Apertura para leer el contenido").

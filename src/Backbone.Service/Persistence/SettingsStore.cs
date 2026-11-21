@@ -31,7 +31,8 @@ internal interface IAuthorizedUserList
 /// servicio no arranca (1002).</item>
 /// <item>Si el archivo no existe, la lista está vacía. Si está dañado (JSON no válido o más de
 /// <see cref="MaxFileBytes"/>), también (falla cerrado) y antes de la siguiente escritura se aparta, renombrándolo por
-/// handle, como <c>settings.json.bad</c>.</item>
+/// handle, como <c>settings.json.bad-&lt;marca UTC&gt;</c>, sin sobrescribir copias anteriores y con 5 como máximo
+/// (<see cref="TrustedFile.SetAsideCorrupt"/>, §8.2 "Copias apartadas <c>.bad</c>").</item>
 /// <item>Escritura atómica con <see cref="TrustedFile.WriteAllBytesAsync"/>. Si el <c>settings.json</c> existente se
 /// rechaza al escribir (solo puede ocurrir si se ha sustituido después del arranque), la escritura no se hace, la lista en
 /// memoria no cambia y la operación falla con <see cref="UntrustedFileException"/>; el siguiente arranque lo rechaza
@@ -46,7 +47,8 @@ internal sealed partial class SettingsStore(
     string settingsPath,
     TrustedFile files,
     ILogger<SettingsStore> logger,
-    IAccountDirectory? accounts = null)
+    IAccountDirectory? accounts = null,
+    TimeProvider? timeProvider = null)
     : IAuthorizedUserList, IDisposable
 {
     /// <summary>Tamaño máximo que se lee de <c>settings.json</c>.</summary>
@@ -179,8 +181,14 @@ internal sealed partial class SettingsStore(
         {
             if (_loadedFileWasCorrupt)
             {
-                // Se aparta el archivo dañado por handle (validado como en la lectura), sin volver a leerlo.
-                files.MoveReplacing(SettingsPath, SettingsPath + ".bad");
+                // Se aparta el archivo dañado por handle (validado como en la lectura), sin volver a leerlo ni sobrescribir
+                // copias anteriores (§8.2, BAJA-3).
+                var setAside = files.SetAsideCorrupt(SettingsPath, (timeProvider ?? TimeProvider.System).GetUtcNow());
+                if (setAside is not null)
+                {
+                    LogSetAside(logger, setAside);
+                }
+
                 _loadedFileWasCorrupt = false;
             }
 
@@ -240,6 +248,9 @@ internal sealed partial class SettingsStore(
             return false;
         }
     }
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "El settings.json dañado se ha apartado como {Path}.")]
+    private static partial void LogSetAside(ILogger logger, string path);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Ajustes leídos: {Count} usuarios autorizados.")]
     private static partial void LogLoaded(ILogger logger, int count);

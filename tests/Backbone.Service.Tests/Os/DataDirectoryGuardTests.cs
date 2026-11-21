@@ -504,8 +504,9 @@ public sealed class DataDirectoryGuardTests : IDisposable
         var root = CreateUntrustedRoot();
         var eventLog = new FakeEventLogWriter();
         using var settings = new SettingsStore(Path.Combine(root, "config", "settings.json"), TestFileTrust.CurrentUser, NullLogger<SettingsStore>.Instance);
+        using var jobs = new JobStore(Path.Combine(root, "config", "jobs.json"), TestFileTrust.CurrentUser, NullLogger<JobStore>.Instance);
         var startup = new StartupService(
-            new ServicePaths(root), _guard, settings, eventLog, new ServiceRuntimeInfo(TimeProvider.System), NullLogger<StartupService>.Instance);
+            new ServicePaths(root), _guard, settings, jobs, eventLog, new ServiceRuntimeInfo(TimeProvider.System), NullLogger<StartupService>.Instance);
 
         using (OpenDirectoryWithoutShareDelete(root))
         {

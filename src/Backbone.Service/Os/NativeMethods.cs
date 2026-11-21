@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace Backbone.Service.Os;
 
@@ -284,6 +285,49 @@ internal static partial class NativeMethods
     [LibraryImport("kernel32.dll")]
     internal static partial nint LocalFree(nint memory);
 
+    // ---- Inspección de carpetas locales (HU-07, §8.3): ruta final, volumen y enumeración por handle ----
+
+    internal const int ErrorNoMoreFiles = 18;
+
+    /// <summary><c>FILE_FULL_DIRECTORY_INFO</c> por handle (minwinbase.h, <c>FileFullDirectoryInfo</c>).</summary>
+    internal const int FileFullDirectoryInfo = 14;
+
+    /// <summary><c>FileFullDirectoryRestartInfo</c>: como <see cref="FileFullDirectoryInfo"/>, desde el principio.</summary>
+    internal const int FileFullDirectoryRestartInfo = 15;
+
+    /// <summary><c>FILE_NAME_NORMALIZED | VOLUME_NAME_DOS</c> (0): ruta normalizada con letra de unidad, en forma <c>\\?\</c>.</summary>
+    internal const uint FileNameNormalizedVolumeNameDos = 0x0;
+
+    /// <summary><c>FILE_NAME_NORMALIZED | VOLUME_NAME_GUID</c>: ruta con <c>\\?\Volume{guid}\</c>.</summary>
+    internal const uint FileNameNormalizedVolumeNameGuid = 0x1;
+
+    internal const uint DriveUnknown = 0;
+    internal const uint DriveNoRootDir = 1;
+    internal const uint DriveRemovable = 2;
+    internal const uint DriveFixed = 3;
+    internal const uint DriveRemote = 4;
+
+    /// <summary><c>GetFinalPathNameByHandleW</c>: longitud sin el nulo final; si no cabe, el tamaño necesario con el nulo; 0 si falla.</summary>
+    [LibraryImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial uint GetFinalPathNameByHandle(SafeHandle file, [Out] char[] filePath, uint filePathLength, uint flags);
+
+    /// <summary><c>GetVolumeInformationByHandleW</c>; solo se pide el nombre del sistema de archivos.</summary>
+    [LibraryImport("kernel32.dll", EntryPoint = "GetVolumeInformationByHandleW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetVolumeInformationByHandle(
+        SafeHandle file,
+        nint volumeNameBuffer,
+        uint volumeNameSize,
+        nint volumeSerialNumber,
+        nint maximumComponentLength,
+        nint fileSystemFlags,
+        [Out] char[] fileSystemNameBuffer,
+        uint fileSystemNameSize);
+
+    /// <summary><c>GetDriveTypeW</c>; la raíz debe terminar en <c>\</c> (letra de unidad o ruta de volumen GUID).</summary>
+    [LibraryImport("kernel32.dll", EntryPoint = "GetDriveTypeW", StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial uint GetDriveType(string rootPathName);
+
     // ---- Creación de carpetas relativa a un handle (winternl.h, ntifs.h, ntdef.h) ----
 
     /// <summary><c>FILE_CREATE</c>: falla si ya existe una entrada con ese nombre (no se abre ni se sigue).</summary>
@@ -457,4 +501,158 @@ internal static partial class NativeMethods
         nint promptStruct,
         uint flags,
         out DataBlob dataOut);
+
+    /// <summary>
+    /// Resolución controlada de los orígenes (ADR-20, §8.3), plazos de las aperturas (CancelSynchronousIo) y Redirection Guard.
+    /// Clase anidada propia para que sus nombres no choquen con los de otras historias que amplían <see cref="NativeMethods"/>.
+    /// Firmas comprobadas en Microsoft Learn: winternl.h/ntifs.h (<c>NtCreateFile</c>, <c>NtQueryVolumeInformationFile</c>,
+    /// <c>FILE_FS_DEVICE_INFORMATION</c>, <c>REPARSE_DATA_BUFFER</c>), ioapiset.h (<c>DeviceIoControl</c>,
+    /// <c>CancelSynchronousIo</c>), processthreadsapi.h (<c>OpenThread</c>, <c>SetProcessMitigationPolicy</c>,
+    /// <c>PROCESS_MITIGATION_REDIRECTION_TRUST_POLICY</c>) y cfapi.h
+    /// (<c>CfGetPlaceholderStateFromAttributeTag</c>).
+    /// </summary>
+    internal static partial class Resolution
+    {
+        // ---- NtCreateFile (CreateDisposition y CreateOptions) ----
+
+        /// <summary><c>FILE_OPEN</c>: abre lo que exista; falla si no existe.</summary>
+        internal const uint FileOpen = 1;
+
+        internal const uint FileSynchronousIoNonAlert = 0x0000_0020;
+        internal const uint FileOpenForBackupIntent = 0x0000_4000;
+        internal const uint FileOpenReparsePoint = 0x0020_0000;
+
+        internal const uint ObjCaseInsensitive = 0x40;
+
+        internal const uint FileReadAttributes = 0x0080;
+        internal const uint FileListDirectory = 0x0001;
+        internal const uint Synchronize = 0x0010_0000;
+        internal const uint FileShareRead = 0x1;
+        internal const uint FileShareWrite = 0x2;
+
+        // ---- NTSTATUS ----
+        internal const int StatusObjectNameInvalid = unchecked((int)0xC000_0033);
+        internal const int StatusObjectNameNotFound = unchecked((int)0xC000_0034);
+        internal const int StatusObjectPathNotFound = unchecked((int)0xC000_003A);
+        internal const int StatusNoSuchFile = unchecked((int)0xC000_000F);
+        internal const int StatusNotADirectory = unchecked((int)0xC000_0103);
+        internal const int StatusCancelled = unchecked((int)0xC000_0120);
+
+        // ---- Volumen (FS_INFORMATION_CLASS, FILE_FS_DEVICE_INFORMATION) ----
+
+        /// <summary><c>FileFsDeviceInformation</c> de <c>FS_INFORMATION_CLASS</c>.</summary>
+        internal const int FileFsDeviceInformationClass = 4;
+
+        /// <summary><c>FILE_DEVICE_DISK</c>.</summary>
+        internal const uint FileDeviceDisk = 0x0000_0007;
+
+        /// <summary><c>FILE_REMOVABLE_MEDIA</c>.</summary>
+        internal const uint FileRemovableMedia = 0x0000_0001;
+
+        /// <summary><c>FILE_REMOTE_DEVICE</c>: sistema de archivos remoto (SMB, CIFS).</summary>
+        internal const uint FileRemoteDevice = 0x0000_0010;
+
+        /// <summary><c>FILE_FS_DEVICE_INFORMATION</c>: <c>DEVICE_TYPE DeviceType; ULONG Characteristics;</c>.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct FileFsDeviceInformation
+        {
+            public uint DeviceType;
+            public uint Characteristics;
+        }
+
+        /// <summary>Devuelve un <c>NTSTATUS</c>.</summary>
+        [LibraryImport("ntdll.dll")]
+        internal static partial int NtQueryVolumeInformationFile(
+            SafeFileHandle fileHandle,
+            out IoStatusBlock ioStatusBlock,
+            out FileFsDeviceInformation fsInformation,
+            uint length,
+            int fsInformationClass);
+
+        // ---- Puntos de reanálisis ----
+
+        /// <summary><c>FSCTL_GET_REPARSE_POINT</c> = <c>CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 42, METHOD_BUFFERED, FILE_ANY_ACCESS)</c>.</summary>
+        internal const uint FsctlGetReparsePoint = 0x0009_00A8;
+
+        /// <summary><c>MAXIMUM_REPARSE_DATA_BUFFER_SIZE</c>.</summary>
+        internal const int MaximumReparseDataBufferSize = 16 * 1024;
+
+        internal const uint IoReparseTagMountPoint = 0xA000_0003;
+        internal const uint IoReparseTagSymlink = 0xA000_000C;
+        internal const uint IoReparseTagWof = 0x8000_0017;
+        internal const uint IoReparseTagDedup = 0x8000_0013;
+        internal const uint IoReparseTagHsm = 0xC000_0004;
+        internal const uint IoReparseTagHsm2 = 0x8000_0006;
+
+        /// <summary>Etiquetas de la Cloud Files API: <c>tag &amp; IO_REPARSE_TAG_CLOUD_MASK</c> (0xFFFF0FFF) = <c>IO_REPARSE_TAG_CLOUD</c>.</summary>
+        internal const uint IoReparseTagCloudMask = 0xFFFF_0FFF;
+        internal const uint IoReparseTagCloud = 0x9000_001A;
+
+        /// <summary>Bit N de una etiqueta: sustituto de nombre (<c>IsReparseTagNameSurrogate</c>).</summary>
+        internal const uint ReparseTagNameSurrogateBit = 0x2000_0000;
+
+        /// <summary><c>SYMLINK_FLAG_RELATIVE</c>.</summary>
+        internal const uint SymlinkFlagRelative = 0x1;
+
+        internal const uint FileAttributeOffline = 0x0000_1000;
+        internal const uint FileAttributeRecallOnOpen = 0x0004_0000;
+        internal const uint FileAttributeRecallOnDataAccess = 0x0040_0000;
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool DeviceIoControl(
+            SafeFileHandle device,
+            uint ioControlCode,
+            nint inBuffer,
+            uint inBufferSize,
+            [Out] byte[] outBuffer,
+            uint outBufferSize,
+            out uint bytesReturned,
+            nint overlapped);
+
+        // ---- Cloud Files API (cldapi.dll) ----
+
+        internal const uint CfPlaceholderStatePartial = 0x10;
+        internal const uint CfPlaceholderStatePartiallyOnDisk = 0x20;
+        internal const uint CfPlaceholderStateInvalid = 0xFFFF_FFFF;
+
+        /// <summary>Solo interpreta los dos valores; no llama al proveedor.</summary>
+        [LibraryImport("cldapi.dll")]
+        internal static partial uint CfGetPlaceholderStateFromAttributeTag(uint fileAttributes, uint reparseTag);
+
+        // ---- Plazos: cancelación de E/S síncrona de un hilo ----
+
+        /// <summary><c>THREAD_TERMINATE</c>: el derecho que exige <c>CancelSynchronousIo</c>.</summary>
+        internal const uint ThreadTerminate = 0x0001;
+
+        [LibraryImport("kernel32.dll")]
+        internal static partial uint GetCurrentThreadId();
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        internal static partial SafeWaitHandle OpenThread(uint desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint threadId);
+
+        /// <summary>Si no hay nada que cancelar, devuelve <see langword="false"/> con <c>ERROR_NOT_FOUND</c>.</summary>
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool CancelSynchronousIo(SafeWaitHandle thread);
+
+        // ---- Redirection Guard ----
+
+        /// <summary><c>ProcessRedirectionTrustPolicy</c> de <c>PROCESS_MITIGATION_POLICY</c> (winnt.h).</summary>
+        internal const int ProcessRedirectionTrustPolicy = 16;
+
+        /// <summary><c>PROCESS_MITIGATION_REDIRECTION_TRUST_POLICY.EnforceRedirectionTrust</c> (bit 0 de <c>Flags</c>).</summary>
+        internal const uint EnforceRedirectionTrust = 0x1;
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool SetProcessMitigationPolicy(int mitigationPolicy, in uint buffer, nuint length);
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool GetProcessMitigationPolicy(nint process, int mitigationPolicy, out uint buffer, nuint length);
+
+        [LibraryImport("kernel32.dll")]
+        internal static partial nint GetCurrentProcess();
+    }
 }

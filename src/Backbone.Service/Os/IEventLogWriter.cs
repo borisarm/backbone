@@ -19,7 +19,8 @@ internal static class BackboneEventIds
 
     /// <summary>
     /// Error: el servicio no arranca (pipe IPC ya existente o inaccesible, carpeta de datos insegura que no se puede corregir
-    /// ni apartar, <c>settings.json</c> rechazado por propietario no fiable o punto de reanálisis).
+    /// ni apartar, <c>settings.json</c> o <c>jobs.json</c> rechazados por propietario no fiable, punto de reanálisis, ser una
+    /// carpeta o enlace duro).
     /// </summary>
     public const int ServiceStartFailed = 1002;
 
@@ -28,6 +29,12 @@ internal static class BackboneEventIds
     /// y sustituido por una nueva (el mensaje lleva la ruta apartada; §8.3).
     /// </summary>
     public const int DataDirectoryReplaced = 1003;
+
+    /// <summary>
+    /// Advertencia: <c>jobs.json</c> dañado (JSON no válido o más de 64 MiB); el servicio arranca sin trabajos y lo apartará
+    /// como <c>jobs.json.bad-&lt;marca UTC&gt;</c> en la siguiente escritura (§8.2, §8.5).
+    /// </summary>
+    public const int JobsFileCorrupt = 1004;
 }
 
 /// <summary>

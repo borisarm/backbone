@@ -1,7 +1,9 @@
+using System.Collections.Immutable;
 using System.ComponentModel;
 using System.Reflection;
 using System.Security.Principal;
 using Backbone.Contracts;
+using Backbone.Service.Jobs;
 using Backbone.Service.Nas;
 using Backbone.Service.Os;
 using Backbone.Service.Persistence;
@@ -36,18 +38,153 @@ internal sealed class ServiceRuntimeInfo(TimeProvider timeProvider)
 /// <summary>
 /// Operaciones del servicio expuestas por IPC, ya autorizadas y con la entrada genérica validada por
 /// <see cref="ConnectionRpcTarget"/>. En HT-03: información del servicio y usuarios autorizados (HU-31). En HU-04:
-/// credenciales del NAS. En HU-05: "Probar conexión".
+/// credenciales del NAS. En HU-05: "Probar conexión". En HU-07: trabajos (<c>jobs.json</c>) y su validación.
 /// </summary>
 internal sealed class BackboneOperations(
     ServiceRuntimeInfo runtime,
     SettingsStore settings,
     IAccountDirectory accounts,
     ICredentialStore credentials,
+    JobStore jobs,
+    JobValidator jobValidator,
+    IJobActivity jobActivity,
+    ServiceStatusProvider status,
     ConnectionTester connectionTester)
 {
+    // ---- Estado y trabajos (HU-07) ----
+
+    /// <summary>Estado actual (§7.2). En HU-07, la lista de trabajos (ver <see cref="ServiceStatusProvider"/>).</summary>
+    public Task<ServiceStatus> GetStatusAsync(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        return Task.FromResult(status.GetStatus());
+    }
+
+    /// <summary>Trabajos guardados, en el orden de <c>jobs.json</c>.</summary>
+    public Task<IReadOnlyList<JobDefinition>> GetJobsAsync(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        IReadOnlyList<JobDefinition> list = [.. jobs.Jobs];
+        return Task.FromResult(list);
+    }
+
+    /// <summary>
+    /// RF-03 (HU-07 criterios 2, 3, 4 y 6): errores y avisos del trabajo, sin guardar nada. Es de escritura (§7.3): abre como
+    /// SYSTEM las rutas que indica el cliente. La resolución de los orígenes se hace fuera del hilo RPC (MEDIA-1).
+    /// </summary>
+    public async Task<ValidationResult> ValidateJobAsync(JobDefinition job, CancellationToken ct) =>
+        (await jobValidator.ValidateAsync(job, jobs.Jobs, ct).ConfigureAwait(false)).Issues;
+
+    /// <summary>
+    /// Crea (<c>Id</c> vacío: el servicio asigna uno) o sustituye un trabajo (§7.2, §7.5):
+    /// <list type="number">
+    /// <item><see cref="BackboneErrorCode.JobNotFound"/> si el <c>Id</c> no está vacío y no existe;</item>
+    /// <item><see cref="BackboneErrorCode.ValidationFailed"/> con el resultado completo si hay errores (los avisos no lo
+    /// impiden);</item>
+    /// <item><see cref="BackboneErrorCode.CredentialRequired"/> si no hay credencial guardada para el recurso del destino
+    /// (§7.5 A-3: nunca se usa la cuenta del equipo);</item>
+    /// <item>escritura atómica de <c>jobs.json</c>, con las rutas de origen y el destino <b>normalizados</b> (§7.5 "Ruta de
+    /// origen", BAJA-1), y <c>StatusChanged</c>.</item>
+    /// </list>
+    /// Existencia, destino repetido y credencial (BAJA-2) se comprueban otra vez bajo el bloqueo de escritura, por si otro
+    /// cliente ha guardado o borrado entretanto.
+    /// </summary>
+    /// <returns>El trabajo tal como se ha guardado (con las rutas normalizadas).</returns>
+    public async Task<JobDefinition> SaveJobAsync(JobDefinition job, CancellationToken ct)
+    {
+        if (job.Id != Guid.Empty && jobs.Find(job.Id) is null)
+        {
+            throw JobNotFound();
+        }
+
+        var validation = await jobValidator.ValidateAsync(job, jobs.Jobs, ct).ConfigureAwait(false);
+        if (!validation.Issues.IsValid)
+        {
+            throw BackboneException.ValidationFailed(validation.Issues);
+        }
+
+        var destination = validation.Job.Destination;
+        if (!CredentialStore.TryNormalizeShareRoot(destination, out var shareRoot, out var issue))
+        {
+            throw BackboneException.ValidationFailed(nameof(JobDefinition.Destination), issue);
+        }
+
+        await RequireCredentialAsync(shareRoot, ct).ConfigureAwait(false);
+
+        var toSave = validation.Job with { Id = job.Id == Guid.Empty ? Guid.NewGuid() : job.Id };
+        return await jobs.UpdateAsync(
+            async (list, token) =>
+            {
+                var index = IndexOf(list, toSave.Id);
+                if (job.Id != Guid.Empty && index < 0)
+                {
+                    throw JobNotFound();
+                }
+
+                if (JobValidator.IsDestinationUsedByOtherJob(toSave.Id, destination, list))
+                {
+                    throw BackboneException.ValidationFailed(nameof(JobDefinition.Destination), ValidationIssueCode.DestinationUsedByOtherJob);
+                }
+
+                // BAJA-2: la credencial puede haberse borrado mientras se validaba.
+                await RequireCredentialAsync(shareRoot, token).ConfigureAwait(false);
+                return (index < 0 ? list.Add(toSave) : list.SetItem(index, toSave), toSave);
+            },
+            ct).ConfigureAwait(false);
+    }
+
+    private async Task RequireCredentialAsync(string shareRoot, CancellationToken ct)
+    {
+        if (await credentials.GetInfoAsync(shareRoot, ct).ConfigureAwait(false) is null)
+        {
+            throw new BackboneException(BackboneErrorCode.CredentialRequired, "No credential is saved for the destination share.");
+        }
+    }
+
+    /// <summary>
+    /// Borra un trabajo de <c>jobs.json</c> (RF-01: el repositorio del NAS no se toca) y emite <c>StatusChanged</c>.
+    /// <see cref="BackboneErrorCode.JobNotFound"/> si no existe; <see cref="BackboneErrorCode.JobAlreadyRunning"/> si está en
+    /// ejecución o en cola (§7.5).
+    /// </summary>
+    public Task DeleteJobAsync(Guid jobId, CancellationToken ct) =>
+        jobs.UpdateAsync(
+            list =>
+            {
+                var index = IndexOf(list, jobId);
+                if (index < 0)
+                {
+                    throw JobNotFound();
+                }
+
+                if (jobActivity.GetActivity(jobId) != JobActivity.Idle)
+                {
+                    throw new BackboneException(BackboneErrorCode.JobAlreadyRunning, "The job is running or queued; cancel it first.");
+                }
+
+                return (list.RemoveAt(index), true);
+            },
+            ct);
+
+    private static int IndexOf(ImmutableArray<JobDefinition> list, Guid id)
+    {
+        for (var i = 0; i < list.Length; i++)
+        {
+            if (list[i].Id == id)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private static BackboneException JobNotFound() => new(BackboneErrorCode.JobNotFound, "The job does not exist.");
+
+    // ---- Credenciales (HU-04) ----
     /// <summary>HU-05 (RF-61): prueba la conexión con el destino; un fallo es un resultado, no una excepción (§7.4).</summary>
     public Task<ConnectionTestResult> TestConnectionAsync(string destination, CredentialInput? credential, CancellationToken ct) =>
         connectionTester.TestAsync(destination, credential, ct);
+
 
     /// <summary>
     /// HU-04 (RF-60, ADR-07): guarda o sustituye la credencial del recurso. El usuario no puede estar vacío ni tener
