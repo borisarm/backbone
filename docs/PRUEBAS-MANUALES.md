@@ -326,7 +326,7 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 
 **Cubre:** HU-07, criterio 5 (§8.2, escritura atómica).
 
-**Por qué es manual:** la prueba automática (`JobStoreTests`) comprueba que un lector concurrente ve siempre un archivo completo y que una escritura cortada antes del renombrado deja el archivo anterior intacto (simulando el temporal que quedaría), pero no mata de verdad el proceso del servicio instalado como SYSTEM.
+**Por qué es manual:** las pruebas automáticas (`JobStoreTests` y `JobStoreFaultTests`) inyectan fallos en cada paso de la escritura (crear el temporal, escribir, validar el destino, renombrar), comprueban que un lector concurrente ve siempre un archivo completo, que los temporales huérfanos se borran al cargar y que un archivo dañado se aparta como `.bad`, pero no matan de verdad el proceso del servicio instalado como SYSTEM.
 
 **Pasos** (PowerShell **elevado**, servicio instalado y en ejecución)
 1. Con la app (o un cliente de pruebas), guardar un trabajo y anotar su nombre.
@@ -366,3 +366,20 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 **Resultado esperado:** cada caso con su código junto al campo del origen.
 
 **Estado:** pendiente.
+
+## PM-HU07-04 · Parte visual de la creación de un trabajo (pendiente de backbone-app)
+
+**Cubre:** HU-07, criterio 1 (el trabajo aparece en Trabajos y en Inicio), criterio 2 (alias propuesto y editable, error en línea por alias repetido sin distinguir mayúsculas), criterio 3 (cada error junto a su campo) y criterio 6 (error `SourceNotAllowed` junto al origen y aviso `SourceContainsDataFolder`).
+
+**Por qué es manual:** la parte de servicio está cubierta por `JobIpcTests`, `JobValidatorTests`, `JobValidatorCriteriaGapTests` y `ProtectedFoldersTests`; la interfaz (WinUI 3, `FolderPicker`) aún no está implementada y no se automatiza.
+
+**Pasos** (servicio en marcha, app WinUI 3 con el editor de trabajos, cuando backbone-app lo entregue)
+1. Crear un trabajo con nombre, una carpeta elegida con `FolderPicker` y un destino UNC válido; guardar. Comprobar que aparece en Trabajos y en Inicio.
+2. Añadir dos carpetas con el mismo nombre final (p. ej. `D:\Fotos` y `E:\fotos`): el alias propuesto de la segunda debe poder editarse; dejar `Fotos` y `FOTOS` y comprobar el error en línea bajo el segundo alias y que no se puede guardar.
+3. Probar un destino no UNC (`C:\copias`), uno dentro de un origen y uno usado por otro trabajo: cada error aparece junto al campo Destino.
+4. Elegir como origen `C:\ProgramData\Backbone` y un *junction* creado por el usuario que apunte a su interior: error `SourceNotAllowed` junto a ese origen.
+5. Elegir `C:\` y `C:\ProgramData`: el trabajo se guarda y se muestra el aviso `SourceContainsDataFolder` junto al origen.
+
+**Resultado esperado:** los mensajes salen de los textos `.resw` (es-ES y en-US) para los códigos devueltos por el servicio, sin reglas duplicadas en la app (criterio 4).
+
+**Estado:** pendiente (depende de backbone-app).
