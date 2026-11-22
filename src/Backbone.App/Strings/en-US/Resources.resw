@@ -110,6 +110,20 @@
   <data name="Connection_SpaceFormat" xml:space="preserve"><value>{0} free of {1}.</value></data>
   <data name="Connection_SmbFormat" xml:space="preserve"><value>SMB {0}.</value></data>
   <data name="Jobs_SummaryFormat" xml:space="preserve"><value>{0} folder(s) → {1}</value></data>
+  <data name="Run_RunNow.Content" xml:space="preserve"><value>Back up now</value></data>
+  <data name="Run_Cancel" xml:space="preserve"><value>Cancel</value></data>
+  <data name="Run_Cancelling" xml:space="preserve"><value>Cancelling…</value></data>
+  <data name="Run_AlreadyRunning" xml:space="preserve"><value>This job is already running or queued.</value></data>
+  <data name="Run_ProgressFormat" xml:space="preserve"><value>{0}: {1} file(s), {2}</value></data>
+  <data name="Run_Phase_Starting" xml:space="preserve"><value>Preparing</value></data>
+  <data name="Run_Phase_Connecting" xml:space="preserve"><value>Connecting to the NAS</value></data>
+  <data name="Run_Phase_CreatingVolumeSnapshots" xml:space="preserve"><value>Creating volume snapshots</value></data>
+  <data name="Run_Phase_Copying" xml:space="preserve"><value>Copying</value></data>
+  <data name="Run_Phase_WritingSnapshot" xml:space="preserve"><value>Saving the version</value></data>
+  <data name="Run_Phase_ApplyingRetention" xml:space="preserve"><value>Applying retention</value></data>
+  <data name="Run_Phase_Pruning" xml:space="preserve"><value>Cleaning up the repository</value></data>
+  <data name="Run_Phase_Checking" xml:space="preserve"><value>Checking the repository</value></data>
+  <data name="Run_Phase_Finishing" xml:space="preserve"><value>Finishing</value></data>
   <data name="Home_Job_Running" xml:space="preserve"><value>Backing up now</value></data>
   <data name="Home_Job_Queued" xml:space="preserve"><value>Queued</value></data>
   <data name="Home_Job_LastSuccessFormat" xml:space="preserve"><value>Last successful backup: {0}</value></data>

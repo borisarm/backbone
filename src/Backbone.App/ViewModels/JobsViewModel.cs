@@ -8,8 +8,9 @@ namespace Backbone.App.ViewModels;
 /// <summary>Un trabajo de la lista de Trabajos.</summary>
 /// <param name="Job">Definición guardada en el servicio.</param>
 /// <param name="Summary">Resumen de una línea (carpetas y destino).</param>
+/// <param name="Run">Estado de ejecución: Copiar ahora y Cancelar (HU-14).</param>
 /// <param name="IsReadOnly">El destino tiene un formato más nuevo (RNF-14): se muestra el aviso de solo lectura.</param>
-internal sealed record JobListItem(JobDefinition Job, string Summary, bool IsReadOnly = false)
+internal sealed record JobListItem(JobDefinition Job, string Summary, JobRunState Run, bool IsReadOnly = false)
 {
     /// <summary>Nombre del trabajo.</summary>
     public string Name => Job.Name;
@@ -23,6 +24,7 @@ internal sealed partial class JobsViewModel : ObservableObject, IDisposable
     private readonly Func<string, string> _getString;
     private readonly BackboneErrorTexts _errorTexts;
     private readonly Dictionary<Guid, RepositoryState> _repositoryStates = [];
+    private readonly JobRunTracker _tracker;
     private int _loadVersion;
 
     public JobsViewModel(IBackboneService service, IFolderPicker picker, Func<string, string> getString)
@@ -32,6 +34,7 @@ internal sealed partial class JobsViewModel : ObservableObject, IDisposable
         _getString = getString;
         _errorTexts = new BackboneErrorTexts(getString);
         Error = string.Empty;
+        _tracker = new JobRunTracker(service, getString);
         _service.StatusChanged += OnStatusChanged;
     }
 
@@ -84,7 +87,7 @@ internal sealed partial class JobsViewModel : ObservableObject, IDisposable
             Jobs.Clear();
             foreach (var job in jobs)
             {
-                Jobs.Add(new JobListItem(job, Summarize(job), IsReadOnly(job.Id)));
+                Jobs.Add(new JobListItem(job, Summarize(job), _tracker.Get(job.Id), IsReadOnly(job.Id)));
             }
 
             IsLoaded = true;
@@ -118,6 +121,7 @@ internal sealed partial class JobsViewModel : ObservableObject, IDisposable
     public void Dispose()
     {
         _service.StatusChanged -= OnStatusChanged;
+        _tracker.Dispose();
         Close();
     }
 
@@ -173,6 +177,7 @@ internal sealed partial class JobsViewModel : ObservableObject, IDisposable
 
     private void StoreStates(ServiceStatus status)
     {
+        _tracker.Apply(status);
         _repositoryStates.Clear();
         foreach (var job in status.Jobs)
         {
