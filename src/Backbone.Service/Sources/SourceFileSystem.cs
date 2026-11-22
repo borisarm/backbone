@@ -45,7 +45,7 @@ namespace Backbone.Service.Sources;
 /// </description></item>
 /// </list>
 /// </remarks>
-internal sealed partial class SourceFileSystem : ISourceFileSystem, IDisposable
+internal sealed partial class SourceFileSystem : IRunSourceFileSystem
 {
     private readonly SourceRoots _roots;
     private readonly ISourceFileApi _api;
@@ -62,6 +62,7 @@ internal sealed partial class SourceFileSystem : ISourceFileSystem, IDisposable
     /// <param name="token">Token de los hilos de lectura (ADR-21); sin él, se lee con el del proceso.</param>
     /// <param name="abandonedThreads">Contador de hilos abandonados de todo el servicio (R12).</param>
     /// <param name="snapshotDevices">Dispositivos de las instantáneas creadas para esta ejecución (B-2).</param>
+    /// <param name="unreadableSources">Posiciones en <paramref name="sources"/> de los orígenes sin resolver: su raíz no se abre (M-B).</param>
     /// <exception cref="ArgumentException">Un origen o una exclusión obligatoria no son válidos (B-2, I-4).</exception>
     public SourceFileSystem(
         IReadOnlyList<BackupSource> sources,
@@ -71,12 +72,13 @@ internal sealed partial class SourceFileSystem : ISourceFileSystem, IDisposable
         ILogger<SourceFileSystem> logger,
         SourceReadToken? token = null,
         AbandonedSourceThreads? abandonedThreads = null,
-        IReadOnlyCollection<string>? snapshotDevices = null)
+        IReadOnlyCollection<string>? snapshotDevices = null,
+        IReadOnlyCollection<int>? unreadableSources = null)
     {
         ArgumentNullException.ThrowIfNull(api);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(options);
-        _roots = new SourceRoots(sources, snapshotDevices);
+        _roots = new SourceRoots(sources, snapshotDevices, unreadableSources);
         _api = api;
         _logger = logger;
         _cache = new SourceDirectoryCache(options.DirectoryCacheCapacity);
@@ -447,6 +449,12 @@ internal sealed partial class SourceFileSystem : ISourceFileSystem, IDisposable
     {
         var root = state.Root;
         var path = root.ReadPath;
+        if (root.Unreadable)
+        {
+            // M-B: el origen no se pudo resolver al empezar y su ruta es la configurada: no se abre nada, ni siquiera el volumen.
+            throw new SourceAccessException(RunIssueCode.ReadError, "El origen no se pudo resolver al empezar la ejecución; no se lee.");
+        }
+
         var budget = state.Budget;
         var current = await RunAsync("apertura del volumen", path, budget, null, s => _api.OpenVolumeRoot(root.VolumeRoot, s), cancellationToken).ConfigureAwait(false);
         try

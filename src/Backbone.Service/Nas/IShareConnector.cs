@@ -80,7 +80,16 @@ internal interface IShareConnection : IAsyncDisposable
     /// coincide. El archivo se crea con borrado al cerrar (<c>FILE_FLAG_DELETE_ON_CLOSE</c>), así que, si el servidor lo
     /// respeta, desaparece al terminar aunque algo falle; el llamante comprueba después que ya no está.
     /// </summary>
-    Task WriteProbeFileAsync(string path, ReadOnlyMemory<byte> content, CancellationToken ct);
+    /// <param name="path">Archivo de prueba.</param>
+    /// <param name="content">Contenido.</param>
+    /// <param name="finalRoot">
+    /// Ruta final (<c>GetFinalPathNameByHandle</c>, sin normalizar, p. ej. <c>\\?\UNC\servidor\recurso</c>) de la raíz conectada.
+    /// <b>Sobre el handle ya abierto del archivo y antes de escribir nada</b> (§8.2 "Conexiones al NAS", B-3), se obtiene su
+    /// ruta final y tiene que estar dentro de <paramref name="finalRoot"/>; si no se puede obtener o está fuera, falla con
+    /// <see cref="BackboneErrorCode.AccessDenied"/> sin haber escrito.
+    /// </param>
+    /// <param name="ct">Cancelación.</param>
+    Task WriteProbeFileAsync(string path, ReadOnlyMemory<byte> content, string finalRoot, CancellationToken ct);
 
     /// <summary>Indica si existe el archivo <paramref name="path"/>.</summary>
     Task<bool> FileExistsAsync(string path, CancellationToken ct);

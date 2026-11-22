@@ -391,7 +391,8 @@ internal sealed partial class RepositoryPreparer(
                     throw new BackboneException(BackboneErrorCode.NasUnreachable, "The connection to the share was lost before using it.");
                 }
 
-                var storage = storageFactory.Create(lease.Connection, destination);
+                // M-A (HU-14): revocado al soltar la concesión o al cerrar a la fuerza la conexión; después, ninguna E/S toca la red.
+                var storage = lease.Protect(storageFactory.Create(lease.Connection, destination));
                 return await PrepareStorageAsync(storage, described, ct).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not (BackboneException or OperationCanceledException) && ShareErrors.FromIoException(ex) is { } share)

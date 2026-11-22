@@ -12,7 +12,7 @@ namespace Backbone.Service.Tests.Nas;
 /// conecta y lo que queda se cierra a la fuerza.
 /// </summary>
 [Trait("Story", "HU-06")]
-public sealed class ShareConnectionManagerClosingTests : IDisposable
+public sealed class ShareConnectionManagerClosingTests
 {
     private const string Root = @"\\nas\backups";
 
@@ -22,15 +22,13 @@ public sealed class ShareConnectionManagerClosingTests : IDisposable
     public ShareConnectionManagerClosingTests() =>
         _manager = new ShareConnectionManager(_connector, NullLogger<ShareConnectionManager>.Instance);
 
-    public void Dispose() => _manager.Dispose();
-
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     private static NasCredential Credential(string root = Root, string user = "ana", string password = "clave")
     {
         var buffer = GC.AllocateArray<char>(password.Length + 1, pinned: true);
         password.AsSpan().CopyTo(buffer);
-        return new NasCredential(root, user, DateTimeOffset.UnixEpoch, buffer, password.Length);
+        return new NasCredential(root, user, DateTimeOffset.UnixEpoch, buffer, password.Length, isExplicit: false);
     }
 
     private static async Task SettleAsync() => await Task.Delay(100, Ct);

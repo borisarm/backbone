@@ -1,7 +1,5 @@
-using System.Runtime.InteropServices;
-using System.Security.Cryptography;
-using System.Text;
 using Backbone.Contracts;
+using Backbone.Core.Storage;
 using Backbone.Service.Persistence;
 using Microsoft.Extensions.Logging;
 
@@ -17,10 +15,13 @@ namespace Backbone.Service.Nas;
 /// <item><see cref="AcquireAsync"/> reutiliza la conexión viva (o en curso) de la raíz o la crea; solo la última liberación la
 /// cierra (<c>WNetCancelConnection2</c>), así que una prueba nunca corta la conexión de una copia.</item>
 /// <item>Windows solo admite <b>un usuario por servidor</b> en la sesión de inicio del servicio, y con una sesión SMB viva no
-/// vuelve a comprobar la contraseña. Por eso cada conexión guarda una huella de su credencial (HMAC-SHA-256 de usuario y
-/// contraseña con una clave aleatoria de este proceso, que nunca sale de memoria) y, si ya hay una conexión con ese servidor
-/// con otra credencial, se rechaza con <see cref="BackboneErrorCode.CredentialsRejected"/>
-/// (<c>ERROR_SESSION_CREDENTIAL_CONFLICT</c>) sin llamar al sistema (BAJA-1).</item>
+/// vuelve a comprobar la contraseña. Por eso la reutilización de una conexión se decide por la <b>identidad</b> de la
+/// credencial guardada (raíz más <see cref="NasCredential.UpdatedUtc"/>, que cambia con cada guardado), <b>nunca por su
+/// contenido</b>: comparar usuario y contraseña (con una huella o como sea) sería un oráculo de contraseñas para quien pudiera
+/// probar credenciales contra una conexión viva (revisión final de seguridad de HU-05, M-1). Una credencial explícita no
+/// guardada (<see cref="NasCredential.IsExplicit"/>) nunca comparte una conexión ajena. Si ya hay otra conexión con ese
+/// servidor (con cualquier recurso) que no se puede compartir, la respuesta es <see cref="BackboneErrorCode.NasBusy"/> sin
+/// llamar al sistema, coincida o no el secreto.</item>
 /// <item><b>Desconexión pendiente</b> (§8.2 B-1): entre la última liberación y el final de <c>WNetCancelConnection2</c> la raíz
 /// queda "cerrando"; un <see cref="AcquireAsync"/> de esa raíz espera a que termine y reconecta. Si no, la cancelación
 /// pendiente borraría el registro de uso de la conexión nueva y su E/S saldría con la cuenta del equipo (§7.5 A-3).</item>
@@ -28,11 +29,8 @@ namespace Backbone.Service.Nas;
 /// que sigan abiertas o en curso se cierran a la fuerza (<see cref="ForceDisconnectAllAsync"/>).</item>
 /// </list>
 /// </remarks>
-internal sealed partial class ShareConnectionManager(IShareConnector connector, ILogger<ShareConnectionManager> logger) : IDisposable
+internal sealed partial class ShareConnectionManager(IShareConnector connector, ILogger<ShareConnectionManager> logger)
 {
-    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
-
-    private readonly byte[] _fingerprintKey = RandomNumberGenerator.GetBytes(32);
     private readonly Lock _gate = new();
     private readonly Dictionary<string, Entry> _entries = new(StringComparer.OrdinalIgnoreCase);
 
@@ -64,12 +62,13 @@ internal sealed partial class ShareConnectionManager(IShareConnector connector, 
     /// esta tarea termina. El plazo lo pone el llamante; si abandona la tarea, debe desechar la concesión si acaba bien.
     /// </summary>
     /// <exception cref="ShareException">
-    /// La conexión falla, o ya hay una conexión con ese servidor con otra credencial (<see cref="BackboneErrorCode.CredentialsRejected"/>).
+    /// La conexión falla, o ya hay otra conexión con ese servidor que no se puede compartir con esta credencial
+    /// (<see cref="BackboneErrorCode.NasBusy"/>).
     /// </exception>
     public async Task<ShareLease> AcquireAsync(NasCredential credential, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(credential);
-        var fingerprint = Fingerprint(credential);
+        var identity = new CredentialIdentity(credential.IsExplicit, credential.UpdatedUtc);
         var server = ServerOf(credential.ShareRoot);
         Entry? entry = null;
         var retried = false;
@@ -87,10 +86,12 @@ internal sealed partial class ShareConnectionManager(IShareConnector connector, 
                 foreach (var other in _entries.Values)
                 {
                     if (string.Equals(other.Server, server, StringComparison.OrdinalIgnoreCase)
-                        && !CryptographicOperations.FixedTimeEquals(other.Fingerprint, fingerprint))
+                        && !(string.Equals(other.ShareRoot, credential.ShareRoot, StringComparison.OrdinalIgnoreCase)
+                             && other.Identity.CanShareWith(identity)))
                     {
-                        LogConflict(logger, UntrustedText.Describe(server));
-                        throw new ShareException(BackboneErrorCode.CredentialsRejected, ShareErrors.ErrorSessionCredentialConflict);
+                        // M-1: la respuesta no depende de si el usuario o la contraseña coinciden: nunca se comparan.
+                        LogBusy(logger, UntrustedText.Describe(server));
+                        throw new ShareException(BackboneErrorCode.NasBusy, 0);
                     }
                 }
 
@@ -113,7 +114,7 @@ internal sealed partial class ShareConnectionManager(IShareConnector connector, 
                 }
                 else
                 {
-                    entry = new Entry(credential.ShareRoot, server, fingerprint, connector.ConnectAsync(credential, CancellationToken.None));
+                    entry = new Entry(credential.ShareRoot, server, identity, connector.ConnectAsync(credential, CancellationToken.None));
                     _entries.Add(credential.ShareRoot, entry);
                 }
             }
@@ -132,7 +133,7 @@ internal sealed partial class ShareConnectionManager(IShareConnector connector, 
         try
         {
             var connection = await entry.Connecting.WaitAsync(ct).ConfigureAwait(false);
-            return new ShareLease(this, entry, connection);
+            return CreateLease(entry, connection);
         }
         catch
         {
@@ -148,6 +149,23 @@ internal sealed partial class ShareConnectionManager(IShareConnector connector, 
 
             throw;
         }
+    }
+
+    private ShareLease CreateLease(Entry entry, IShareConnection connection)
+    {
+        var lease = new ShareLease(this, entry, connection);
+        lock (_gate)
+        {
+            entry.Leases.Add(lease);
+
+            // Una concesión que se crea tras cerrar a la fuerza la conexión (la conexión terminó de abrirse después) nace revocada.
+            if (entry.ForceClosed)
+            {
+                lease.Revoke();
+            }
+        }
+
+        return lease;
     }
 
     /// <summary>
@@ -190,6 +208,15 @@ internal sealed partial class ShareConnectionManager(IShareConnector connector, 
             foreach (var entry in _entries.Values)
             {
                 withLeases.Add((entry.ShareRoot, entry.References));
+
+                // M-A: antes de tocar la red, las concesiones quedan revocadas: nada que las use vuelve a hacer E/S (sin el
+                // registro de uso saldría con la cuenta del equipo, §7.5 A-3), ni siquiera si ya iba a soltar el bloqueo.
+                entry.ForceClosed = true;
+                foreach (var lease in entry.Leases)
+                {
+                    lease.Revoke();
+                }
+
                 if (entry.Connecting.IsCompleted)
                 {
                     now.Add(entry.ShareRoot);
@@ -225,8 +252,6 @@ internal sealed partial class ShareConnectionManager(IShareConnector connector, 
             await ForceDisconnectAsync(root, ct).ConfigureAwait(false);
         }
     }
-
-    public void Dispose() => CryptographicOperations.ZeroMemory(_fingerprintKey);
 
     internal async Task ReleaseAsync(Entry entry)
     {
@@ -367,26 +392,8 @@ internal sealed partial class ShareConnectionManager(IShareConnector connector, 
         }
     }
 
-    private byte[] Fingerprint(NasCredential credential)
-    {
-        var password = credential.Password;
-        var size = StrictUtf8.GetByteCount(credential.UserName) + 1 + StrictUtf8.GetByteCount(password);
-        var buffer = GC.AllocateArray<byte>(size, pinned: true);
-        try
-        {
-            var written = StrictUtf8.GetBytes(credential.UserName, buffer);
-            buffer[written++] = 0;
-            StrictUtf8.GetBytes(password, buffer.AsSpan(written));
-            return HMACSHA256.HashData(_fingerprintKey, buffer);
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(buffer);
-        }
-    }
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Ya hay una conexión con el servidor {Server} con otra credencial: se rechaza sin conectar (Windows admite un solo usuario por servidor).")]
-    private static partial void LogConflict(ILogger logger, string server);
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Ya hay otra conexión con el servidor {Server} que no se puede compartir con esta credencial: NasBusy sin conectar (Windows admite un solo usuario por servidor).")]
+    private static partial void LogBusy(ILogger logger, string server);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Parada del servicio: se cierra a la fuerza la conexión con {ShareRoot} con {Leases} concesiones vivas; su E/S en curso fallará.")]
     private static partial void LogForcingWithLeases(ILogger logger, string shareRoot, int leases);
@@ -401,26 +408,60 @@ internal sealed partial class ShareConnectionManager(IShareConnector connector, 
     private static partial void LogForceFailed(ILogger logger, string shareRoot, string exceptionType, int hResult);
 
     /// <summary>Conexión de una raíz y sus referencias (protegidas por el cerrojo del gestor).</summary>
-    internal sealed class Entry(string shareRoot, string server, byte[] fingerprint, Task<IShareConnection> connecting)
+    internal sealed class Entry(string shareRoot, string server, CredentialIdentity identity, Task<IShareConnection> connecting)
     {
         public string ShareRoot { get; } = shareRoot;
 
         public string Server { get; } = server;
 
-        public byte[] Fingerprint { get; } = fingerprint;
+        public CredentialIdentity Identity { get; } = identity;
 
         public Task<IShareConnection> Connecting { get; } = connecting;
 
         public int References { get; set; } = 1;
+
+        /// <summary>Concesiones vivas de la conexión (protegidas por el cerrojo del gestor).</summary>
+        public HashSet<ShareLease> Leases { get; } = [];
+
+        /// <summary>La parada del servicio ha cerrado a la fuerza esta conexión: toda concesión nueva nace revocada.</summary>
+        public bool ForceClosed { get; set; }
+    }
+
+    internal void Unregister(ShareLease lease, Entry entry)
+    {
+        lock (_gate)
+        {
+            entry.Leases.Remove(lease);
+        }
     }
 }
 
-/// <summary>Uso de una conexión del <see cref="ShareConnectionManager"/>; desecharla suelta la referencia (idempotente).</summary>
+/// <summary>
+/// Identidad de la credencial con la que se hizo una conexión (M-1): si es una credencial explícita no guardada y, si es la
+/// guardada, su <see cref="NasCredential.UpdatedUtc"/>. Nunca lleva ni se calcula del usuario o la contraseña.
+/// </summary>
+internal readonly record struct CredentialIdentity(bool IsExplicit, DateTimeOffset UpdatedUtc)
+{
+    /// <summary>Una credencial explícita nunca comparte conexión; las guardadas, solo con el mismo <see cref="UpdatedUtc"/>.</summary>
+    public bool CanShareWith(CredentialIdentity other) => !IsExplicit && !other.IsExplicit && UpdatedUtc == other.UpdatedUtc;
+}
+
+/// <summary>
+/// Uso de una conexión del <see cref="ShareConnectionManager"/>; desecharla suelta la referencia (idempotente).
+/// </summary>
+/// <remarks>
+/// <b>Revocación</b> (revisión de seguridad de HU-14, M-A): <see cref="Revoke"/> la pone la parada del servicio
+/// (<see cref="ShareConnectionManager.ForceDisconnectAllAsync"/>) y <see cref="DisposeAsync"/>, siempre <b>antes</b> de
+/// <c>WNetCancelConnection2</c>. Mientras dura, <see cref="Protect"/> da un almacenamiento que, desde ese momento, lanza
+/// <see cref="BackboneErrorCode.Interrupted"/> en toda operación sin tocar la red: sin el registro de uso de la conexión, la
+/// E/S saldría con la cuenta del equipo (§7.5 A-3).
+/// </remarks>
 internal sealed class ShareLease : IAsyncDisposable
 {
     private readonly ShareConnectionManager _manager;
     private readonly ShareConnectionManager.Entry _entry;
     private int _released;
+    private int _revoked;
 
     internal ShareLease(ShareConnectionManager manager, ShareConnectionManager.Entry entry, IShareConnection connection)
     {
@@ -431,6 +472,38 @@ internal sealed class ShareLease : IAsyncDisposable
 
     public IShareConnection Connection { get; }
 
-    public ValueTask DisposeAsync() =>
-        Interlocked.Exchange(ref _released, 1) == 0 ? new ValueTask(_manager.ReleaseAsync(_entry)) : ValueTask.CompletedTask;
+    /// <summary>La conexión se ha soltado o cerrado a la fuerza: no se puede hacer más E/S con esta concesión.</summary>
+    public bool IsRevoked => Volatile.Read(ref _revoked) != 0;
+
+    /// <summary>Revoca la concesión (idempotente); toda E/S posterior de <see cref="Protect"/> falla sin tocar la red.</summary>
+    public void Revoke() => Volatile.Write(ref _revoked, 1);
+
+    /// <summary>Lanza <see cref="BackboneErrorCode.Interrupted"/> si la concesión está revocada.</summary>
+    public void ThrowIfRevoked()
+    {
+        if (IsRevoked)
+        {
+            throw new ShareException(BackboneErrorCode.Interrupted, 0);
+        }
+    }
+
+    /// <summary>Envuelve el almacenamiento del repositorio para que deje de hacer E/S cuando se revoque la concesión.</summary>
+    public IRepositoryStorage Protect(IRepositoryStorage storage)
+    {
+        ArgumentNullException.ThrowIfNull(storage);
+        return new RevocableRepositoryStorage(storage, this);
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _released, 1) != 0)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        // M-A: revocada antes de que ReleaseAsync llegue a WNetCancelConnection2; lo que siga en segundo plano ya no toca la red.
+        Revoke();
+        _manager.Unregister(this, _entry);
+        return new ValueTask(_manager.ReleaseAsync(_entry));
+    }
 }

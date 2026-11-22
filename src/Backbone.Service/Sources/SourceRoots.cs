@@ -31,7 +31,8 @@ internal sealed class SourceRoot
         string[] rootComponents,
         SourceRootKind kind,
         string expectedRootFinal,
-        IReadOnlyList<string[]> exclusions)
+        IReadOnlyList<string[]> exclusions,
+        bool unreadable = false)
     {
         Source = source;
         ReadPath = readPath;
@@ -41,9 +42,17 @@ internal sealed class SourceRoot
         Kind = kind;
         ExpectedRootFinal = expectedRootFinal;
         Exclusions = exclusions;
+        Unreadable = unreadable;
     }
 
     public BackupSource Source { get; }
+
+    /// <summary>
+    /// El <c>JobRunner</c> no pudo resolver este origen al empezar la ejecución (no existía, no se pudo comprobar o venció el
+    /// plazo): <see cref="ReadPath"/> es la ruta <b>configurada</b>, sin resolver y sin carpetas protegidas, así que la raíz no
+    /// se abre nunca aunque ahora fuera legible; el motor la recibe como raíz ilegible (revisión de seguridad de HU-14, M-B).
+    /// </summary>
+    public bool Unreadable { get; }
 
     /// <summary>La ruta tal como la pasa el motor (<see cref="BackupSource.ReadPath"/>).</summary>
     public string ReadPath { get; }
@@ -166,15 +175,20 @@ internal sealed class SourceRoots
     /// Dispositivos de las instantáneas VSS creadas para esta ejecución (<c>HarddiskVolumeShadowCopy&lt;n&gt;</c>); ninguno si
     /// la copia es en vivo.
     /// </param>
-    public SourceRoots(IReadOnlyList<BackupSource> sources, IReadOnlyCollection<string>? snapshotDevices = null)
+    /// <param name="unreadableSources">
+    /// Posiciones en <paramref name="sources"/> de los orígenes que el <c>JobRunner</c> no pudo resolver: su raíz no se abre
+    /// (<see cref="SourceRoot.Unreadable"/>).
+    /// </param>
+    public SourceRoots(IReadOnlyList<BackupSource> sources, IReadOnlyCollection<string>? snapshotDevices = null, IReadOnlyCollection<int>? unreadableSources = null)
     {
         ArgumentNullException.ThrowIfNull(sources);
         var allowed = new HashSet<string>(snapshotDevices ?? [], StringComparer.OrdinalIgnoreCase);
         var roots = new List<SourceRoot>(sources.Count);
-        foreach (var source in sources)
+        for (var i = 0; i < sources.Count; i++)
         {
+            var source = sources[i];
             ArgumentNullException.ThrowIfNull(source, nameof(sources));
-            roots.Add(Create(source, allowed));
+            roots.Add(Create(source, allowed, unreadableSources?.Contains(i) ?? false));
         }
 
         // La más larga primero, por si un origen está dentro de otro.
@@ -295,7 +309,7 @@ internal sealed class SourceRoots
     /// <summary>B-2: mismas reglas que <see cref="SourceOpen.IsAllowedDevice"/>.</summary>
     internal static bool IsAllowedDevice(string device, out bool isShadowCopy) => SourceOpen.IsAllowedDevice(device, out isShadowCopy);
 
-    private static SourceRoot Create(BackupSource source, HashSet<string> snapshotDevices)
+    private static SourceRoot Create(BackupSource source, HashSet<string> snapshotDevices, bool unreadable)
     {
         var readPath = source.ReadPath;
         ArgumentException.ThrowIfNullOrEmpty(readPath, nameof(source));
@@ -374,7 +388,7 @@ internal sealed class SourceRoots
             exclusions.Add(ParseExclusion(source, exclusion));
         }
 
-        return new SourceRoot(source, readPath, childBase, volumeRoot, rootComponents, kind, expected, exclusions);
+        return new SourceRoot(source, readPath, childBase, volumeRoot, rootComponents, kind, expected, exclusions, unreadable);
     }
 
     /// <summary>

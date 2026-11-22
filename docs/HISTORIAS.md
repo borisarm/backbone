@@ -342,6 +342,7 @@ Como Luis, quiero lanzar una copia en el momento y poder cancelarla, para contro
 - **Al empezar cada ejecución** (HU-07, §8.4 paso 2): el `JobRunner` repite la resolución controlada de los orígenes (ADR-20) y la comprobación de la credencial guardada (`CredentialRequired` sin conectar).
 - **Requisito (cierre de HU-08 servicio; decisión del coordinador)**: en una copia en vivo, el `JobRunner` pasa como `ReadPath` de cada `BackupSource` la **ruta final** de esa resolución (`FinalPath`, o `GuidPath` si el volumen no tiene letra), **nunca la ruta configurada** en `jobs.json`. `SourceFileSystem` vuelve a bajar hasta ella desde el volumen sin seguir ningún enlace (§8.2 "Apertura relativa", §8.3 punto 6), así que con la ruta configurada un origen con un *junction* legítimo daría `SourceRootUnreadable`. Hace falta una prueba que lo compruebe.
 - **Requisito (cierre de HU-06; decisión del coordinador)**: `RepositoryStateTracker` es orientativo y no autoriza escrituras. Al abrir el repositorio en cada ejecución, el `JobRunner` vuelve a examinarlo (`ProbeAsync`), llama a `RepositoryStateTracker.Set` y, si es de formato superior, termina sin escribir (RNF-14). Hay que detallarlo en §8.4 paso 3.
+- **Decidido (revisión de seguridad de HU-14, coordinador)**: el contador de rechazos por SID lleva un conteo por servidor; un éxito solo reinicia el de su servidor; `1219` no cuenta; los rechazos de una prueba con la credencial guardada cuentan si ese SID la guardó en los últimos 5 min. El almacenamiento del repositorio va atado a la concesión (`RevocableRepositoryStorage`): revocada antes de desconectar, nada más toca la red. Un origen sin resolver en el paso 2 llega al motor marcado ilegible y nunca se abre. La parada espera a la cola como mucho 10 s. Deuda pasada a HU-16: B-3 y N-1 a N-4.
 
 ### HU-15 · Copiar archivos abiertos (VSS)
 Como Ana, quiero que se copien también los archivos que tengo abiertos, como el correo de Outlook, para que no queden fuera de la copia.
@@ -370,6 +371,13 @@ Como Luis, quiero que las copias funcionen con la sesión cerrada y que soporten
   2. Un corte de red de menos de 2 minutos se supera con reintentos; uno más largo termina `Failed` con código `NasUnreachable` y evento 3000.
   3. Matar el proceso del servicio durante la copia: el SCM lo reinicia, el repositorio supera `check` y la siguiente ejecución completa el trabajo.
   4. Los bloqueos abandonados se liberan pasado el plazo de §6.4.4.
+- **Requisito (cierre de HU-14; decisión del coordinador)**, deuda de seguridad de baja gravedad de la revisión de HU-14:
+  - **B-3**: una prueba de conexión explícita en curso o abandonada hace que la ejecución reciba `NasBusy` y termine `Failed`. La ejecución espera un tiempo acotado y cancelable a que se vacíen las entradas explícitas del servidor antes de dar `NasBusy`.
+  - **N-1**: carrera dentro de `RevocableRepositoryStorage` entre `ThrowIfRevoked` y las varias llamadas al sistema de cada operación. Contar las operaciones en vuelo en la concesión y, tras revocar y antes de `WNetCancelConnection2`, esperar a que se vacíen (tope 1-2 s).
+  - **N-2**: `ConnectionTester` usa `lease.Connection` sin comprobar la revocación (`ProbeAsync`, `CleanupAsync`). Protegerla igual que el almacenamiento.
+  - **N-3**: evasiones residuales del límite de rechazos: pruebas concurrentes (comprobar el bloqueo tras `AdmitAsync`, o una prueba explícita en vuelo por SID); un éxito con otra cuenta reinicia el contador (ventana deslizante, p. ej. 5 rechazos cada 15 min por SID); `SaveCredentialAsync` + `RunNowAsync` o `SaveJobAsync` como oráculo (contar esos `CredentialsRejected` dentro de la ventana tras guardar, o documentarlo como riesgo aceptado en §8.2).
+  - **N-4**: en `JobRunner.FinishAsync`, cancelar el CTS del plazo antes de desecharlo.
+  - Prueba inestable `JobStoreFaultTests.Concurrent_writers_are_serialized_and_every_change_is_kept_in_a_valid_file` (dos fallos sueltos con toda la batería): capturar el mensaje y ampliar la espera de `TrustedFile` o reducir la concurrencia de la prueba.
 
 ### HU-17 · No suspender durante la copia y prioridad baja
 Como Ana, quiero que el PC no se duerma a mitad de una copia y que no vaya lento mientras trabajo, para que la copia termine sin molestar.
@@ -621,7 +629,7 @@ Las historias de una misma fila pueden desarrollarse en paralelo por agentes dis
 | HU-11 | F2 | 2 | backbone-service | Pendiente |
 | HU-12 | F2 | 3 | backbone-service | Pendiente |
 | HU-13 | MVP | 8 | backbone-core | Hecha (motor; JobRunner, SourceFileSystem y traducción de errores pendientes del servicio; PM-HU13-01) |
-| HU-14 | MVP | 3 | backbone-service | Pendiente |
+| HU-14 | MVP | 3 | backbone-service | Hecha (servicio y app; copia en vivo sin VSS; historial persistente y Visor de eventos con HU-21/HU-22; criterio 3 sobre el `check` real pendiente de HU-26; PM-HU14-01 e integración contra el NAS pendientes) |
 | HU-15 | MVP | 8 | backbone-service | Pendiente |
 | HU-16 | MVP | 5 | backbone-service | Pendiente |
 | HU-17 | MVP/F2 | 2 | backbone-service | Pendiente |

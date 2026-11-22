@@ -117,9 +117,22 @@ internal static class BackboneHost
         services.AddSingleton<IJobList>(sp => sp.GetRequiredService<JobStore>());
         services.AddSingleton<ProtectedFolderResolver>();
         services.AddSingleton<JobValidator>();
-        services.TryAddSingleton<IJobActivity, NoJobActivity>();
         services.AddSingleton<RepositoryStateTracker>();
-        services.AddSingleton<ServiceStatusProvider>();
+
+        // Ejecuciones (HU-14, §8.4): la cola de una sola ejecución a la vez (que es también la actividad y el estado de las
+        // ejecuciones) y el JobRunner. El scheduler (HU-09) llamará a RunQueue.Enqueue; el historial y el Visor de eventos
+        // (HU-21, HU-22) se registran como IRunCompletionHandler.
+        services.TryAddSingleton(new JobRunnerOptions());
+        services.AddSingleton<JobRunner>();
+        services.AddSingleton<RunQueue>();
+        services.TryAddSingleton<IJobActivity>(sp => sp.GetRequiredService<RunQueue>());
+        services.TryAddSingleton<IRunStatusSource>(sp => sp.GetRequiredService<RunQueue>());
+        services.AddSingleton(sp => new ServiceStatusProvider(
+            sp.GetRequiredService<IJobList>(),
+            sp.GetRequiredService<IJobActivity>(),
+            sp.GetRequiredService<RepositoryStateTracker>(),
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<IRunStatusSource>()));
 
         // Conexión al NAS (HU-05, §8.2 ShareConnector).
         services.TryAddSingleton<IShareConnector, WindowsShareConnector>();
@@ -131,6 +144,12 @@ internal static class BackboneHost
         services.TryAddSingleton(new RepositoryPreparationOptions());
         services.AddSingleton<RepositoryPreparer>();
         services.AddHostedService<ShareConnectionShutdown>();
+
+        // Después de ShareConnectionShutdown: la parada es en orden inverso, así que las ejecuciones se cancelan y sueltan sus
+        // recursos (paso 9) antes de que el gestor cierre a la fuerza lo que quede.
+        services.AddSingleton<RunEventBroadcaster>();
+        services.AddHostedService(sp => sp.GetRequiredService<RunEventBroadcaster>());
+        services.AddHostedService(sp => sp.GetRequiredService<RunQueue>());
 
         // IPC.
         services.AddSingleton<ServiceRuntimeInfo>();
@@ -147,7 +166,11 @@ internal static class BackboneHost
         // Orden de arranque: Redirection Guard (§8.3), comprobación de la carpeta y ajustes (StartingAsync) antes de crear el pipe.
         services.AddHostedService<ProcessMitigationStartup>();
         services.AddHostedService<StartupService>();
-        services.AddSingleton<StatusBroadcaster>();
+        services.AddSingleton(sp => new StatusBroadcaster(
+            sp.GetRequiredService<IJobList>(),
+            sp.GetRequiredService<ServiceStatusProvider>(),
+            sp.GetRequiredService<IIpcEventPublisher>(),
+            sp.GetRequiredService<IRunStatusSource>()));
         services.AddHostedService(sp => sp.GetRequiredService<StatusBroadcaster>());
         services.AddHostedService(sp => sp.GetRequiredService<IpcServer>());
         return services;

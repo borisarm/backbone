@@ -11,15 +11,13 @@ namespace Backbone.Service.Tests.Nas;
 /// liberación la cierra; una credencial distinta de la de una conexión viva con el mismo servidor se rechaza sin conectar.
 /// </summary>
 [Trait("Story", "HU-05")]
-public sealed class ShareConnectionManagerTests : IDisposable
+public sealed class ShareConnectionManagerTests
 {
     private readonly FakeShareConnector _connector = new();
     private readonly ShareConnectionManager _manager;
 
     public ShareConnectionManagerTests() =>
         _manager = new ShareConnectionManager(_connector, NullLogger<ShareConnectionManager>.Instance);
-
-    public void Dispose() => _manager.Dispose();
 
     [Fact]
     public async Task The_same_root_and_credential_share_one_connection_closed_by_the_last_release()
@@ -43,32 +41,68 @@ public sealed class ShareConnectionManagerTests : IDisposable
     }
 
     [Fact]
-    public async Task Another_share_of_the_same_server_with_the_same_credential_gets_its_own_connection()
+    public async Task Another_share_of_the_same_server_is_NasBusy_even_with_the_same_secret()
     {
+        // M-1: nunca se comparan usuario ni contraseña; una conexión de otra raíz del servidor no se puede compartir.
         using var a = Credential(@"\\nas\backups", "ana", "clave");
         using var b = Credential(@"\\nas\fotos", "ana", "clave");
 
         await using var first = await _manager.AcquireAsync(a, CancellationToken.None);
-        await using var second = await _manager.AcquireAsync(b, CancellationToken.None);
+        var ex = await Assert.ThrowsAsync<ShareException>(() => _manager.AcquireAsync(b, CancellationToken.None));
 
-        Assert.Equal(2, _connector.Connections.Count);
+        Assert.Equal(BackboneErrorCode.NasBusy, ex.Code);
+        Assert.Single(_connector.Connections);
+    }
+
+    [Fact]
+    public async Task The_same_root_with_another_saved_identity_is_NasBusy_and_the_same_identity_shares()
+    {
+        var saved = DateTimeOffset.UnixEpoch.AddDays(1);
+        using var live = Credential(@"\\nas\backups", "ana", "clave", saved);
+        await using var copy = await _manager.AcquireAsync(live, CancellationToken.None);
+
+        using var same = Credential(@"\\nas\backups", "ana", "clave", saved);
+        await using var shared = await _manager.AcquireAsync(same, CancellationToken.None);
+        Assert.Same(copy.Connection, shared.Connection);
+
+        // Se ha vuelto a guardar la credencial (otro UpdatedUtc), aunque con el mismo usuario y contraseña.
+        using var resaved = Credential(@"\\nas\backups", "ana", "clave", saved.AddMinutes(1));
+        var ex = await Assert.ThrowsAsync<ShareException>(() => _manager.AcquireAsync(resaved, CancellationToken.None));
+
+        Assert.Equal(BackboneErrorCode.NasBusy, ex.Code);
+        Assert.Single(_connector.Connections);
     }
 
     [Theory]
+    [InlineData("ana", "clave")]
     [InlineData("ana", "otra")]
     [InlineData("luis", "clave")]
     [InlineData("ANA", "clave")]
-    public async Task Another_credential_for_a_server_with_a_live_connection_is_rejected_without_connecting(string user, string password)
+    public async Task An_explicit_credential_never_shares_a_live_connection_whatever_its_secret(string user, string password)
     {
         using var live = Credential(@"\\nas\backups", "ana", "clave");
         await using var copy = await _manager.AcquireAsync(live, CancellationToken.None);
-        using var other = Credential(@"\\NAS\fotos", user, password);
+        using var other = Credential(@"\\nas\backups", user, password, isExplicit: true);
 
         var ex = await Assert.ThrowsAsync<ShareException>(() => _manager.AcquireAsync(other, CancellationToken.None));
 
-        Assert.Equal((BackboneErrorCode.CredentialsRejected, ShareErrors.ErrorSessionCredentialConflict), (ex.Code, ex.NativeErrorCode));
+        // La misma respuesta con la contraseña correcta y con cualquier otra: no hay oráculo (M-1). No se llama a Windows.
+        Assert.Equal((BackboneErrorCode.NasBusy, 0), (ex.Code, ex.NativeErrorCode));
         Assert.Single(_connector.Connections);
         Assert.Equal(1, _connector.OpenConnections);
+    }
+
+    [Fact]
+    public async Task A_saved_credential_never_shares_a_live_connection_made_with_an_explicit_one()
+    {
+        using var explicitCredential = Credential(@"\\nas\backups", "ana", "clave", isExplicit: true);
+        await using var live = await _manager.AcquireAsync(explicitCredential, CancellationToken.None);
+        using var saved = Credential(@"\\nas\backups", "ana", "clave");
+
+        var ex = await Assert.ThrowsAsync<ShareException>(() => _manager.AcquireAsync(saved, CancellationToken.None));
+
+        Assert.Equal(BackboneErrorCode.NasBusy, ex.Code);
+        Assert.Single(_connector.Connections);
     }
 
     [Fact]
@@ -124,10 +158,10 @@ public sealed class ShareConnectionManagerTests : IDisposable
         Assert.Equal([@"\\nas\backups"], _connector.ForcedDisconnects);
     }
 
-    private static NasCredential Credential(string root, string user, string password)
+    private static NasCredential Credential(string root, string user, string password, DateTimeOffset? updatedUtc = null, bool isExplicit = false)
     {
         var buffer = GC.AllocateArray<char>(password.Length + 1, pinned: true);
         password.AsSpan().CopyTo(buffer);
-        return new NasCredential(root.ToLowerInvariant(), user, DateTimeOffset.UnixEpoch, buffer, password.Length);
+        return new NasCredential(root.ToLowerInvariant(), user, updatedUtc ?? DateTimeOffset.UnixEpoch, buffer, password.Length, isExplicit);
     }
 }

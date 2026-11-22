@@ -177,15 +177,7 @@ internal sealed partial class WindowsShareConnector(ILogger<WindowsShareConnecto
                 () =>
                 {
                     using var handle = OpenDirectory(path);
-                    var buffer = new char[1024];
-                    var length = FinalPath(handle, buffer);
-                    if (length >= buffer.Length)
-                    {
-                        buffer = new char[length];
-                        length = FinalPath(handle, buffer);
-                    }
-
-                    return length == 0 || length >= buffer.Length ? null : new string(buffer, 0, (int)length);
+                    return FinalPath(handle);
                 },
                 ct);
 
@@ -228,7 +220,7 @@ internal sealed partial class WindowsShareConnector(ILogger<WindowsShareConnecto
                 },
                 ct);
 
-        public Task WriteProbeFileAsync(string path, ReadOnlyMemory<byte> content, CancellationToken ct) =>
+        public Task WriteProbeFileAsync(string path, ReadOnlyMemory<byte> content, string finalRoot, CancellationToken ct) =>
             Run(
                 () =>
                 {
@@ -240,6 +232,15 @@ internal sealed partial class WindowsShareConnector(ILogger<WindowsShareConnecto
                         Options = FileOptions.DeleteOnClose | FileOptions.WriteThrough,
                     };
                     using var stream = new FileStream(path, options);
+
+                    // B-3: la ruta final se comprueba sobre el handle ya abierto y antes de escribir. Si no se puede obtener,
+                    // o está fuera del recurso conectado, no se escribe (el archivo se borra al cerrar).
+                    var finalPath = FinalPath(stream.SafeFileHandle);
+                    if (finalPath is null || !ConnectionTester.IsWithin(finalPath, finalRoot))
+                    {
+                        throw new ShareException(BackboneErrorCode.AccessDenied, 0);
+                    }
+
                     stream.Write(content.Span);
                     stream.Flush(flushToDisk: true);
                     stream.Position = 0;
@@ -277,6 +278,19 @@ internal sealed partial class WindowsShareConnector(ILogger<WindowsShareConnecto
                     LogDisconnectFailed(logger, UntrustedText.Describe(ShareRoot), error);
                 }
             }));
+        }
+
+        private static string? FinalPath(System.Runtime.InteropServices.SafeHandle handle)
+        {
+            var buffer = new char[1024];
+            var length = FinalPath(handle, buffer);
+            if (length >= buffer.Length)
+            {
+                buffer = new char[length];
+                length = FinalPath(handle, buffer);
+            }
+
+            return length == 0 || length >= buffer.Length ? null : new string(buffer, 0, (int)length);
         }
 
         private static unsafe uint FinalPath(System.Runtime.InteropServices.SafeHandle handle, char[] buffer)

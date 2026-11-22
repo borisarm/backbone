@@ -73,7 +73,6 @@ public sealed class ConnectionTesterSecurityReviewTests : IDisposable
     public void Dispose()
     {
         _tester.Dispose();
-        _manager.Dispose();
         _store.Dispose();
         _loggerFactory.Dispose();
         _temp.Dispose();
@@ -148,12 +147,14 @@ public sealed class ConnectionTesterSecurityReviewTests : IDisposable
     // ---- MEDIA-1 y BAJA-1: gestor único de conexiones ----
 
     [Fact]
-    public async Task A_test_reuses_a_live_connection_with_the_same_credential_and_does_not_close_it()
+    public async Task A_test_with_the_saved_credential_reuses_a_live_connection_made_with_it_and_does_not_close_it()
     {
-        using var live = Credential(Share, Ana);
+        // M-1: se comparte por la identidad de la credencial guardada (raíz y UpdatedUtc), no por su contenido.
+        await _store.SaveAsync(Share, Ana, Ct);
+        using var live = (await _store.GetAsync(Share, Ct))!;
         var copy = await _manager.AcquireAsync(live, Ct);
 
-        var result = await _tester.TestAsync(Share, Ana, Ct);
+        var result = await _tester.TestAsync(Share, credential: null, TestSids.Ana, Ct);
         await _tester.WhenCleanupsCompleteAsync().WaitAsync(TimeSpan.FromSeconds(10), Ct);
 
         Assert.True(result.Success);
@@ -165,20 +166,25 @@ public sealed class ConnectionTesterSecurityReviewTests : IDisposable
         Assert.Equal(0, _connector.OpenConnections);
     }
 
-    [Fact]
-    public async Task A_different_credential_while_the_server_has_a_live_connection_is_CredentialsRejected_and_the_live_one_survives()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task An_explicit_credential_while_the_server_has_a_live_connection_is_NasBusy_whether_or_not_it_matches_and_the_live_one_survives(bool sameSecret)
     {
-        using var live = Credential(Share, Ana);
+        // M-1: la respuesta es la misma coincida o no el secreto (no hay oráculo de contraseñas).
+        await _store.SaveAsync(Share, Ana, Ct);
+        using var live = (await _store.GetAsync(Share, Ct))!;
         var copy = await _manager.AcquireAsync(live, Ct);
 
-        var result = await _tester.TestAsync(@"\\NAS\otro", Luis, Ct);
+        var probe = sameSecret ? Ana : Luis;
+        var result = await _tester.TestAsync(sameSecret ? Share : @"\\NAS\otro", probe, Ct);
         await _tester.WhenCleanupsCompleteAsync().WaitAsync(TimeSpan.FromSeconds(10), Ct);
 
         Assert.False(result.Success);
-        Assert.Equal(BackboneErrorCode.CredentialsRejected, result.ErrorCode);
+        Assert.Equal(BackboneErrorCode.NasBusy, result.ErrorCode);
         Assert.Single(_connector.Connections);
         Assert.Equal(1, _connector.OpenConnections);
-        Assert.DoesNotContain(Luis.Password, _logs.AllText(), StringComparison.Ordinal);
+        Assert.DoesNotContain(probe.Password, _logs.AllText(), StringComparison.Ordinal);
 
         await copy.DisposeAsync();
     }
@@ -307,14 +313,15 @@ public sealed class ConnectionTesterSecurityReviewTests : IDisposable
 
         var result = await _tester.TestAsync(sub, Ana, Ct);
 
+        // B-3: el archivo se crea, pero la ruta final se comprueba sobre su handle y no se escribe nada.
         Assert.Equal(BackboneErrorCode.AccessDenied, result.ErrorCode);
         Assert.Equal((true, false, false), (result.CanRead, result.CanWrite, result.CanDelete));
-        Assert.Empty(_connector.Share.ProbeFiles);
+        Assert.Equal(0, _connector.Share.ContentWrites);
         await AssertCleanAsync();
     }
 
     [Fact]
-    public async Task If_the_redirector_cannot_give_the_final_path_the_test_goes_on()
+    public async Task If_the_final_path_of_the_probe_file_cannot_be_obtained_the_test_is_AccessDenied_without_writing()
     {
         var sub = Share + @"\sub";
         _connector.Share.Directories[sub] = 0;
@@ -322,7 +329,8 @@ public sealed class ConnectionTesterSecurityReviewTests : IDisposable
 
         var result = await _tester.TestAsync(sub, Ana, Ct);
 
-        Assert.True(result.Success);
+        Assert.Equal(BackboneErrorCode.AccessDenied, result.ErrorCode);
+        Assert.Equal(0, _connector.Share.ContentWrites);
         await AssertCleanAsync();
     }
 
@@ -338,7 +346,7 @@ public sealed class ConnectionTesterSecurityReviewTests : IDisposable
     {
         var buffer = GC.AllocateArray<char>(input.Password.Length + 1, pinned: true);
         input.Password.AsSpan().CopyTo(buffer);
-        return new NasCredential(root, input.UserName, DateTimeOffset.UnixEpoch, buffer, input.Password.Length);
+        return new NasCredential(root, input.UserName, DateTimeOffset.UnixEpoch, buffer, input.Password.Length, isExplicit: false);
     }
 
     private async Task AssertCleanAsync()

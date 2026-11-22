@@ -34,7 +34,7 @@ internal sealed class PipeServerHarness : IAsyncDisposable
         var protectedFolders = new ProtectedFolderResolver(new ServicePaths(_temp.Path), fileSystem, LoggerFactory.CreateLogger<ProtectedFolderResolver>());
         var activity = new FakeJobActivity();
         var repositoryStates = new RepositoryStateTracker();
-        var status = new ServiceStatusProvider(Jobs, activity, repositoryStates, TimeProvider.System);
+        var runtime = new ServiceRuntimeInfo(TimeProvider.System);
         // Conector real (HU-05): estas pruebas no llaman a TestConnectionAsync ni guardan trabajos, así que nunca conecta.
         var connections = new ShareConnectionManager(new WindowsShareConnector(LoggerFactory.CreateLogger<WindowsShareConnector>()), LoggerFactory.CreateLogger<ShareConnectionManager>());
         var shareCredentials = new ShareCredentialProvider(Credentials, LoggerFactory.CreateLogger<ShareCredentialProvider>());
@@ -53,14 +53,24 @@ internal sealed class PipeServerHarness : IAsyncDisposable
             TimeProvider.System,
             new RepositoryPreparationOptions(),
             LoggerFactory.CreateLogger<RepositoryPreparer>());
-        var operations = new BackboneOperations(new ServiceRuntimeInfo(TimeProvider.System), Settings, Accounts, Credentials, Jobs, new JobValidator(
-                fileSystem, protectedFolders, new SourceValidationRunner(TimeProvider.System, new SourceIoOptions()), new DnsHostResolver(), TimeProvider.System,
+        var validationRunner = new SourceValidationRunner(TimeProvider.System, new SourceIoOptions());
+        Runs = new RunQueue(
+            Jobs,
+            new JobRunner(shareCredentials, connections, new UncRepositoryStorageFactory(), fileSystem, protectedFolders, validationRunner, new FakeSourceFileSystemFactory(), repositoryStates, runtime, TimeProvider.System, new JobRunnerOptions(), LoggerFactory.CreateLogger<JobRunner>()),
+            TimeProvider.System,
+            [],
+            LoggerFactory.CreateLogger<RunQueue>());
+        var status = new ServiceStatusProvider(Jobs, activity, repositoryStates, TimeProvider.System, Runs);
+        var operations = new BackboneOperations(runtime, Settings, Accounts, Credentials, Jobs, new JobValidator(
+                fileSystem, protectedFolders, validationRunner, new DnsHostResolver(), TimeProvider.System,
                 LoggerFactory.CreateLogger<JobValidator>()),
-            activity, status, connectionTester, repositories, repositoryStates);
+            activity, status, connectionTester, repositories, repositoryStates, Runs);
         Manager = new IpcConnectionManager(authorizer, Accounts, Settings, operations, options, TimeProvider.System, LoggerFactory);
         Events = new IpcEventPublisher(Manager, options, TimeProvider.System);
         Server = new IpcServer(Manager, Settings, EventLog, options, LoggerFactory.CreateLogger<IpcServer>());
     }
+
+    public RunQueue Runs { get; }
 
     public static SecurityIdentifier CurrentUser { get; } = WindowsTestEnvironment.CurrentUserSid;
 

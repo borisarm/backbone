@@ -133,7 +133,7 @@ public sealed class CredentialIpcTests : IAsyncLifetime
             : new CredentialInput { UserName = lone, Password = Password };
 
         var ex = await Assert.ThrowsAsync<Service.Ipc.BackboneException>(
-            () => _server.Operations.SaveCredentialAsync(@"\\nas\backups", credential, Ct));
+            () => _server.Operations.SaveCredentialAsync(TestSids.Ana, @"\\nas\backups", credential, Ct));
 
         Assert.Equal(BackboneErrorCode.ValidationFailed, ex.Code);
         var issue = Assert.Single(ex.Validation!.Errors);

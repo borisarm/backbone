@@ -52,7 +52,8 @@ internal sealed class BackboneOperations(
     ServiceStatusProvider status,
     ConnectionTester connectionTester,
     RepositoryPreparer repositories,
-    RepositoryStateTracker repositoryStates)
+    RepositoryStateTracker repositoryStates,
+    RunQueue runs)
 {
     // ---- Estado y trabajos (HU-07) ----
 
@@ -218,10 +219,36 @@ internal sealed class BackboneOperations(
 
     private static BackboneException JobNotFound() => new(BackboneErrorCode.JobNotFound, "The job does not exist.");
 
+    // ---- Ejecución (HU-14) ----
+
+    /// <summary>
+    /// "Copiar ahora" (RF-20): pone el trabajo en la cola o lo lanza ya, aunque esté desactivado o haya pausa; no espera a que
+    /// termine (el resultado llega con <c>RunCompleted</c>). <see cref="BackboneErrorCode.JobNotFound"/>;
+    /// <see cref="BackboneErrorCode.JobAlreadyRunning"/> si ya está en curso o en cola (no se duplica).
+    /// </summary>
+    public Task RunNowAsync(Guid jobId, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        runs.Enqueue(jobId, RunTrigger.Manual);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Cancela la ejecución en curso o en cola del trabajo (RF-21). Idempotente: sin ejecución, no hace nada.
+    /// <see cref="BackboneErrorCode.JobNotFound"/> si el trabajo no existe. No espera a que la ejecución termine de liberar sus
+    /// recursos.
+    /// </summary>
+    public Task CancelRunAsync(Guid jobId, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        runs.Cancel(jobId);
+        return Task.CompletedTask;
+    }
+
     // ---- Credenciales (HU-04) ----
     /// <summary>HU-05 (RF-61): prueba la conexión con el destino; un fallo es un resultado, no una excepción (§7.4).</summary>
-    public Task<ConnectionTestResult> TestConnectionAsync(string destination, CredentialInput? credential, CancellationToken ct) =>
-        connectionTester.TestAsync(destination, credential, ct);
+    public Task<ConnectionTestResult> TestConnectionAsync(CallerContext caller, string destination, CredentialInput? credential, CancellationToken ct) =>
+        connectionTester.TestAsync(destination, credential, caller.Sid, ct);
 
 
     /// <summary>
@@ -229,7 +256,7 @@ internal sealed class BackboneOperations(
     /// caracteres de control; ni el usuario ni la contraseña pueden tener NUL ni suplentes sueltas (no se pasarían intactos a
     /// la API de Windows). Los errores no llevan valores.
     /// </summary>
-    public async Task SaveCredentialAsync(string shareRoot, CredentialInput credential, CancellationToken ct)
+    public async Task SaveCredentialAsync(string callerSid, string shareRoot, CredentialInput credential, CancellationToken ct)
     {
         var root = NormalizeShareRoot(shareRoot);
         var issues = new List<ValidationIssue>();
@@ -249,6 +276,9 @@ internal sealed class BackboneOperations(
         }
 
         await credentials.SaveAsync(root, credential, ct).ConfigureAwait(false);
+
+        // B-2 (revisión de seguridad de HU-14): probar la credencial recién guardada cuenta como probar una explícita.
+        connectionTester.NoteCredentialSaved(callerSid, root);
     }
 
     /// <summary>HU-04 (RF-62): usuario y fecha de la credencial guardada, nunca la contraseña.</summary>

@@ -80,7 +80,6 @@ public sealed class RepositoryPreparationIntegrationTests : IAsyncLifetime
         }
         finally
         {
-            _connections.Dispose();
             _store.Dispose();
             _loggerFactory.Dispose();
             _temp.Dispose();
