@@ -19,8 +19,10 @@ namespace Backbone.Service.Os;
 /// <item><description>Opciones: nunca <c>FILE_DELETE_ON_CLOSE</c> ni <c>FILE_OPEN_BY_FILE_ID</c>; siempre
 /// <c>FILE_OPEN_REPARSE_POINT</c> salvo en la reapertura de la lista blanca, y siempre <c>FILE_OPEN_FOR_BACKUP_INTENT</c> y
 /// <c>FILE_COMPLETE_IF_OPLOCKED</c> (§8.2 "Oplocks").</description></item>
+/// <item><description>Sin <c>RootDirectory</c>, solo la raíz de un volumen local o de una instantánea
+/// (<see cref="IsAllowedAbsolutePath"/>).</description></item>
 /// <item><description>Con <c>RootDirectory</c>, el nombre es un solo componente (sin <c>\</c>) o vacío (reabre el propio
-/// objeto). <c>OBJ_CASE_INSENSITIVE</c> y SQOS de identificación (<c>SecurityIdentification</c>, estático,
+/// objeto). <c>OBJ_CASE_INSENSITIVE</c> salvo en los componentes que salen de la enumeración (<c>exactCase</c>), y SQOS de identificación (<c>SecurityIdentification</c>, estático,
 /// <c>EffectiveOnly</c>).</description></item>
 /// </list>
 /// Si algo no se cumple lanza <see cref="InvalidOperationException"/> (error de programación) sin abrir nada.
@@ -60,10 +62,83 @@ internal static class SourceOpen
             throw new InvalidOperationException("A relative source open must name a single component.");
         }
 
-        if (!relative && name.Length == 0)
+        if (!relative && !IsAllowedAbsolutePath(name))
         {
-            throw new InvalidOperationException("An absolute source open needs a name.");
+            throw new InvalidOperationException("An absolute source open must name a local volume root or a shadow copy root.");
         }
+
+        // Solo la reapertura del propio objeto (relativa, nombre vacío) puede seguir un punto de reanálisis: ya no se resuelve
+        // ninguna ruta, el filtro de la etiqueta sirve el contenido del mismo archivo (§8.2, punto 2).
+        if ((options & R.FileOpenReparsePoint) == 0 && !(relative && name.Length == 0))
+        {
+            throw new InvalidOperationException("A source open must use FILE_OPEN_REPARSE_POINT unless it reopens its own handle.");
+        }
+    }
+
+    /// <summary>
+    /// Las únicas rutas NT absolutas que se abren: la raíz de un volumen local <c>\??\X:\</c> o <c>\??\Volume{guid}\</c>, o
+    /// la de un dispositivo <c>\Device\HarddiskVolume&lt;n&gt;\</c> / <c>\Device\HarddiskVolumeShadowCopy&lt;n&gt;\</c> (con
+    /// las reglas de <see cref="IsAllowedDevice"/>). Nada debajo de la raíz: el resto se abre relativo al handle.
+    /// </summary>
+    public static bool IsAllowedAbsolutePath(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        if (name.Length < 2 || name[^1] != '\\')
+        {
+            return false;
+        }
+
+        var body = name.AsSpan(0, name.Length - 1);
+        if (body.StartsWith(@"\??\", StringComparison.Ordinal))
+        {
+            var volume = body[4..];
+            return (volume.Length == 2 && char.IsAsciiLetter(volume[0]) && volume[1] == ':') || IsVolumeGuid(volume);
+        }
+
+        const string DevicePrefix = @"\Device\";
+        if (body.StartsWith(DevicePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var device = body[DevicePrefix.Length..];
+            return device.IndexOf('\\') < 0 && IsAllowedDevice(device.ToString(), out _);
+        }
+
+        return false;
+    }
+
+    /// <summary><c>Volume{guid}</c> con el GUID en formato <c>D</c>.</summary>
+    public static bool IsVolumeGuid(ReadOnlySpan<char> segment) =>
+        segment.Length == 44
+        && segment.StartsWith("Volume{", StringComparison.OrdinalIgnoreCase)
+        && segment[^1] == '}'
+        && Guid.TryParseExact(segment[7..^1], "D", out _);
+
+    /// <summary>
+    /// B-2: <c>HarddiskVolumeShadowCopy&lt;n&gt;</c> o <c>HarddiskVolume&lt;n&gt;</c>, con <c>n</c> solo dígitos ASCII decimales,
+    /// sin signo ni ceros a la izquierda.
+    /// </summary>
+    public static bool IsAllowedDevice(string device, out bool isShadowCopy)
+    {
+        ArgumentNullException.ThrowIfNull(device);
+        const string ShadowCopy = "HarddiskVolumeShadowCopy";
+        const string Volume = "HarddiskVolume";
+        isShadowCopy = device.StartsWith(ShadowCopy, StringComparison.OrdinalIgnoreCase);
+        var number = isShadowCopy
+            ? device.AsSpan(ShadowCopy.Length)
+            : device.StartsWith(Volume, StringComparison.OrdinalIgnoreCase) ? device.AsSpan(Volume.Length) : [];
+        if (number.IsEmpty || (number.Length > 1 && number[0] == '0') || number.Length > 10)
+        {
+            return false;
+        }
+
+        foreach (var c in number)
+        {
+            if (!char.IsAsciiDigit(c))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -76,8 +151,18 @@ internal static class SourceOpen
     /// <param name="share">Compartición.</param>
     /// <param name="options">Opciones además de <see cref="RequiredOptions"/>.</param>
     /// <param name="handle">Handle abierto.</param>
-    public static unsafe int Open(string name, SafeHandle? parent, uint access, uint share, uint options, out SafeFileHandle handle)
+    /// <param name="exactCase">
+    /// Sin <c>OBJ_CASE_INSENSITIVE</c>: para un componente que sale de la enumeración (nombre tal como está en disco), de modo
+    /// que en una carpeta que distingue mayúsculas con <c>a</c> y <c>A</c> se abra exactamente ese (§8.2). Solo con
+    /// <paramref name="parent"/> y nombre no vacío.
+    /// </param>
+    public static unsafe int Open(string name, SafeHandle? parent, uint access, uint share, uint options, out SafeFileHandle handle, bool exactCase = false)
     {
+        if (exactCase && (parent is null || name.Length == 0))
+        {
+            throw new InvalidOperationException("Only a relative open of one component can be case sensitive.");
+        }
+
         var allOptions = options | RequiredOptions;
         Validate(access, R.FileOpen, allOptions, name, parent is not null);
         var addedRef = false;
@@ -104,7 +189,7 @@ internal static class SourceOpen
                     Length = (uint)sizeof(NativeMethods.ObjectAttributes),
                     RootDirectory = parent?.DangerousGetHandle() ?? 0,
                     ObjectName = (nint)(&objectName),
-                    Attributes = R.ObjCaseInsensitive,
+                    Attributes = exactCase ? 0 : R.ObjCaseInsensitive,
                     SecurityDescriptor = 0,
                     SecurityQualityOfService = (nint)(&qos),
                 };

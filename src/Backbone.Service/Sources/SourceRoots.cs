@@ -1,5 +1,6 @@
 using Backbone.Contracts;
 using Backbone.Core.Engine;
+using Backbone.Service.Os;
 
 namespace Backbone.Service.Sources;
 
@@ -241,6 +242,41 @@ internal sealed class SourceRoots
         return true;
     }
 
+    /// <summary>
+    /// ¿Es <paramref name="final"/> la ruta <paramref name="rootFinal"/> seguida de <paramref name="relative"/>? La raíz se compara
+    /// sin distinguir mayúsculas (como <see cref="SegmentsEqual"/>); la parte relativa, <b>ordinal distinguiendo mayúsculas</b>:
+    /// sus nombres salen de la enumeración tal como están en disco y, en una carpeta que distingue mayúsculas, <c>A</c> y
+    /// <c>a</c> son elementos distintos (§8.2).
+    /// </summary>
+    public static bool FinalPathMatches(string final, string rootFinal, IReadOnlyList<string> relative)
+    {
+        ArgumentNullException.ThrowIfNull(relative);
+        var actual = TrimTrailingSeparators(final).Split('\\');
+        var root = TrimTrailingSeparators(rootFinal).Split('\\');
+        if (actual.Length != root.Length + relative.Count)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < root.Length; i++)
+        {
+            if (!string.Equals(actual[i], root[i], StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        for (var i = 0; i < relative.Count; i++)
+        {
+            if (!string.Equals(actual[root.Length + i], relative[i], StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     public static string Join(string basePath, IReadOnlyList<string> relative) =>
         TrimTrailingSeparators(basePath) + "\\" + string.Join('\\', relative);
 
@@ -256,33 +292,8 @@ internal sealed class SourceRoots
     private static SourceAccessException InvalidPath() =>
         new(RunIssueCode.PathInvalid, "La ruta no pertenece a ningún origen de la copia o tiene segmentos no válidos.");
 
-    /// <summary>
-    /// B-2: <c>HarddiskVolumeShadowCopy&lt;n&gt;</c> o <c>HarddiskVolume&lt;n&gt;</c>, con <c>n</c> solo dígitos ASCII decimales,
-    /// sin signo ni ceros a la izquierda.
-    /// </summary>
-    internal static bool IsAllowedDevice(string device, out bool isShadowCopy)
-    {
-        const string ShadowCopy = "HarddiskVolumeShadowCopy";
-        const string Volume = "HarddiskVolume";
-        isShadowCopy = device.StartsWith(ShadowCopy, StringComparison.OrdinalIgnoreCase);
-        var number = isShadowCopy
-            ? device.AsSpan(ShadowCopy.Length)
-            : device.StartsWith(Volume, StringComparison.OrdinalIgnoreCase) ? device.AsSpan(Volume.Length) : [];
-        if (number.IsEmpty || (number.Length > 1 && number[0] == '0') || number.Length > 10)
-        {
-            return false;
-        }
-
-        foreach (var c in number)
-        {
-            if (!char.IsAsciiDigit(c))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
+    /// <summary>B-2: mismas reglas que <see cref="SourceOpen.IsAllowedDevice"/>.</summary>
+    internal static bool IsAllowedDevice(string device, out bool isShadowCopy) => SourceOpen.IsAllowedDevice(device, out isShadowCopy);
 
     private static SourceRoot Create(BackupSource source, HashSet<string> snapshotDevices)
     {
@@ -394,9 +405,5 @@ internal sealed class SourceRoots
     private static string JoinVolume(string[] segments) =>
         segments.Length == 1 ? segments[0] + "\\" : string.Join('\\', segments);
 
-    private static bool IsVolumeGuid(string segment) =>
-        segment.Length == 44
-        && segment.StartsWith("Volume{", StringComparison.OrdinalIgnoreCase)
-        && segment[^1] == '}'
-        && Guid.TryParseExact(segment[7..^1], "D", out _);
+    private static bool IsVolumeGuid(string segment) => SourceOpen.IsVolumeGuid(segment);
 }

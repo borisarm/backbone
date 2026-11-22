@@ -11,7 +11,7 @@ namespace Backbone.Service.Sources;
 internal sealed class SourceDirectoryCache(int capacity) : IDisposable
 {
     private readonly Lock _lock = new();
-    private readonly Dictionary<string, Entry> _entries = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
     private readonly LinkedList<Entry> _lru = [];
     private bool _disposed;
 
@@ -29,7 +29,10 @@ internal sealed class SourceDirectoryCache(int capacity) : IDisposable
         }
     }
 
-    /// <summary>Clave de una carpeta: índice del origen y ruta relativa.</summary>
+    /// <summary>
+    /// Clave de una carpeta: índice del origen y ruta relativa, ordinal <b>distinguiendo mayúsculas</b>: en una carpeta que
+    /// distingue mayúsculas (<c>fsutil file setCaseSensitiveInfo</c>) <c>A\</c> y <c>a\</c> son carpetas distintas.
+    /// </summary>
     public static string Key(int root, IReadOnlyList<string> relative, int count) =>
         root.ToString(System.Globalization.CultureInfo.InvariantCulture) + "|" + string.Join('\\', relative.Take(count));
 

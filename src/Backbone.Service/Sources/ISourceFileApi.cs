@@ -104,7 +104,12 @@ internal interface ISourceFileApi
     /// seguir un punto de reanálisis (<c>FILE_OPEN_REPARSE_POINT</c>), con <c>FILE_OPEN_FOR_BACKUP_INTENT</c>,
     /// <c>FILE_COMPLETE_IF_OPLOCKED</c> y SQOS de identificación.
     /// </summary>
-    ISourceHandle OpenChild(ISourceHandle parent, string name, SourceOpenMode mode, CancellationToken timeoutSignal);
+    /// <param name="exactCase">
+    /// Sin <c>OBJ_CASE_INSENSITIVE</c>: <paramref name="name"/> sale de la enumeración (tal como está en disco) y, en una carpeta
+    /// que distingue mayúsculas con <c>a</c> y <c>A</c>, tiene que abrirse exactamente ese (§8.2). <see langword="false"/> solo
+    /// para los componentes de la raíz del origen, que se comparan sin distinguir mayúsculas.
+    /// </param>
+    ISourceHandle OpenChild(ISourceHandle parent, string name, SourceOpenMode mode, bool exactCase, CancellationToken timeoutSignal);
 
     /// <summary><c>CfGetPlaceholderStateFromAttributeTag</c>; <c>CF_PLACEHOLDER_STATE_INVALID</c> si no se puede saber.</summary>
     uint GetPlaceholderState(FileAttributes attributes, uint reparseTag);

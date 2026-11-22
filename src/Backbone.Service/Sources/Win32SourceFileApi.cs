@@ -35,15 +35,29 @@ internal sealed class Win32SourceFileApi : ISourceFileApi
     public ISourceHandle OpenVolumeRoot(string ntRootPath, CancellationToken timeoutSignal)
     {
         ArgumentException.ThrowIfNullOrEmpty(ntRootPath);
-        if (!ntRootPath.StartsWith('\\') || !ntRootPath.EndsWith('\\'))
+        if (!SourceOpen.IsAllowedAbsolutePath(ntRootPath))
         {
-            throw new ArgumentException("The volume root must be an absolute NT path ending with a backslash.", nameof(ntRootPath));
+            throw new ArgumentException("The volume root must be the NT root of a local volume or a shadow copy.", nameof(ntRootPath));
+        }
+
+        // Copia en vivo con letra (\??\X:\): la letra se vuelve a mirar en el mapa de dispositivos del proceso antes de abrir,
+        // como en la validación, para que una letra que ahora apunte a \Device\Mup no llegue a abrirse (abrirla podría provocar
+        // una autenticación de red con la cuenta del equipo). Las rutas \??\Volume{guid}\ y \Device\… nunca son de red.
+        if (ntRootPath.Length == 7 && ntRootPath[5] == ':')
+        {
+            switch (N.GetDriveType(ntRootPath[4..]))
+            {
+                case N.DriveRemote:
+                    throw new SourceFileApiException(N.ErrorBadNetPath, "GetDriveType(remote)");
+                case N.DriveNoRootDir:
+                    throw new SourceFileApiException(N.ErrorPathNotFound, "GetDriveType(no root)");
+            }
         }
 
         return Open(ntRootPath, null, SourceOpenMode.Directory);
     }
 
-    public ISourceHandle OpenChild(ISourceHandle parent, string name, SourceOpenMode mode, CancellationToken timeoutSignal)
+    public ISourceHandle OpenChild(ISourceHandle parent, string name, SourceOpenMode mode, bool exactCase, CancellationToken timeoutSignal)
     {
         ArgumentNullException.ThrowIfNull(parent);
         ArgumentException.ThrowIfNullOrEmpty(name);
@@ -52,7 +66,7 @@ internal sealed class Win32SourceFileApi : ISourceFileApi
             throw new ArgumentException("The parent handle does not come from this API.", nameof(parent));
         }
 
-        return Open(name, native.Handle, mode);
+        return Open(name, native.Handle, mode, exactCase);
     }
 
     public uint GetPlaceholderState(FileAttributes attributes, uint reparseTag)
@@ -76,10 +90,10 @@ internal sealed class Win32SourceFileApi : ISourceFileApi
         _ => throw new ArgumentOutOfRangeException(nameof(mode)),
     };
 
-    internal static Win32SourceHandle Open(string name, SafeFileHandle? parent, SourceOpenMode mode)
+    internal static Win32SourceHandle Open(string name, SafeFileHandle? parent, SourceOpenMode mode, bool exactCase = false)
     {
         var (access, share, options) = Parameters(mode);
-        var status = SourceOpen.Open(name, parent, access, share, options, out var handle);
+        var status = SourceOpen.Open(name, parent, access, share, options, out var handle, exactCase);
         if (status < 0)
         {
             throw new SourceFileApiException(N.RtlNtStatusToDosError(status), "NtCreateFile", status);

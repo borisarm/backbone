@@ -166,4 +166,38 @@ public sealed class SourceRootsTests
     [InlineData(@"\Device\HarddiskVolume3\a", @"\Device\HarddiskVolume3\a\b", false)]
     public void Final_paths_are_compared_by_whole_segments_without_case(string left, string right, bool equal) =>
         Assert.Equal(equal, SourceRoots.SegmentsEqual(left, right));
+
+    /// <summary>
+    /// Revisión de seguridad HU-08 (BAJA-3): en una carpeta que distingue mayúsculas, <c>A</c> y <c>a</c> son elementos
+    /// distintos; la parte relativa de la ruta final se compara ordinal distinguiendo mayúsculas y la raíz, sin distinguirlas.
+    /// </summary>
+    [Theory]
+    [InlineData(@"\Device\HarddiskVolume3\src\A\x.txt", @"\Device\HarddiskVolume3\src", new[] { "A", "x.txt" }, true)]
+    [InlineData(@"\device\harddiskvolume3\SRC\A\x.txt\", @"\Device\HarddiskVolume3\src\", new[] { "A", "x.txt" }, true)]
+    [InlineData(@"\Device\HarddiskVolume3\src\a\x.txt", @"\Device\HarddiskVolume3\src", new[] { "A", "x.txt" }, false)]
+    [InlineData(@"\Device\HarddiskVolume3\src\A\X.txt", @"\Device\HarddiskVolume3\src", new[] { "A", "x.txt" }, false)]
+    [InlineData(@"\Device\HarddiskVolume3\src\A", @"\Device\HarddiskVolume3\src", new[] { "A", "x.txt" }, false)]
+    [InlineData(@"\Device\HarddiskVolume3\src\A\x.txt\y", @"\Device\HarddiskVolume3\src", new[] { "A", "x.txt" }, false)]
+    [InlineData(@"\Device\HarddiskVolume4\src\A\x.txt", @"\Device\HarddiskVolume3\src", new[] { "A", "x.txt" }, false)]
+    public void BAJA3_The_relative_part_of_a_final_path_is_case_sensitive_and_the_root_is_not(string final, string rootFinal, string[] relative, bool matches) =>
+        Assert.Equal(matches, SourceRoots.FinalPathMatches(final, rootFinal, relative));
+
+    /// <summary>BAJA-3: la caché de carpetas no confunde <c>A\</c> con <c>a\</c>.</summary>
+    [Fact]
+    public void BAJA3_The_folder_cache_distinguishes_folders_that_differ_only_in_case()
+    {
+        using var cache = new SourceDirectoryCache(8);
+        var upper = SourceDirectoryCache.Key(0, ["A"], 1);
+        var lower = SourceDirectoryCache.Key(0, ["a"], 1);
+        Assert.NotEqual(upper, lower);
+
+        using var api = new Backbone.Service.Tests.TestSupport.FakeSourceFileApi();
+        using (cache.Add(upper, api.OpenVolumeRoot(Backbone.Service.Tests.TestSupport.FakeSourceFileApi.VolumeNtRoot, CancellationToken.None)))
+        {
+        }
+
+        Assert.Null(cache.TryAcquire(lower));
+        using var lease = cache.TryAcquire(upper);
+        Assert.NotNull(lease);
+    }
 }

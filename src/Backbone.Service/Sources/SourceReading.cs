@@ -101,7 +101,13 @@ internal interface ISourceFileSystemFactory
     /// <summary>
     /// Crea la lectura de los orígenes de una ejecución; quien la crea la desecha al terminar.
     /// </summary>
-    /// <param name="sources">Orígenes, con <see cref="BackupSource.ReadPath"/> ya traducida a la instantánea si la hay.</param>
+    /// <param name="sources">
+    /// Orígenes, con <see cref="BackupSource.ReadPath"/> ya traducida a la instantánea si la hay. <b>En vivo</b> (sin
+    /// instantánea), <see cref="BackupSource.ReadPath"/> tiene que ser la ruta final de la resolución controlada
+    /// (<see cref="Os.LocalFolderInfo.FinalPath"/>, o <see cref="Os.LocalFolderInfo.GuidPath"/> si el volumen no tiene letra),
+    /// <b>nunca</b> la ruta configurada: la raíz se compara con esa ruta final (ADR-20 punto 6) y una ruta configurada que pase
+    /// por un enlace o una letra de red no debe llegar a abrirse. Condición para el <c>JobRunner</c> (HU-14).
+    /// </param>
     /// <param name="snapshotDevices">
     /// Dispositivos (<c>HarddiskVolumeShadowCopy&lt;n&gt;</c>) de las instantáneas que <c>VssSnapshotter</c> ha creado para
     /// <b>esta</b> ejecución; cualquier otra instantánea se rechaza (B-2).

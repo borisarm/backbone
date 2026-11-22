@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Backbone.Service.Os;
 using Backbone.Service.Sources;
 
 namespace Backbone.Service.Tests.TestSupport;
@@ -56,6 +57,9 @@ internal sealed class FakeNode
 
     /// <summary><c>EaSize</c> que da la enumeración (por defecto, la etiqueta si hay punto de reanálisis).</summary>
     public uint? EnumerationEaSize { get; set; }
+
+    /// <summary>Atributos que da la enumeración si no son los actuales (el elemento cambió entre enumerar y abrir).</summary>
+    public FileAttributes? EnumerationAttributes { get; set; }
 
     public SourceFileId Id { get; set; }
 
@@ -154,6 +158,9 @@ internal sealed class FakeSourceFileApi : ISourceFileApi, IDisposable
     /// <summary>Padres usados en cada apertura relativa (ruta del padre, nombre).</summary>
     public ConcurrentQueue<(string Parent, string Name)> RelativeOpens { get; } = new();
 
+    /// <summary>Componentes abiertos con <c>OBJ_CASE_INSENSITIVE</c> (solo deberían ser los de la raíz del origen).</summary>
+    public ConcurrentQueue<string> CaseInsensitiveOpens { get; } = new();
+
     public ConcurrentQueue<string> ReOpens { get; } = new();
 
     public ConcurrentQueue<string> AllocatedRangeQueries { get; } = new();
@@ -207,6 +214,12 @@ internal sealed class FakeSourceFileApi : ISourceFileApi, IDisposable
     public ISourceHandle OpenVolumeRoot(string ntRootPath, CancellationToken timeoutSignal)
     {
         VolumeOpens.Enqueue(ntRootPath);
+        if (!SourceOpen.IsAllowedAbsolutePath(ntRootPath))
+        {
+            // Como Win32SourceFileApi: solo la raíz de un volumen local o de una instantánea (BAJA-1).
+            throw new ArgumentException("The volume root must be the NT root of a local volume or a shadow copy.", nameof(ntRootPath));
+        }
+
         if (!VolumeRoots.TryGetValue(ntRootPath, out var node))
         {
             throw new SourceFileApiException(3, "NtCreateFile", unchecked((int)0xC000_003A));
@@ -216,7 +229,7 @@ internal sealed class FakeSourceFileApi : ISourceFileApi, IDisposable
         return NewHandle(node, overlapped: false);
     }
 
-    public ISourceHandle OpenChild(ISourceHandle parent, string name, SourceOpenMode mode, CancellationToken timeoutSignal)
+    public ISourceHandle OpenChild(ISourceHandle parent, string name, SourceOpenMode mode, bool exactCase, CancellationToken timeoutSignal)
     {
         if (parent is not FakeHandle parentHandle || parentHandle.IsDisposed)
         {
@@ -230,6 +243,11 @@ internal sealed class FakeSourceFileApi : ISourceFileApi, IDisposable
 
         var win32Path = parentHandle.Node.Win32Path + "\\" + name;
         RelativeOpens.Enqueue((parentHandle.Node.Win32Path, name));
+        if (!exactCase)
+        {
+            CaseInsensitiveOpens.Enqueue(name);
+        }
+
         return Open(win32Path, mode, timeoutSignal);
     }
 
@@ -430,7 +448,8 @@ internal sealed class FakeSourceFileApi : ISourceFileApi, IDisposable
             {
                 var name = child.Win32Path[(child.Win32Path.LastIndexOf('\\') + 1)..];
                 var ea = child.EnumerationEaSize ?? ((child.Attributes & FileAttributes.ReparsePoint) != 0 ? child.ReparseTag : 0u);
-                list.Add(new RawDirectoryEntry(name, child.Attributes, ea, child.IsDirectory ? 0 : child.Content.Length, child.LastWriteTimeUtc));
+                var listed = child.EnumerationAttributes ?? child.Attributes;
+                list.Add(new RawDirectoryEntry(name, listed, ea, (listed & FileAttributes.Directory) != 0 ? 0 : child.Content.Length, child.LastWriteTimeUtc));
             }
 
             return list;

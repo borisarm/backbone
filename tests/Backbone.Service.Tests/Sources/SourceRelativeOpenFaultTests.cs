@@ -46,7 +46,7 @@ public sealed class SourceRelativeOpenFaultTests : IDisposable
         middle.Faults[FakeOp.Open] = error;
         var fs = Create();
 
-        var ex = await Assert.ThrowsAnyAsync<Exception>(() => ReadAllAsync(fs, @"a\b\x.txt"));
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() => ReadAllAsync(fs, @"a\b\x.txt", Ct));
 
         switch (error)
         {
@@ -67,7 +67,7 @@ public sealed class SourceRelativeOpenFaultTests : IDisposable
         Assert.Equal(fs.HeldHandles, _api.OpenHandles);
         Assert.False(fs.IsAbandoned);
         // El resto del origen sigue siendo legible.
-        Assert.Equal([2], await ReadAllAsync(fs, @"otra\y.txt"));
+        Assert.Equal([2], await ReadAllAsync(fs, @"otra\y.txt", Ct));
         Assert.Equal(fs.HeldHandles, _api.OpenHandles);
     }
 
@@ -80,10 +80,10 @@ public sealed class SourceRelativeOpenFaultTests : IDisposable
         folder.Faults[FakeOp.Open] = 32;
         var fs = Create();
 
-        await Assert.ThrowsAnyAsync<Exception>(() => ReadAllAsync(fs, @"a\b\x.txt"));
+        await Assert.ThrowsAnyAsync<Exception>(() => ReadAllAsync(fs, @"a\b\x.txt", Ct));
         folder.Faults.Remove(FakeOp.Open);
 
-        Assert.Equal([9], await ReadAllAsync(fs, @"a\b\x.txt"));
+        Assert.Equal([9], await ReadAllAsync(fs, @"a\b\x.txt", Ct));
         Assert.Equal(fs.HeldHandles, _api.OpenHandles);
     }
 
@@ -110,7 +110,7 @@ public sealed class SourceRelativeOpenFaultTests : IDisposable
         _api.Volume.Faults[FakeOp.Open] = 5;
         var fs = Create();
 
-        await Assert.ThrowsAnyAsync<Exception>(() => ReadAllAsync(fs, "a.txt"));
+        await Assert.ThrowsAnyAsync<Exception>(() => ReadAllAsync(fs, "a.txt", Ct));
         await Assert.ThrowsAnyAsync<Exception>(() => ListAsync(fs, FakeSourceFileApi.ReadPath));
 
         Assert.Empty(_api.RelativeOpens);
@@ -125,7 +125,7 @@ public sealed class SourceRelativeOpenFaultTests : IDisposable
         _api.VolumeRoots.Clear();
         var fs = Create();
 
-        await Assert.ThrowsAnyAsync<Exception>(() => ReadAllAsync(fs, "a.txt"));
+        await Assert.ThrowsAnyAsync<Exception>(() => ReadAllAsync(fs, "a.txt", Ct));
 
         Assert.Empty(_api.Opens); // ni siquiera una apertura por ruta completa
         Assert.Equal(0, _api.OpenHandles);
@@ -199,8 +199,6 @@ public sealed class SourceRelativeOpenFaultTests : IDisposable
 
         return list;
     }
-
-    private static Task<byte[]> ReadAllAsync(SourceFileSystem fs, string relative) => ReadAllAsync(fs, relative, Ct);
 
     private static async Task<byte[]> ReadAllAsync(SourceFileSystem fs, string relative, CancellationToken token)
     {

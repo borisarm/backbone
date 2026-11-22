@@ -89,6 +89,72 @@ public sealed class SourceReadSecurityTests
         SourceOpen.Validate(NativeMethods.GenericRead, R.FileOpen, 0, string.Empty, relative: true); // reapertura del propio objeto
     }
 
+    /// <summary>Revisión de seguridad HU-08 (BAJA-1): rutas absolutas admitidas, las mismas reglas que <c>IsAllowedDevice</c>.</summary>
+    [Theory]
+    [InlineData(@"\??\C:\")]
+    [InlineData(@"\??\z:\")]
+    [InlineData(@"\??\Volume{0a0a0a0a-0000-0000-0000-00000000000a}\")]
+    [InlineData(@"\Device\HarddiskVolume3\")]
+    [InlineData(@"\Device\HarddiskVolumeShadowCopy12\")]
+    [InlineData(@"\device\harddiskvolume3\")]
+    public void BAJA1_Only_local_volume_and_shadow_copy_roots_are_opened_by_absolute_path(string name)
+    {
+        Assert.True(SourceOpen.IsAllowedAbsolutePath(name));
+        SourceOpen.Validate(NativeMethods.FileListDirectory, R.FileOpen, SourceOpen.RequiredOptions | R.FileOpenReparsePoint, name, relative: false);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(@"\")]
+    [InlineData(@"\??\C:")]
+    [InlineData(@"\??\C:\Users\")]
+    [InlineData(@"\??\C:\Users")]
+    [InlineData(@"\??\UNC\nas\recurso\")]
+    [InlineData(@"\??\CC:\")]
+    [InlineData(@"\??\1:\")]
+    [InlineData(@"\??\Volume{no-es-un-guid}\")]
+    [InlineData(@"\??\Volume{0a0a0a0a-0000-0000-0000-00000000000a}\Users\")]
+    [InlineData(@"\??\GLOBALROOT\Device\Mup\")]
+    [InlineData(@"\Device\Mup\")]
+    [InlineData(@"\Device\Mup\nas\recurso\")]
+    [InlineData(@"\Device\LanmanRedirector\")]
+    [InlineData(@"\Device\NamedPipe\")]
+    [InlineData(@"\Device\HarddiskVolume03\")]
+    [InlineData(@"\Device\HarddiskVolume\")]
+    [InlineData(@"\Device\HarddiskVolumeShadowCopy+7\")]
+    [InlineData(@"\Device\HarddiskVolume3\Users\")]
+    [InlineData(@"\Device\HarddiskVolume3")]
+    [InlineData(@"\DosDevices\C:\")]
+    [InlineData(@"C:\")]
+    [InlineData(@"\?\C:\")]
+    [InlineData(@"\GLOBAL??\C:\")]
+    public void BAJA1_Any_other_absolute_path_is_a_programming_error(string name)
+    {
+        Assert.False(SourceOpen.IsAllowedAbsolutePath(name));
+        Assert.Throws<InvalidOperationException>(() => SourceOpen.Validate(NativeMethods.FileListDirectory, R.FileOpen, SourceOpen.RequiredOptions | R.FileOpenReparsePoint, name, relative: false));
+        Assert.Throws<InvalidOperationException>(() => SourceOpen.Open(name, null, NativeMethods.FileListDirectory, 0, R.FileOpenReparsePoint, out _));
+    }
+
+    [Fact]
+    public void BAJA1_The_volume_root_of_the_real_api_only_accepts_allowed_paths()
+    {
+        var api = new Win32SourceFileApi();
+        Assert.Throws<ArgumentException>(() => api.OpenVolumeRoot(@"\Device\Mup\", Ct));
+        Assert.Throws<ArgumentException>(() => api.OpenVolumeRoot(@"\??\UNC\nas\recurso\", Ct));
+        Assert.Throws<ArgumentException>(() => api.OpenVolumeRoot(@"\??\C:\Users\", Ct));
+    }
+
+    /// <summary>BAJA-1: <c>FILE_OPEN_REPARSE_POINT</c> es obligatorio salvo en la reapertura del propio handle (nombre vacío).</summary>
+    [Fact]
+    public void BAJA1_Only_the_reopen_of_the_own_handle_may_omit_FILE_OPEN_REPARSE_POINT()
+    {
+        Assert.Throws<InvalidOperationException>(() => SourceOpen.Validate(NativeMethods.GenericRead, R.FileOpen, SourceOpen.RequiredOptions, "a", relative: true));
+        Assert.Throws<InvalidOperationException>(() => SourceOpen.Validate(NativeMethods.FileListDirectory, R.FileOpen, SourceOpen.RequiredOptions, @"\??\C:\", relative: false));
+        Assert.Throws<InvalidOperationException>(() => SourceOpen.Open("a", null, NativeMethods.GenericRead, 0, 0, out _));
+        SourceOpen.Validate(NativeMethods.GenericRead, R.FileOpen, SourceOpen.RequiredOptions | R.FileOpenReparsePoint, "a", relative: true);
+        SourceOpen.Validate(NativeMethods.GenericRead, R.FileOpen, SourceOpen.RequiredOptions, string.Empty, relative: true);
+    }
+
     [Fact]
     public void The_open_function_refuses_before_calling_the_system()
     {

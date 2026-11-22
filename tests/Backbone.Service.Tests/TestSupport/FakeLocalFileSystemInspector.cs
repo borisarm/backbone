@@ -73,6 +73,12 @@ internal sealed class FakeLocalFileSystemInspector : ILocalFileSystemInspector, 
     /// <summary>Ruta <c>VOLUME_NAME_GUID</c> simulada: cada letra es un volumen con un GUID fijo.</summary>
     public static string FakeGuidPath(string dosPath)
     {
+        // Como la resolución real, una carpeta resuelta siempre tiene ruta GUID (BAJA-2: vacía, el origen falla cerrado).
+        if (dosPath.StartsWith(@"\\?\", StringComparison.Ordinal) && dosPath.Length >= 6 && dosPath[5] == ':')
+        {
+            dosPath = dosPath[4..];
+        }
+
         if (dosPath.Length < 2 || dosPath[1] != ':')
         {
             return dosPath;

@@ -50,6 +50,22 @@ public sealed class ProtectedFoldersTests
         Assert.True(result.IsNotAllowed);
     }
 
+    /// <summary>Revisión de seguridad HU-08 (BAJA-2): sin la ruta de volumen del origen no se sabe si contiene PD.</summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData(@"\")]
+    [InlineData(@"\\?\")]
+    [Trait("Story", "HU-08")]
+    public void Without_the_volume_path_of_the_source_it_fails_closed(string sourceGuidPath)
+    {
+        var set = new ProtectedFolderSet(ProgramData, VolumeA + @"\ProgramData", "Backbone", [], IsComplete: true);
+
+        var result = set.Classify(sourceGuidPath);
+
+        Assert.Equal(SourceProtectionKind.ProtectedFoldersUnknown, result.Kind);
+        Assert.True(result.IsNotAllowed);
+    }
+
     [Theory]
     [InlineData(@"C:\ProgramData\Backbone", @"C:\ProgramData\Backbone")]
     [InlineData(@"C:\ProgramData\Backbone\credentials", @"C:\ProgramData\Backbone")]

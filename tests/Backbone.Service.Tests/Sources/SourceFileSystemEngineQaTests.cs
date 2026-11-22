@@ -127,6 +127,36 @@ public sealed class SourceFileSystemEngineQaTests : IDisposable
         Assert.Equal(Sha(newer), (await ReadEntriesAsync(back)).Single(e => !e.IsDirectory).Hash!.ToString());
     }
 
+    /// <summary>
+    /// Decisión del coordinador (HU-08): un archivo que pasa a ser una carpeta real entre la enumeración y la apertura da un
+    /// aviso <c>ReadError</c>, conserva su versión anterior y no se recorre en esa ejecución.
+    /// </summary>
+    [Fact]
+    public async Task A_file_that_becomes_a_real_folder_during_the_run_keeps_its_previous_version_and_is_not_walked()
+    {
+        var content = RandomNumberGenerator.GetBytes(5_000);
+        _api.AddFile("x.bin", content);
+        using (var fs = CreateFileSystem())
+        {
+            await RunAsync(fs);
+        }
+
+        _time.Advance(TimeSpan.FromDays(1));
+        var folder = _api.AddDirectory("x.bin"); // sustituye al archivo
+        folder.EnumerationAttributes = FileAttributes.Archive; // la enumeración aún lo vio como archivo
+        _api.AddFile(@"x.bin\dentro.txt", [7]);
+        using var second = CreateFileSystem();
+        var result = await RunAsync(second);
+
+        var warning = Assert.Single(result.Warnings);
+        Assert.Equal(("Docs/x.bin", nameof(RunIssueCode.ReadError)), (warning.Path, warning.Code));
+        var entries = await ReadEntriesAsync(result);
+        var kept = Assert.Single(entries, e => !e.IsDirectory);
+        Assert.Equal("Docs/x.bin", kept.Path);
+        Assert.Equal(Sha(content), kept.Hash!.ToString());
+        Assert.DoesNotContain(_api.RelativeOpens, o => o.Name == "dentro.txt");
+    }
+
     [Fact]
     public async Task HU08_A_source_operation_that_never_returns_ends_the_run_with_an_exception_and_publishes_no_snapshot()
     {

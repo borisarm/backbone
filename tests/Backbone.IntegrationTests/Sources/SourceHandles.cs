@@ -19,7 +19,7 @@ internal static class SourceHandles
             var parent = current;
             try
             {
-                current = api.OpenChild(parent, segments[i], i == segments.Length - 1 ? mode : SourceOpenMode.Directory, CancellationToken.None);
+                current = api.OpenChild(parent, segments[i], i == segments.Length - 1 ? mode : SourceOpenMode.Directory, exactCase: false, CancellationToken.None);
             }
             finally
             {

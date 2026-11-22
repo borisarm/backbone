@@ -189,6 +189,16 @@ public sealed class JobValidatorTests
         Assert.Equal(protectedPath, error.Value);
     }
 
+    /// <summary>Revisión de seguridad HU-08 (BAJA-2): sin ruta GUID del origen no se sabe si contiene PD y falla cerrado.</summary>
+    [Fact]
+    [Trait("Story", "HU-08")]
+    public async Task A_source_whose_volume_path_is_unknown_is_SourceNotAllowed()
+    {
+        _fileSystem.AddFolder(@"D:\Datos", guidPath: string.Empty);
+
+        await AssertSingleErrorAsync(ValidJob(new JobSource { Alias = "Datos", Path = @"D:\Datos" }), "Sources[0].Path", ValidationIssueCode.SourceNotAllowed);
+    }
+
     [Fact]
     public async Task A_junction_to_the_data_folder_is_SourceNotAllowed_comparing_final_paths()
     {

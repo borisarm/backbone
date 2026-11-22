@@ -121,6 +121,7 @@ internal static partial class NativeMethods
     internal const int ErrorAccessDenied = 5;
     internal const int ErrorSharingViolation = 32;
     internal const int ErrorNotSupported = 50;
+    internal const int ErrorBadNetPath = 53;
     internal const int ErrorInvalidParameter = 87;
     internal const int ErrorAlreadyExists = 183;
 

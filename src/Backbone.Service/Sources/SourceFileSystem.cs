@@ -463,7 +463,7 @@ internal sealed partial class SourceFileSystem : ISourceFileSystem, IDisposable
             foreach (var name in root.RootComponents)
             {
                 var parent = current;
-                var child = await RunAsync("apertura", path, budget, parent, s => _api.OpenChild(parent, name, SourceOpenMode.Directory, s), cancellationToken).ConfigureAwait(false);
+                var child = await RunAsync("apertura", path, budget, parent, s => _api.OpenChild(parent, name, SourceOpenMode.Directory, exactCase: false, s), cancellationToken).ConfigureAwait(false);
                 current = child;
                 parent.Dispose();
                 tag = await RunAsync("atributos", path, budget, child, s => child.GetAttributeTag(s), cancellationToken).ConfigureAwait(false);
@@ -521,7 +521,7 @@ internal sealed partial class SourceFileSystem : ISourceFileSystem, IDisposable
                 ISourceHandle child;
                 try
                 {
-                    child = await RunAsync("apertura", resolved.Path, state.Budget, parent, s => _api.OpenChild(parent, name, SourceOpenMode.Directory, s), cancellationToken).ConfigureAwait(false);
+                    child = await RunAsync("apertura", resolved.Path, state.Budget, parent, s => _api.OpenChild(parent, name, SourceOpenMode.Directory, exactCase: true, s), cancellationToken).ConfigureAwait(false);
                 }
                 catch (FileNotFoundException ex)
                 {
@@ -573,13 +573,24 @@ internal sealed partial class SourceFileSystem : ISourceFileSystem, IDisposable
             var parentHandle = parent.Handle;
             try
             {
-                handle = await _runner.RunAsync("apertura", path, state.Budget, parentHandle, s => _api.OpenChild(parentHandle, name, mode, s), cancellationToken).ConfigureAwait(false);
+                handle = await _runner.RunAsync("apertura", path, state.Budget, parentHandle, s => _api.OpenChild(parentHandle, name, mode, exactCase: true, s), cancellationToken).ConfigureAwait(false);
             }
             catch (SourceFileApiException ex) when (ex.NtStatus is SourceFileApiException.StatusFileIsADirectory or SourceFileApiException.StatusNotADirectory)
             {
                 // FILE_NON_DIRECTORY_FILE / FILE_DIRECTORY_FILE: no es del tipo pedido. Si lo que ocupa el nombre es un enlace
                 // (p. ej. un archivo sustituido por un junction), el aviso es el de un enlace (RF-06), no un error de lectura.
                 await ThrowIfLinkAsync(state, path, parentHandle, name, cancellationToken).ConfigureAwait(false);
+                if (ex.NtStatus == SourceFileApiException.StatusFileIsADirectory)
+                {
+                    // Decisión del coordinador (HU-08): se enumeró como archivo y ahora es una carpeta real. Cambió durante
+                    // la lectura: aviso ReadError para el elemento (el motor conserva su versión anterior) y, como el motor ya
+                    // lo tiene como archivo, no se desciende en esa carpeta en esta ejecución.
+                    throw new SourceAccessException(
+                        RunIssueCode.ReadError,
+                        "Ha cambiado durante la lectura: se enumeró como archivo y ahora es una carpeta; se conserva la versión anterior y no se recorre en esta ejecución.",
+                        ex);
+                }
+
                 throw MapError(ex);
             }
             catch (SourceFileApiException ex)
@@ -606,7 +617,7 @@ internal sealed partial class SourceFileSystem : ISourceFileSystem, IDisposable
     /// <summary>Abre <paramref name="name"/> solo para metadatos y lanza la excepción de su clase si no es normal.</summary>
     private async Task ThrowIfLinkAsync(RootState state, string path, ISourceHandle parent, string name, CancellationToken cancellationToken)
     {
-        using var probe = await RunAsync("apertura", path, state.Budget, parent, s => _api.OpenChild(parent, name, SourceOpenMode.Metadata, s), cancellationToken).ConfigureAwait(false);
+        using var probe = await RunAsync("apertura", path, state.Budget, parent, s => _api.OpenChild(parent, name, SourceOpenMode.Metadata, exactCase: true, s), cancellationToken).ConfigureAwait(false);
         var tag = await RunAsync("atributos", path, state.Budget, probe, s => probe.GetAttributeTag(s), cancellationToken).ConfigureAwait(false);
         _ = ClassifyOnHandle(tag, _api);
     }
@@ -629,7 +640,7 @@ internal sealed partial class SourceFileSystem : ISourceFileSystem, IDisposable
     private void CheckFinalPath(SourceRoot root, string[] relative, string finalNt)
     {
         var rootFinal = root.RootFinalNt ?? throw new SourceAccessException(RunIssueCode.ReadError, "No se ha podido comprobar la raíz del origen.");
-        if (!SourceRoots.SegmentsEqual(finalNt, SourceRoots.Join(rootFinal, relative)))
+        if (!SourceRoots.FinalPathMatches(finalNt, rootFinal, relative))
         {
             LogFinalPathMismatch(_logger, UntrustedText.Describe(SourceRoots.Join(rootFinal, relative)), UntrustedText.Describe(finalNt));
             throw new SourceAccessException(

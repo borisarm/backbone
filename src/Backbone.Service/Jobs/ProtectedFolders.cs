@@ -101,7 +101,8 @@ internal sealed record ProtectedFolderSet(
         var programData = Segments(ProgramDataGuidPath);
         if (source.Length == 0)
         {
-            return SourceProtection.None;
+            // Sin la ruta de volumen del origen no se puede comparar con PD: falla cerrado (nunca "ninguna protección").
+            return new SourceProtection(SourceProtectionKind.ProtectedFoldersUnknown, ProgramDataPath, []);
         }
 
         if (programData.Length == 0)
