@@ -23,4 +23,5 @@
   <data name="Tray_Menu_Pause" xml:space="preserve"><value>&amp;Pausar (próximamente)</value></data>
   <data name="Tray_Menu_Open" xml:space="preserve"><value>&amp;Abrir Backbone</value></data>
   <data name="Tray_Menu_Exit" xml:space="preserve"><value>&amp;Salir</value></data>
+  <data name="Validation_ProtectedFoldersUnavailable" xml:space="preserve"><value>No se ha podido comprobar la carpeta de datos de Backbone en %ProgramData%; por seguridad no se copia ningún origen. Vuelve a intentarlo y, si se repite, revisa el registro del servicio.</value></data>
 </root>

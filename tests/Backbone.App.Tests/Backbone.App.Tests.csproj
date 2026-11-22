@@ -18,6 +18,7 @@
   <ItemGroup>
     <Compile Include="..\..\src\Backbone.App\Ipc\**\*.cs" LinkBase="App\Ipc" />
     <Compile Include="..\..\src\Backbone.App\Tray\**\*.cs" LinkBase="App\Tray" />
+    <Compile Include="..\..\src\Backbone.App\Validation\**\*.cs" LinkBase="App\Validation" />
   </ItemGroup>
 
   <ItemGroup>
