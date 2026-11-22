@@ -566,3 +566,10 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 **Resultado esperado:** el repositorio existente se adopta sin tocarlo y su historial es visible; las variantes se rechazan o quedan en solo lectura con su mensaje.
 
 **Estado:** pendiente (Restaurar no existe aún).
+
+## HU-06: aviso de destino de solo lectura (app)
+
+- Con un destino creado por una versión más nueva (repo.json con formato superior), guardar el trabajo: la tarjeta de Inicio y la fila de Trabajos muestran un InfoBar de advertencia "Destino de solo lectura" legible en claro, oscuro y alto contraste, y con Narrador.
+- Tras reiniciar el servicio no debe aparecer el aviso hasta volver a guardar o ejecutar el trabajo.
+- Guardar un trabajo con una carpeta con archivos ajenos como destino: el error aparece bajo el campo Destino con el texto del recurso.
+- Escalado al 200 %: el aviso no se recorta.

@@ -36,7 +36,7 @@
   <data name="Validation_DestinationNotUnc" xml:space="preserve"><value>The destination must be a network path in the form \\server\share.</value></data>
   <data name="Validation_DestinationInsideSource" xml:space="preserve"><value>The destination is inside one of the folders being backed up. Choose a destination outside them.</value></data>
   <data name="Validation_DestinationUsedByOtherJob" xml:space="preserve"><value>Another job already uses this destination, or one inside it or containing it. Choose a different destination for each job.</value></data>
-  <data name="Validation_DestinationNotRepository" xml:space="preserve"><value>The destination contains files that are not a Backbone backup, so nothing will be written to it. Choose an empty folder or a Backbone repository.</value></data>
+  <data name="Validation_DestinationNotRepository" xml:space="preserve"><value>The folder contains files that are not a Backbone backup. Choose another folder or empty it.</value></data>
   <data name="Validation_RepositoryNewerFormat" xml:space="preserve"><value>The destination holds backups from a newer version of Backbone: they can only be browsed and restored. Update Backbone to add new backups.</value></data>
   <data name="Validation_ExclusionPatternInvalid" xml:space="preserve"><value>An exclusion pattern is not valid. Fix it or remove it.</value></data>
   <data name="Validation_ScheduleIncomplete" xml:space="preserve"><value>A daily schedule needs at least one time and one day of the week.</value></data>
@@ -114,4 +114,6 @@
   <data name="Home_Job_Queued" xml:space="preserve"><value>Queued</value></data>
   <data name="Home_Job_LastSuccessFormat" xml:space="preserve"><value>Last successful backup: {0}</value></data>
   <data name="Home_Job_NeverRun" xml:space="preserve"><value>No successful backup yet</value></data>
+  <data name="Repo_ReadOnly.Title" xml:space="preserve"><value>Read-only destination</value></data>
+  <data name="Repo_ReadOnly.Message" xml:space="preserve"><value>A newer version of Backbone created this destination. No backups will be made to it until you update Backbone.</value></data>
 </root>
