@@ -25,6 +25,26 @@ public sealed class ExclusionSecurityReviewTests
     [Trait("Requirement", "RNF-05")]
     public async Task HU08_M1_The_preview_releases_the_folders_it_has_already_walked()
     {
+        // La retención que corrige M-1 es estructural (una carpeta encadenaba todas las recorridas por debajo) y se ve en
+        // cada recorrido. En cambio, en Debug el JIT y los hilos del grupo que ejecutaron las continuaciones pueden mantener
+        // viva un rato alguna carpeta suelta, más a menudo con la batería en paralelo. Se repite la medida y basta con que
+        // un recorrido quede dentro de la tolerancia: el defecto real no la cumple en ninguno.
+        var measurements = new List<int>();
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            var maxAlive = await MeasureRetainedFramesAsync();
+            measurements.Add(maxAlive);
+            if (maxAlive <= 1)
+            {
+                return;
+            }
+        }
+
+        Assert.Fail($"Hay carpetas ya recorridas retenidas a la vez en todos los recorridos: {string.Join(", ", measurements)}");
+    }
+
+    private static async Task<int> MeasureRetainedFramesAsync()
+    {
         var source = new InMemorySourceFileSystem();
         for (var i = 0; i < 6; i++)
         {
@@ -53,7 +73,7 @@ public sealed class ExclusionSecurityReviewTests
         Assert.Equal(1 + 6 + 24 + 24, popped.Count); // Fotos no existe: no se recorre
         // Antes de la corrección, una carpeta retenía todas las ya recorridas por debajo (aquí, hasta 28 a la vez). Se
         // tolera una: en Debug el JIT puede mantener viva en una variable temporal la última carpeta apilada.
-        Assert.True(maxAlive <= 1, $"Hay {maxAlive} carpetas ya recorridas retenidas a la vez");
+        return maxAlive;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

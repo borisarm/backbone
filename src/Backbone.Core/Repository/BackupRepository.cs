@@ -92,7 +92,8 @@ public sealed class BackupRepository
     /// existe, el destino no es un repositorio y una inicialización interrumpida se puede repetir.
     /// </summary>
     /// <exception cref="RepositoryException">
-    /// <see cref="RepositoryErrorKind.NotEmpty"/> si el destino contiene otros archivos;
+    /// <see cref="RepositoryErrorKind.NotEmpty"/> si el destino contiene otros archivos, también si aparecen mientras se
+    /// inicializa (se vuelve a examinar justo antes de publicar <c>repo.json</c>, que entonces no se publica);
     /// <see cref="RepositoryErrorKind.AlreadyInitialized"/> si ya hay un repositorio compatible;
     /// <see cref="RepositoryErrorKind.Incompatible"/> si hay uno incompatible (RNF-14);
     /// <see cref="RepositoryErrorKind.Corrupt"/> si el destino es corrupto (§6.1, §6.2).
@@ -152,7 +153,8 @@ public sealed class BackupRepository
                     await writer.FlushAsync(ct).ConfigureAwait(false);
                 }
             },
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            beforeMove: ct => EnsureStillEmptyAsync(storage, ct)).ConfigureAwait(false);
 
         if (!written)
         {
@@ -544,5 +546,37 @@ public sealed class BackupRepository
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Último examen antes de publicar <c>repo.json</c> (HU-06): si entre el examen inicial y la publicación ha aparecido
+    /// algo que no es del formato, la inicialización se aborta para no mezclar el repositorio con archivos ajenos.
+    /// </summary>
+    /// <exception cref="RepositoryException">
+    /// <see cref="RepositoryErrorKind.AlreadyInitialized"/> si otro proceso ha publicado ya <c>repo.json</c>;
+    /// <see cref="RepositoryErrorKind.NotEmpty"/> si hay cualquier otra cosa ajena al formato.
+    /// </exception>
+    private static async Task EnsureStillEmptyAsync(IRepositoryStorage storage, CancellationToken cancellationToken)
+    {
+        var configFound = false;
+        await foreach (var entry in storage.EnumerateAsync(string.Empty, cancellationToken).ConfigureAwait(false))
+        {
+            if (!entry.IsDirectory && string.Equals(entry.Name, RepositoryLayout.ConfigFile, StringComparison.OrdinalIgnoreCase))
+            {
+                configFound = true;
+            }
+        }
+
+        if (configFound)
+        {
+            throw new RepositoryException(RepositoryErrorKind.AlreadyInitialized, "Otro proceso inicializó el repositorio a la vez.");
+        }
+
+        if (!await IsEmptyOrInterruptedInitializationAsync(storage, cancellationToken).ConfigureAwait(false))
+        {
+            throw new RepositoryException(
+                RepositoryErrorKind.NotEmpty,
+                "Han aparecido en el destino archivos que no son de un repositorio de Backbone mientras se inicializaba; no se ha publicado repo.json.");
+        }
     }
 }
