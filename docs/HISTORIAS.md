@@ -99,7 +99,10 @@ Como Ana, quiero instalar Backbone con un instalador normal de Windows, para emp
   - I-3: decidir de forma explícita si x64 y ARM64 comparten `UpgradeCode`; la versión es única y se pasa al `.wixproj` como `$(Version)` (la de `Directory.Build.props`).
   - I-4: la entrada `HKCU\…\Run` la crea la app en la sesión del usuario (casilla del primer arranque o Ajustes), no el MSI per-machine.
   - B-6: los artefactos de CI no son distribuibles; la publicación de MSI firmados va por un flujo aparte.
-  - Endurecimiento (revisión del `SourceFileSystem` de HU-08, ADR-21): el servicio se instala con `SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO` y la lista de privilegios que fije backbone-service (al menos `SeBackupPrivilege` y `SeImpersonatePrivilege`; sin `SeDebugPrivilege`, `SeTakeOwnershipPrivilege` ni `SeRestorePrivilege` salvo justificación). La prueba de aceptación lo comprueba con `sc qprivs BackboneService` (§10).
+  - Endurecimiento (revisión del `SourceFileSystem` de HU-08, ADR-21; lista fijada en el cierre de HU-08 servicio, decisión del coordinador): el servicio se instala con `SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO` con exactamente `SeBackupPrivilege`, `SeImpersonatePrivilege` y `SeChangeNotifyPrivilege`, ninguno más (§10). La prueba de aceptación comprueba:
+    - con `sc qprivs BackboneService`, que la lista es exactamente esa;
+    - que el servicio arranca con esos privilegios ya limitados;
+    - que, tras borrar `%ProgramData%\Backbone` con el servicio parado, el servicio la vuelve a crear al arrancar con Administradores como propietario y la DACL de RNF-07, y que corrige una raíz de propietario fiable con otra DACL, todo sin `SeRestorePrivilege` (§8.3).
   - Nota (revisión de HT-03, I-6): las bibliotecas nativas de terceros que carga el servicio (p. ej. `e_sqlite3.dll` de `Microsoft.Data.Sqlite`) se cargan desde la carpeta de instalación; su integridad depende de que `INSTALLFOLDER` (bajo `ProgramFiles64Folder`) **no sea escribible por usuarios**. El MSI no debe añadir ACL que lo permitan y la prueba de aceptación lo comprueba.
 
 ### HU-02 · Actualizar y desinstalar
@@ -237,6 +240,18 @@ Como Luis, quiero excluir archivos por patrones, para no copiar temporales ni ca
   - **I-3**: PM-HU08-01 comprueba que un usuario estándar no puede crear un enlace duro hacia `credentials\*.bin`. **I-4**: una exclusión obligatoria vacía tras dividirla es `ArgumentException`. **I-5**: carpetas protegidas y exclusiones obligatorias se calculan comparando rutas finales `VOLUME_NAME_GUID`, no letras.
   - La señal de abandono es `SourceOperationAbandonedException` (deriva de `SourceReadingFailedException`, no de `IOException`): atraviesa el motor y el `JobRunner` la traduce a `Failed`/`Internal`.
   - **Para backbone-installer (HU-01)**: `SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO` con la lista de privilegios que dé backbone-service (§10).
+- **Decidido (cierre de HU-08 servicio; decisión del coordinador)**, avalado por la revisión de seguridad. Lo implementa backbone-service salvo donde se indica:
+  - **`PD` desconocida** (§8.3 "Carpetas protegidas"): si no se obtiene la ruta `VOLUME_NAME_GUID` de `%ProgramData%`, `Classify` falla cerrado con **todos** los orígenes (`ProtectedFoldersUnknown`: `SourceNotAllowed` en la validación, `ValidationFailed` en la ejecución). También falla cerrado un origen cuya ruta GUID viene vacía. El mensaje al usuario tiene que distinguir este caso del de "demasiadas carpetas apartadas". **Para backbone-app**: hace falta un texto nuevo (es-ES y en-US); el mecanismo para distinguirlo está pendiente de decidir (R16, §13: propuesta de un código de validación nuevo en el contrato 1.4).
+  - **Raíz en vivo** (§8.2 "Apertura relativa", §8.3 punto 6, ADR-18): `SourceFileSystem` no recibe el handle de la resolución controlada. Vuelve a bajar desde el volumen, abierto por `\??\Volume{guid}\` o por `\??\X:\` tras comprobar `GetDriveType`, sin seguir ningún enlace; un enlace aparecido después de la resolución da `SourceRootUnreadable`. **Condición para HU-14**: el `JobRunner` pasa como `ReadPath` la ruta final de la resolución (`FinalPath`, o `GuidPath` si no hay letra), nunca la configurada.
+  - **Lecturas asíncronas abandonadas** (§8.2 "Plazo"): cuentan en el contador de hilos abandonados del servicio hasta que vuelven.
+  - **Otras reglas** (§8.2):
+    - Un elemento sustituido por un *junction* que hace fallar `FILE_NON_DIRECTORY_FILE` se reabre solo con `FILE_READ_ATTRIBUTES` y da `ReparsePointSkipped`.
+    - Dos enumeraciones simultáneas de la misma raíz: la segunda da `ReadError`.
+    - Las exclusiones obligatorias se separan por `\` y por `/`.
+    - Los nombres bajo la raíz se comparan con `Ordinal` (carpetas que distinguen mayúsculas); la raíz, sin distinguir mayúsculas.
+    - `SourceOpen` solo admite como rutas absolutas `\??\X:\`, `\??\Volume{guid}\` y `\Device\HarddiskVolume<n>\` o `\Device\HarddiskVolumeShadowCopy<n>\`, y exige `FILE_OPEN_REPARSE_POINT` salvo en la reapertura con nombre vacío.
+  - **Privilegios del servicio** (§10, ADR-21): `SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO` con `SeBackupPrivilege`, `SeImpersonatePrivilege` y `SeChangeNotifyPrivilege`, ninguno más. Pruebas en HU-01 (backbone-installer) y comprobación de VSS con el token restringido en HU-15.
+  - **Informativo, registrador a archivo de `logs\`** (RNF-12, §8.2 "Token de lectura de los orígenes"): escribe desde una cola propia, nunca desde los hilos con el token de lectura (ADR-21).
 
 ### HU-09 · Programar un trabajo
 Como Ana, quiero que la copia se haga sola a la hora que elija, para no tener que acordarme.
@@ -320,6 +335,7 @@ Como Luis, quiero lanzar una copia en el momento y poder cancelarla, para contro
   - Informativo: la sesión de inicio `0x3e7` es común a todos los servicios LocalSystem (§8.2). Riesgo de *DNS rebinding* y de referencias DFS hacia el propio equipo: R14 (§13).
 - **Requisito (revisión final de HU-07, B-3; revisión del `SourceFileSystem` de HU-08, M-1)**: la repetición de la validación en el `JobRunner` no pasa por el límite de 4 validaciones simultáneas, pero sus hilos abandonados cuentan en el **mismo contador** de hilos abandonados que la lectura de orígenes; con 4, la ejecución termina `Failed`/`Internal` sin resolver ni leer nada y se registra el evento 1005 (§8.2 "Plazo de las lecturas de los orígenes").
 - **Al empezar cada ejecución** (HU-07, §8.4 paso 2): el `JobRunner` repite la resolución controlada de los orígenes (ADR-20) y la comprobación de la credencial guardada (`CredentialRequired` sin conectar).
+- **Requisito (cierre de HU-08 servicio; decisión del coordinador)**: en una copia en vivo, el `JobRunner` pasa como `ReadPath` de cada `BackupSource` la **ruta final** de esa resolución (`FinalPath`, o `GuidPath` si el volumen no tiene letra), **nunca la ruta configurada** en `jobs.json`. `SourceFileSystem` vuelve a bajar hasta ella desde el volumen sin seguir ningún enlace (§8.2 "Apertura relativa", §8.3 punto 6), así que con la ruta configurada un origen con un *junction* legítimo daría `SourceRootUnreadable`. Hace falta una prueba que lo compruebe.
 
 ### HU-15 · Copiar archivos abiertos (VSS)
 Como Ana, quiero que se copien también los archivos que tengo abiertos, como el correo de Outlook, para que no queden fuera de la copia.
@@ -336,6 +352,7 @@ Como Ana, quiero que se copien también los archivos que tengo abiertos, como el
 - **Decidido (revisión de seguridad final de HU-13)**:
   - M-A: la comprobación de la ruta final sobre el mismo handle (§8.2, ADR-18) usa `VOLUME_NAME_NT` para que valga dentro de la instantánea, que no tiene letra de unidad; la ruta final de la raíz se obtiene al empezar abriendo `ReadPath` por handle. La copia en vivo (VSS no disponible, criterio 4) es el caso explotable y necesita su prueba: sustituir una carpeta intermedia ya enumerada por un *junction* y comprobar que no se lee su destino.
   - `ReadPath` se calcula a partir de la **ruta final** del origen (la de la comprobación de §8.3), no de la ruta configurada, para que un origen *junction* no se resuelva desde la instantánea hacia el volumen en vivo.
+  - **Token restringido (cierre de HU-08 servicio; decisión del coordinador)**: la prueba de integración real (criterio 6) se hace con el servicio instalado con los privilegios de §10 (`SeBackupPrivilege`, `SeImpersonatePrivilege` y `SeChangeNotifyPrivilege`, ninguno más) y comprueba que crear, usar y eliminar la instantánea y limpiar las huérfanas funciona con ese token. Si VSS necesitara otro privilegio, se para y se pregunta: la lista se cambia antes en §10.
   - M-B: las carpetas protegidas se calculan sobre el volumen en vivo por su ubicación (`<final de %ProgramData%>\<nombre>`, solo carpetas reales, como mucho 100; §8.3) y se pasan al motor como rutas relativas, que valen igual en la instantánea.
 
 ### HU-16 · Copias sin sesión iniciada y tolerancia a fallos
