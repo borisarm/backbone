@@ -385,22 +385,76 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 
 **Estado:** pendiente (requiere el servicio instalado, HU-01; los pasos 2 y 5, HU-21 y HU-14).
 
-## PM-HU07-04 · Parte visual de la creación de un trabajo (pendiente de backbone-app)
+## PM-HU07-04 · Editor de trabajos: crear, alias y errores en línea
 
-**Cubre:** HU-07, criterio 1 (el trabajo aparece en Trabajos y en Inicio), criterio 2 (alias propuesto y editable, error en línea por alias repetido sin distinguir mayúsculas), criterio 3 (cada error junto a su campo) y criterio 6 (error `SourceNotAllowed` junto al origen y aviso `SourceContainsDataFolder`).
+**Cubre:** HU-07, criterio 1 (el trabajo aparece en Trabajos y en Inicio), criterio 2 (alias propuesto y editable; error en línea por alias repetido sin distinguir mayúsculas), criterio 3 (cada error junto a su campo) y criterio 4 (la app no duplica reglas). *Nota de numeración: los PM-HU07-01, 02, 03 y 05 son de la parte de servicio y están referenciados desde el código; los casos de interfaz son PM-HU07-04, 06, 07 y 08.*
 
-**Por qué es manual:** la parte de servicio está cubierta por `JobIpcTests`, `JobValidatorTests`, `JobValidatorCriteriaGapTests` y `ProtectedFoldersTests`; la interfaz (WinUI 3, `FolderPicker`) aún no está implementada y no se automatiza.
+**Por qué es manual:** la lógica del editor está cubierta por `JobEditorTests`, `JobEditorGapTests`, `JobsAndHomeTests` y `ResourceCoverageTests` (`Backbone.App.Tests`) con un servicio simulado; lo que no se automatiza es `FolderPicker` real, la vista WinUI 3 y la unión con el servicio instalado.
 
-**Pasos** (servicio en marcha, app WinUI 3 con el editor de trabajos, cuando backbone-app lo entregue)
-1. Crear un trabajo con nombre, una carpeta elegida con `FolderPicker` y un destino UNC válido; guardar. Comprobar que aparece en Trabajos y en Inicio.
-2. Añadir dos carpetas con el mismo nombre final (p. ej. `D:\Fotos` y `E:\fotos`): el alias propuesto de la segunda debe poder editarse; dejar `Fotos` y `FOTOS` y comprobar el error en línea bajo el segundo alias y que no se puede guardar.
-3. Probar un destino no UNC (`C:\copias`), uno dentro de un origen y uno usado por otro trabajo: cada error aparece junto al campo Destino.
-4. Elegir como origen `C:\ProgramData\Backbone` y un *junction* creado por el usuario que apunte a su interior: error `SourceNotAllowed` junto a ese origen.
-5. Elegir `C:\` y `C:\ProgramData`: el trabajo se guarda y se muestra el aviso `SourceContainsDataFolder` junto al origen.
+**Pasos** (servicio instalado y en marcha, app WinUI 3, NAS con un recurso `\\nas\copias` y una cuenta válida)
+1. Trabajos > Nuevo trabajo. Escribir el nombre "Fotos", pulsar "Añadir carpeta", elegir `D:\Fotos` con el selector del sistema (no hay campo de texto para la ruta). Comprobar que el alias propuesto es `Fotos` y que se puede editar.
+2. Escribir el destino `\\nas\copias\fotos`, usuario y contraseña del NAS (la contraseña no se muestra) y pulsar Guardar. El editor se cierra, el trabajo aparece en Trabajos y como tarjeta en Inicio; la contraseña no se conserva en ningún campo al reabrir el editor.
+3. Alias duplicado: nuevo trabajo con `D:\Fotos` y `E:\fotos`; dejar los alias `Fotos` y `fotos`. Debe salir un error en línea bajo el segundo alias (no un cuadro de diálogo) y no guardarse. Cambiar el alias a `Fotos2` y volver a guardar: se guarda.
+4. Errores en línea, cada uno junto a su campo, sin guardar: nombre vacío (junto al nombre); sin carpetas (junto a la lista); origen inexistente (borrar la carpeta tras elegirla); origen en FAT32/exFAT o USB; unidad de red asignada; destino `C:\copias` (no UNC); destino dentro de un origen (`\\nas\copias\fotos` con un origen que sea ese recurso asignado); destino igual al de otro trabajo existente.
+5. Corregir cada error y comprobar que su mensaje desaparece al volver a validar. Con el servicio parado, Guardar muestra un error general de servicio no disponible y el editor sigue usable.
 
-**Resultado esperado:** los mensajes salen de los textos `.resw` (es-ES y en-US) para los códigos devueltos por el servicio, sin reglas duplicadas en la app (criterio 4).
+**Resultado esperado:** los mensajes salen de los textos `.resw` (es-ES y en-US) para los códigos del servicio; ninguna regla de validación se evalúa en la app (con el servicio parado no hay mensajes de campo).
 
-**Estado:** pendiente (depende de backbone-app).
+**Estado:** pendiente.
+
+## PM-HU07-06 · Editor de trabajos: carpeta de datos de Backbone como origen
+
+**Cubre:** HU-07, criterio 6 (§8.3 "Carpetas protegidas", ADR-13, ADR-16) y los códigos 26 a 29 con texto en es-ES y en-US.
+
+**Por qué es manual:** `JobEditorTests` y `JobEditorGapTests` comprueban el reparto de `SourceNotAllowed` (error, bloquea) y `SourceContainsDataFolder` (aviso, guarda) con el servicio simulado; el cálculo real con rutas finales lo cubren las pruebas del servicio. Aquí se ve el conjunto con el servicio instalado.
+
+**Pasos** (servicio instalado, PowerShell elevado para preparar las carpetas)
+1. Como origen elegir `C:\ProgramData\Backbone`: error `SourceNotAllowed` junto a ese origen; Guardar no guarda.
+2. Elegir `C:\ProgramData\Backbone\config`: el mismo error.
+3. Crear un *junction* `mklink /J C:\Datos\enlace C:\ProgramData\Backbone` y otro hacia `C:\ProgramData\Backbone\config`; elegirlos: el mismo error.
+4. Elegir `C:\` y luego `C:\ProgramData`: se guarda y el aviso `SourceContainsDataFolder` aparece junto al origen y la nota fija de que la carpeta de datos se excluye siempre.
+5. Crear `C:\ProgramData\Backbone.untrusted-<guid>` (una carpeta real, con un guid cualquiera) y elegirla: `SourceNotAllowed`. Elegir `C:\ProgramData`: aviso, no error.
+6. Repetir 1 y 4 con el idioma de Windows en inglés (en-US): los textos están en inglés y no quedan claves sin traducir.
+
+**Resultado esperado:** error junto al origen en 1, 2, 3 y 5; aviso (y guardado) en 4; textos correctos en ambos idiomas.
+
+**Estado:** pendiente.
+
+## PM-HU07-07 · Editor de trabajos: validación lenta, progreso y cancelación
+
+**Cubre:** HU-07, la validación puede tardar hasta 60 s: la interfaz no se bloquea, muestra progreso y permite cancelar.
+
+**Por qué es manual:** `Validation_ShowsProgressAndCanBeCancelledWithoutBlockingUi`, `Save_CancelledDuringValidation_*` y `Dispose_CancelsPendingValidation` comprueban `IsBusy`, la cancelación y que no se guarda nada; no se mide la respuesta real de la ventana ni el plazo de 60 s del servicio.
+
+**Pasos** (servicio instalado)
+1. Preparar un origen en una unidad que no responda (p. ej. un disco USB desconectado en caliente o una carpeta de OneDrive sin conexión) o un destino UNC cuyo servidor no contesta (IP inexistente de la subred).
+2. En el editor elegir ese origen (o escribir ese destino) y pulsar Guardar.
+3. Mientras espera: el anillo de progreso está activo, Guardar y Añadir carpeta están deshabilitados, la ventana se puede mover, redimensionar y cambiar de página sin congelarse.
+4. Pulsar Cancelar durante la espera: la validación se interrumpe en menos de 2 s, el anillo se para, no aparece ningún error, no se crea ningún trabajo y la contraseña escrita sigue en su campo.
+5. Repetir y dejar que termine (hasta 60 s): se muestra el error del servicio junto a su campo y el editor sigue usable.
+6. Cancelar con el editor en reposo lo cierra sin guardar.
+
+**Resultado esperado:** interfaz fluida, progreso visible, cancelación inmediata y sin efectos secundarios.
+
+**Estado:** pendiente.
+
+## PM-HU07-08 · Editor de trabajos: accesibilidad, temas e idiomas
+
+**Cubre:** HU-07, interfaz del editor (§9, RNF de accesibilidad y localización).
+
+**Por qué es manual:** no hay automatización de interfaz WinUI 3 en la batería; `ResourceCoverageTests` solo garantiza que cada código tiene texto en los dos idiomas y que las claves coinciden.
+
+**Pasos** (app WinUI 3 con el editor abierto)
+1. Narrador: recorrer el editor con Tab; cada control anuncia su nombre (nombre, carpeta con su ruta, alias, destino, usuario, contraseña, Probar conexión, Guardar, Cancelar). Al aparecer un error en línea, Narrador lo lee sin cambiar el foco (regiones *polite*).
+2. Teclado: llegar a todos los controles solo con Tab y Mayúsculas+Tab en orden lógico; Intro activa el botón enfocado; Esc o Cancelar cierra el editor en reposo.
+3. Alto contraste (Alt izq.+Mayús izq.+Impr Pant), temas Aqua y Anochecer: texto, bordes de error y foco visibles; el error no se indica solo con color.
+4. Escala del 200 % (y texto grande del sistema): no se recorta ningún control, el editor se desplaza y los botones siguen accesibles.
+5. Tema claro y oscuro: contraste suficiente en errores, avisos y nota informativa.
+6. Repetir 1 y 4 con Windows en español (es-ES) y en inglés (en-US): sin cadenas sin traducir ni cortadas.
+
+**Resultado esperado:** todo operable con teclado y Narrador, legible en alto contraste, 200 %, ambos temas y ambos idiomas.
+
+**Estado:** pendiente.
 
 ## PM-HU08-01 · OneDrive real, WOF y puntos de reanálisis: en vivo y desde VSS
 

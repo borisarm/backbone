@@ -23,5 +23,95 @@
   <data name="Tray_Menu_Pause" xml:space="preserve"><value>&amp;Pausar (próximamente)</value></data>
   <data name="Tray_Menu_Open" xml:space="preserve"><value>&amp;Abrir Backbone</value></data>
   <data name="Tray_Menu_Exit" xml:space="preserve"><value>&amp;Salir</value></data>
+  <data name="Validation_Other" xml:space="preserve"><value>Hay un problema con este dato. Revísalo e inténtalo de nuevo.</value></data>
+  <data name="Validation_NameRequired" xml:space="preserve"><value>Escribe un nombre para el trabajo.</value></data>
+  <data name="Validation_SourcesRequired" xml:space="preserve"><value>Añade al menos una carpeta para copiar.</value></data>
+  <data name="Validation_SourceNotFound" xml:space="preserve"><value>La carpeta no existe. Elige otra o comprueba que la unidad está conectada.</value></data>
+  <data name="Validation_SourceNotNtfs" xml:space="preserve"><value>La carpeta no está en un volumen NTFS. Elige una carpeta de un disco con formato NTFS.</value></data>
+  <data name="Validation_SourceNotLocal" xml:space="preserve"><value>La carpeta no está en un disco local fijo (puede ser una unidad de red o extraíble, o un enlace a otro equipo). Elige una carpeta de un disco del equipo.</value></data>
+  <data name="Validation_AliasRequired" xml:space="preserve"><value>Escribe un alias para la carpeta.</value></data>
+  <data name="Validation_AliasInvalid" xml:space="preserve"><value>El alias no es válido como nombre de carpeta: no uses \ / : * ? " &lt; &gt; | ni termines en punto o espacio.</value></data>
+  <data name="Validation_AliasDuplicate" xml:space="preserve"><value>Este alias ya lo usa otra carpeta del trabajo. Cámbialo para que cada carpeta tenga uno distinto.</value></data>
+  <data name="Validation_DestinationRequired" xml:space="preserve"><value>Escribe el destino en el NAS, por ejemplo \\nas\Backups.</value></data>
+  <data name="Validation_DestinationNotUnc" xml:space="preserve"><value>El destino debe ser una ruta de red con el formato \\servidor\recurso.</value></data>
+  <data name="Validation_DestinationInsideSource" xml:space="preserve"><value>El destino está dentro de una de las carpetas que se copian. Elige un destino fuera de ellas.</value></data>
+  <data name="Validation_DestinationUsedByOtherJob" xml:space="preserve"><value>Otro trabajo ya usa este destino, o uno contenido en él o que lo contiene. Elige un destino distinto para cada trabajo.</value></data>
+  <data name="Validation_DestinationNotRepository" xml:space="preserve"><value>El destino contiene archivos que no son una copia de Backbone y no se escribirá nada en él. Elige una carpeta vacía o un repositorio de Backbone.</value></data>
+  <data name="Validation_RepositoryNewerFormat" xml:space="preserve"><value>El destino tiene copias de una versión más nueva de Backbone: solo se podrán consultar y restaurar. Actualiza Backbone para añadir copias nuevas.</value></data>
+  <data name="Validation_ExclusionPatternInvalid" xml:space="preserve"><value>Un patrón de exclusión no es válido. Corrígelo o quítalo.</value></data>
+  <data name="Validation_ScheduleIncomplete" xml:space="preserve"><value>La programación diaria necesita al menos una hora y un día de la semana.</value></data>
+  <data name="Validation_ValueOutOfRange" xml:space="preserve"><value>El valor está fuera del intervalo permitido.</value></data>
+  <data name="Validation_AccountNotFound" xml:space="preserve"><value>No se encuentra esa cuenta de usuario en este equipo. Comprueba el nombre.</value></data>
+  <data name="Validation_TargetPathNotAllowed" xml:space="preserve"><value>No se admite esa ruta. Elige otra ruta local que no exista ya y que no esté en una carpeta protegida.</value></data>
+  <data name="Validation_AccountNotAdministrator" xml:space="preserve"><value>La cuenta no es administradora de este equipo. Indica una cuenta del grupo Administradores.</value></data>
+  <data name="Validation_AccountNotUser" xml:space="preserve"><value>Indica una cuenta de usuario completa con el formato EQUIPO\usuario o DOMINIO\usuario, no un grupo.</value></data>
+  <data name="Validation_IdAlreadyInUse" xml:space="preserve"><value>Ese identificador ya está en uso. Vuelve a intentarlo.</value></data>
+  <data name="Validation_DestinationNotAllowed" xml:space="preserve"><value>No se admite ese destino: no puede ser este equipo, un recurso administrativo (C$, ADMIN$, IPC$) ni una ruta \\?\ o \\.\. Elige un recurso compartido de tu NAS.</value></data>
+  <data name="Validation_LimitExceeded" xml:space="preserve"><value>El texto o la lista supera el límite permitido. Acórtalo o quita elementos.</value></data>
+  <data name="Validation_SnapshotPathInvalid" xml:space="preserve"><value>La ruta de la copia no tiene un formato válido.</value></data>
+  <data name="Validation_SourceNotAllowed" xml:space="preserve"><value>Backbone no puede copiar esta carpeta: es su carpeta de datos (o está dentro de ella). Elige otra carpeta.</value></data>
+  <data name="Validation_SourceContainsDataFolder" xml:space="preserve"><value>Esta carpeta contiene la carpeta de datos de Backbone, que nunca se copia: se excluye siempre.</value></data>
+  <data name="Validation_SourceUnreadable" xml:space="preserve"><value>Backbone no puede leer esta carpeta (acceso denegado, error del disco, o está solo en la nube). Comprueba los permisos o elige otra.</value></data>
+  <data name="Validation_SourcePathInvalid" xml:space="preserve"><value>La ruta de la carpeta no es válida: debe ser completa, con letra de unidad (por ejemplo C:\Users\Ana\Documentos), sin ".", ".." ni nombres que terminen en punto o espacio.</value></data>
   <data name="Validation_ProtectedFoldersUnavailable" xml:space="preserve"><value>No se ha podido comprobar la carpeta de datos de Backbone en %ProgramData%; por seguridad no se copia ningún origen. Vuelve a intentarlo y, si se repite, revisa el registro del servicio.</value></data>
+  <data name="Error_ValidationFailed" xml:space="preserve"><value>Hay datos que no son válidos. Revisa los campos marcados.</value></data>
+  <data name="Error_JobNotFound" xml:space="preserve"><value>El trabajo ya no existe. Actualiza la lista de trabajos.</value></data>
+  <data name="Error_JobAlreadyRunning" xml:space="preserve"><value>El trabajo ya está en ejecución o en cola. Espera a que termine o cancélalo.</value></data>
+  <data name="Error_NasUnreachable" xml:space="preserve"><value>No se encuentra el NAS en la red. Comprueba que está encendido, que estás en la misma red y que el nombre es correcto.</value></data>
+  <data name="Error_CredentialsRejected" xml:space="preserve"><value>El NAS ha rechazado el usuario o la contraseña. Revísalos e inténtalo de nuevo.</value></data>
+  <data name="Error_ShareNotFound" xml:space="preserve"><value>El recurso compartido no existe en el NAS. Comprueba su nombre en el panel del NAS.</value></data>
+  <data name="Error_AccessDenied" xml:space="preserve"><value>Acceso denegado en el recurso. Comprueba que el usuario tiene permiso de escritura en el NAS.</value></data>
+  <data name="Error_RepositoryLocked" xml:space="preserve"><value>Otro equipo o proceso está usando este destino. Inténtalo de nuevo en unos minutos.</value></data>
+  <data name="Error_RepositoryIncompatible" xml:space="preserve"><value>El destino tiene copias de una versión más nueva de Backbone. Actualiza Backbone para escribir en él.</value></data>
+  <data name="Error_RepositoryCorrupt" xml:space="preserve"><value>El repositorio del destino está dañado. Ejecuta una comprobación del repositorio y revisa el registro.</value></data>
+  <data name="Error_SnapshotNotFound" xml:space="preserve"><value>Esa copia ya no existe. Actualiza la lista de copias.</value></data>
+  <data name="Error_RestoreTargetNotWritable" xml:space="preserve"><value>No se puede escribir en la carpeta de destino de la restauración. Elige otra carpeta.</value></data>
+  <data name="Error_Interrupted" xml:space="preserve"><value>La copia se interrumpió porque el equipo se suspendió o se apagó. Se reintentará en la próxima ejecución.</value></data>
+  <data name="Error_NotAuthorized" xml:space="preserve"><value>No tienes permiso para esta operación. Pide a un administrador que te autorice en Ajustes.</value></data>
+  <data name="Error_NotSupported" xml:space="preserve"><value>Esta versión de Backbone todavía no admite esta operación.</value></data>
+  <data name="Error_Internal" xml:space="preserve"><value>Ha ocurrido un error inesperado. Vuelve a intentarlo y, si se repite, revisa el registro del servicio.</value></data>
+  <data name="Error_CredentialRequired" xml:space="preserve"><value>Falta el usuario y la contraseña del NAS. Escríbelos y vuelve a intentarlo.</value></data>
+  <data name="Error_SnapshotTooLarge" xml:space="preserve"><value>El trabajo tiene demasiados archivos y carpetas para una sola copia (más de 5 000 000). Divídelo en varios trabajos con menos carpetas cada uno.</value></data>
+  <data name="Error_NasBusy" xml:space="preserve"><value>El NAS está ocupado con otra conexión o hubo demasiados rechazos seguidos. Espera unos minutos y vuelve a intentarlo.</value></data>
+  <data name="Error_ServiceUnavailable" xml:space="preserve"><value>No hay conexión con el servicio de Backbone. Espera a que se reconecte o inícialo desde la bandeja.</value></data>
+  <data name="Nav_Home.Content" xml:space="preserve"><value>Inicio</value></data>
+  <data name="Nav_Jobs.Content" xml:space="preserve"><value>Trabajos</value></data>
+  <data name="Home_Title.Text" xml:space="preserve"><value>Inicio</value></data>
+  <data name="Home_Empty.Text" xml:space="preserve"><value>Todavía no hay ningún trabajo de copia. Crea el primero para empezar a proteger tus carpetas.</value></data>
+  <data name="Home_CreateJob.Content" xml:space="preserve"><value>Crear trabajo</value></data>
+  <data name="Jobs_Title.Text" xml:space="preserve"><value>Trabajos</value></data>
+  <data name="Jobs_New.Content" xml:space="preserve"><value>Nuevo trabajo</value></data>
+  <data name="Jobs_New.AccessKey" xml:space="preserve"><value>N</value></data>
+  <data name="Jobs_Empty.Text" xml:space="preserve"><value>No hay trabajos. Pulsa "Nuevo trabajo" para crear uno.</value></data>
+  <data name="Jobs_List.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>Lista de trabajos</value></data>
+  <data name="Editor_Title.Text" xml:space="preserve"><value>Trabajo de copia</value></data>
+  <data name="Editor_Name.Header" xml:space="preserve"><value>Nombre</value></data>
+  <data name="Editor_Name.PlaceholderText" xml:space="preserve"><value>Por ejemplo, Documentos de Ana</value></data>
+  <data name="Editor_SourcesHeader.Text" xml:space="preserve"><value>Carpetas que se copian</value></data>
+  <data name="Editor_SourcesHint.Text" xml:space="preserve"><value>Cada carpeta lleva un alias: es el nombre con el que aparece en las copias.</value></data>
+  <data name="Editor_RemoveSource.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>Quitar carpeta</value></data>
+  <data name="Editor_RemoveSource.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>Quitar carpeta</value></data>
+  <data name="Editor_Alias.Header" xml:space="preserve"><value>Alias</value></data>
+  <data name="Editor_AddFolder.AccessKey" xml:space="preserve"><value>A</value></data>
+  <data name="Editor_AddFolderText.Text" xml:space="preserve"><value>Añadir carpeta…</value></data>
+  <data name="Editor_DataFolderNote.Message" xml:space="preserve"><value>La carpeta de datos de Backbone se excluye siempre de la copia y no se puede cambiar.</value></data>
+  <data name="Editor_DestinationHeader.Text" xml:space="preserve"><value>Destino en el NAS</value></data>
+  <data name="Editor_Destination.Header" xml:space="preserve"><value>Destino</value></data>
+  <data name="Editor_Destination.PlaceholderText" xml:space="preserve"><value>\\nas\Backups</value></data>
+  <data name="Editor_UserName.Header" xml:space="preserve"><value>Usuario del NAS</value></data>
+  <data name="Editor_Password.Header" xml:space="preserve"><value>Contraseña del NAS</value></data>
+  <data name="Editor_TestConnection.Content" xml:space="preserve"><value>Probar conexión</value></data>
+  <data name="Editor_TestConnection.AccessKey" xml:space="preserve"><value>P</value></data>
+  <data name="Editor_Busy.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>Trabajando</value></data>
+  <data name="Editor_Save.Content" xml:space="preserve"><value>Guardar</value></data>
+  <data name="Editor_Save.AccessKey" xml:space="preserve"><value>G</value></data>
+  <data name="Editor_Cancel.Content" xml:space="preserve"><value>Cancelar</value></data>
+  <data name="Connection_Success" xml:space="preserve"><value>Conexión correcta.</value></data>
+  <data name="Connection_SpaceFormat" xml:space="preserve"><value>Libre {0} de {1}.</value></data>
+  <data name="Connection_SmbFormat" xml:space="preserve"><value>SMB {0}.</value></data>
+  <data name="Jobs_SummaryFormat" xml:space="preserve"><value>{0} carpeta(s) → {1}</value></data>
+  <data name="Home_Job_Running" xml:space="preserve"><value>Copiando ahora</value></data>
+  <data name="Home_Job_Queued" xml:space="preserve"><value>En cola</value></data>
+  <data name="Home_Job_LastSuccessFormat" xml:space="preserve"><value>Última copia correcta: {0}</value></data>
+  <data name="Home_Job_NeverRun" xml:space="preserve"><value>Aún sin copia correcta</value></data>
 </root>

@@ -23,5 +23,95 @@
   <data name="Tray_Menu_Pause" xml:space="preserve"><value>&amp;Pause (coming soon)</value></data>
   <data name="Tray_Menu_Open" xml:space="preserve"><value>&amp;Open Backbone</value></data>
   <data name="Tray_Menu_Exit" xml:space="preserve"><value>E&amp;xit</value></data>
+  <data name="Validation_Other" xml:space="preserve"><value>There is a problem with this value. Check it and try again.</value></data>
+  <data name="Validation_NameRequired" xml:space="preserve"><value>Enter a name for the job.</value></data>
+  <data name="Validation_SourcesRequired" xml:space="preserve"><value>Add at least one folder to back up.</value></data>
+  <data name="Validation_SourceNotFound" xml:space="preserve"><value>The folder does not exist. Choose another one or check that the drive is connected.</value></data>
+  <data name="Validation_SourceNotNtfs" xml:space="preserve"><value>The folder is not on an NTFS volume. Choose a folder on an NTFS-formatted disk.</value></data>
+  <data name="Validation_SourceNotLocal" xml:space="preserve"><value>The folder is not on a fixed local disk (it may be a network or removable drive, or a link to another computer). Choose a folder on a disk of this computer.</value></data>
+  <data name="Validation_AliasRequired" xml:space="preserve"><value>Enter an alias for the folder.</value></data>
+  <data name="Validation_AliasInvalid" xml:space="preserve"><value>The alias is not valid as a folder name: do not use \ / : * ? " &lt; &gt; | and do not end with a period or a space.</value></data>
+  <data name="Validation_AliasDuplicate" xml:space="preserve"><value>Another folder in this job already uses this alias. Change it so that each folder has a different one.</value></data>
+  <data name="Validation_DestinationRequired" xml:space="preserve"><value>Enter the destination on the NAS, for example \\nas\Backups.</value></data>
+  <data name="Validation_DestinationNotUnc" xml:space="preserve"><value>The destination must be a network path in the form \\server\share.</value></data>
+  <data name="Validation_DestinationInsideSource" xml:space="preserve"><value>The destination is inside one of the folders being backed up. Choose a destination outside them.</value></data>
+  <data name="Validation_DestinationUsedByOtherJob" xml:space="preserve"><value>Another job already uses this destination, or one inside it or containing it. Choose a different destination for each job.</value></data>
+  <data name="Validation_DestinationNotRepository" xml:space="preserve"><value>The destination contains files that are not a Backbone backup, so nothing will be written to it. Choose an empty folder or a Backbone repository.</value></data>
+  <data name="Validation_RepositoryNewerFormat" xml:space="preserve"><value>The destination holds backups from a newer version of Backbone: they can only be browsed and restored. Update Backbone to add new backups.</value></data>
+  <data name="Validation_ExclusionPatternInvalid" xml:space="preserve"><value>An exclusion pattern is not valid. Fix it or remove it.</value></data>
+  <data name="Validation_ScheduleIncomplete" xml:space="preserve"><value>A daily schedule needs at least one time and one day of the week.</value></data>
+  <data name="Validation_ValueOutOfRange" xml:space="preserve"><value>The value is outside the allowed range.</value></data>
+  <data name="Validation_AccountNotFound" xml:space="preserve"><value>That user account was not found on this computer. Check the name.</value></data>
+  <data name="Validation_TargetPathNotAllowed" xml:space="preserve"><value>That path is not allowed. Choose another local path that does not exist yet and is not in a protected folder.</value></data>
+  <data name="Validation_AccountNotAdministrator" xml:space="preserve"><value>The account is not an administrator of this computer. Enter an account in the Administrators group.</value></data>
+  <data name="Validation_AccountNotUser" xml:space="preserve"><value>Enter a full user account in the form COMPUTER\user or DOMAIN\user, not a group.</value></data>
+  <data name="Validation_IdAlreadyInUse" xml:space="preserve"><value>That identifier is already in use. Try again.</value></data>
+  <data name="Validation_DestinationNotAllowed" xml:space="preserve"><value>That destination is not allowed: it cannot be this computer, an administrative share (C$, ADMIN$, IPC$) or a \\?\ or \\.\ path. Choose a share on your NAS.</value></data>
+  <data name="Validation_LimitExceeded" xml:space="preserve"><value>The text or list exceeds the allowed limit. Shorten it or remove items.</value></data>
+  <data name="Validation_SnapshotPathInvalid" xml:space="preserve"><value>The backup path is not in a valid format.</value></data>
+  <data name="Validation_SourceNotAllowed" xml:space="preserve"><value>Backbone cannot back up this folder: it is Backbone's own data folder (or is inside it). Choose another folder.</value></data>
+  <data name="Validation_SourceContainsDataFolder" xml:space="preserve"><value>This folder contains Backbone's data folder, which is never backed up: it is always excluded.</value></data>
+  <data name="Validation_SourceUnreadable" xml:space="preserve"><value>Backbone cannot read this folder (access denied, disk error, or it is cloud-only). Check the permissions or choose another one.</value></data>
+  <data name="Validation_SourcePathInvalid" xml:space="preserve"><value>The folder path is not valid: it must be a full path with a drive letter (for example C:\Users\Ana\Documents), without ".", ".." or names ending in a period or a space.</value></data>
   <data name="Validation_ProtectedFoldersUnavailable" xml:space="preserve"><value>Backbone could not check its data folder in %ProgramData%, so no source is backed up, for safety. Try again and, if it happens again, check the service log.</value></data>
+  <data name="Error_ValidationFailed" xml:space="preserve"><value>Some values are not valid. Check the marked fields.</value></data>
+  <data name="Error_JobNotFound" xml:space="preserve"><value>The job no longer exists. Refresh the job list.</value></data>
+  <data name="Error_JobAlreadyRunning" xml:space="preserve"><value>The job is already running or queued. Wait for it to finish or cancel it.</value></data>
+  <data name="Error_NasUnreachable" xml:space="preserve"><value>The NAS cannot be found on the network. Check that it is on, that you are on the same network and that the name is correct.</value></data>
+  <data name="Error_CredentialsRejected" xml:space="preserve"><value>The NAS rejected the user name or password. Check them and try again.</value></data>
+  <data name="Error_ShareNotFound" xml:space="preserve"><value>The shared folder does not exist on the NAS. Check its name in the NAS panel.</value></data>
+  <data name="Error_AccessDenied" xml:space="preserve"><value>Access to the share was denied. Check that the user has write permission on the NAS.</value></data>
+  <data name="Error_RepositoryLocked" xml:space="preserve"><value>Another computer or process is using this destination. Try again in a few minutes.</value></data>
+  <data name="Error_RepositoryIncompatible" xml:space="preserve"><value>The destination holds backups from a newer version of Backbone. Update Backbone to write to it.</value></data>
+  <data name="Error_RepositoryCorrupt" xml:space="preserve"><value>The repository at the destination is damaged. Run a repository check and review the log.</value></data>
+  <data name="Error_SnapshotNotFound" xml:space="preserve"><value>That backup no longer exists. Refresh the backup list.</value></data>
+  <data name="Error_RestoreTargetNotWritable" xml:space="preserve"><value>The restore destination folder cannot be written to. Choose another folder.</value></data>
+  <data name="Error_Interrupted" xml:space="preserve"><value>The backup was interrupted because the computer went to sleep or shut down. It will be retried on the next run.</value></data>
+  <data name="Error_NotAuthorized" xml:space="preserve"><value>You are not allowed to perform this operation. Ask an administrator to authorize you in Settings.</value></data>
+  <data name="Error_NotSupported" xml:space="preserve"><value>This version of Backbone does not support this operation yet.</value></data>
+  <data name="Error_Internal" xml:space="preserve"><value>An unexpected error occurred. Try again and, if it happens again, check the service log.</value></data>
+  <data name="Error_CredentialRequired" xml:space="preserve"><value>The NAS user name and password are missing. Enter them and try again.</value></data>
+  <data name="Error_SnapshotTooLarge" xml:space="preserve"><value>This job has too many files and folders for a single backup (more than 5,000,000). Split it into several jobs, each with fewer folders.</value></data>
+  <data name="Error_NasBusy" xml:space="preserve"><value>The NAS is busy with another connection or there were too many rejections in a row. Wait a few minutes and try again.</value></data>
+  <data name="Error_ServiceUnavailable" xml:space="preserve"><value>There is no connection to the Backbone service. Wait for it to reconnect or start it from the tray.</value></data>
+  <data name="Nav_Home.Content" xml:space="preserve"><value>Home</value></data>
+  <data name="Nav_Jobs.Content" xml:space="preserve"><value>Jobs</value></data>
+  <data name="Home_Title.Text" xml:space="preserve"><value>Home</value></data>
+  <data name="Home_Empty.Text" xml:space="preserve"><value>There are no backup jobs yet. Create the first one to start protecting your folders.</value></data>
+  <data name="Home_CreateJob.Content" xml:space="preserve"><value>Create job</value></data>
+  <data name="Jobs_Title.Text" xml:space="preserve"><value>Jobs</value></data>
+  <data name="Jobs_New.Content" xml:space="preserve"><value>New job</value></data>
+  <data name="Jobs_New.AccessKey" xml:space="preserve"><value>N</value></data>
+  <data name="Jobs_Empty.Text" xml:space="preserve"><value>There are no jobs. Select "New job" to create one.</value></data>
+  <data name="Jobs_List.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>Job list</value></data>
+  <data name="Editor_Title.Text" xml:space="preserve"><value>Backup job</value></data>
+  <data name="Editor_Name.Header" xml:space="preserve"><value>Name</value></data>
+  <data name="Editor_Name.PlaceholderText" xml:space="preserve"><value>For example, Ana's documents</value></data>
+  <data name="Editor_SourcesHeader.Text" xml:space="preserve"><value>Folders to back up</value></data>
+  <data name="Editor_SourcesHint.Text" xml:space="preserve"><value>Each folder has an alias: the name it has inside the backups.</value></data>
+  <data name="Editor_RemoveSource.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>Remove folder</value></data>
+  <data name="Editor_RemoveSource.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>Remove folder</value></data>
+  <data name="Editor_Alias.Header" xml:space="preserve"><value>Alias</value></data>
+  <data name="Editor_AddFolder.AccessKey" xml:space="preserve"><value>A</value></data>
+  <data name="Editor_AddFolderText.Text" xml:space="preserve"><value>Add folder…</value></data>
+  <data name="Editor_DataFolderNote.Message" xml:space="preserve"><value>Backbone's data folder is always excluded from the backup and this cannot be changed.</value></data>
+  <data name="Editor_DestinationHeader.Text" xml:space="preserve"><value>Destination on the NAS</value></data>
+  <data name="Editor_Destination.Header" xml:space="preserve"><value>Destination</value></data>
+  <data name="Editor_Destination.PlaceholderText" xml:space="preserve"><value>\\nas\Backups</value></data>
+  <data name="Editor_UserName.Header" xml:space="preserve"><value>NAS user name</value></data>
+  <data name="Editor_Password.Header" xml:space="preserve"><value>NAS password</value></data>
+  <data name="Editor_TestConnection.Content" xml:space="preserve"><value>Test connection</value></data>
+  <data name="Editor_TestConnection.AccessKey" xml:space="preserve"><value>T</value></data>
+  <data name="Editor_Busy.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>Working</value></data>
+  <data name="Editor_Save.Content" xml:space="preserve"><value>Save</value></data>
+  <data name="Editor_Save.AccessKey" xml:space="preserve"><value>S</value></data>
+  <data name="Editor_Cancel.Content" xml:space="preserve"><value>Cancel</value></data>
+  <data name="Connection_Success" xml:space="preserve"><value>Connection successful.</value></data>
+  <data name="Connection_SpaceFormat" xml:space="preserve"><value>{0} free of {1}.</value></data>
+  <data name="Connection_SmbFormat" xml:space="preserve"><value>SMB {0}.</value></data>
+  <data name="Jobs_SummaryFormat" xml:space="preserve"><value>{0} folder(s) → {1}</value></data>
+  <data name="Home_Job_Running" xml:space="preserve"><value>Backing up now</value></data>
+  <data name="Home_Job_Queued" xml:space="preserve"><value>Queued</value></data>
+  <data name="Home_Job_LastSuccessFormat" xml:space="preserve"><value>Last successful backup: {0}</value></data>
+  <data name="Home_Job_NeverRun" xml:space="preserve"><value>No successful backup yet</value></data>
 </root>
