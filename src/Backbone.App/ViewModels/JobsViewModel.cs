@@ -8,7 +8,8 @@ namespace Backbone.App.ViewModels;
 /// <summary>Un trabajo de la lista de Trabajos.</summary>
 /// <param name="Job">Definición guardada en el servicio.</param>
 /// <param name="Summary">Resumen de una línea (carpetas y destino).</param>
-internal sealed record JobListItem(JobDefinition Job, string Summary)
+/// <param name="IsReadOnly">El destino tiene un formato más nuevo (RNF-14): se muestra el aviso de solo lectura.</param>
+internal sealed record JobListItem(JobDefinition Job, string Summary, bool IsReadOnly = false)
 {
     /// <summary>Nombre del trabajo.</summary>
     public string Name => Job.Name;
@@ -21,6 +22,7 @@ internal sealed partial class JobsViewModel : ObservableObject, IDisposable
     private readonly IFolderPicker _picker;
     private readonly Func<string, string> _getString;
     private readonly BackboneErrorTexts _errorTexts;
+    private readonly Dictionary<Guid, RepositoryState> _repositoryStates = [];
     private int _loadVersion;
 
     public JobsViewModel(IBackboneService service, IFolderPicker picker, Func<string, string> getString)
@@ -73,6 +75,7 @@ internal sealed partial class JobsViewModel : ObservableObject, IDisposable
         try
         {
             var jobs = await _service.GetJobsAsync(ct).ConfigureAwait(true);
+            await LoadRepositoryStatesAsync(ct).ConfigureAwait(true);
             if (version != _loadVersion)
             {
                 return;
@@ -81,7 +84,7 @@ internal sealed partial class JobsViewModel : ObservableObject, IDisposable
             Jobs.Clear();
             foreach (var job in jobs)
             {
-                Jobs.Add(new JobListItem(job, Summarize(job)));
+                Jobs.Add(new JobListItem(job, Summarize(job), IsReadOnly(job.Id)));
             }
 
             IsLoaded = true;
@@ -150,9 +153,43 @@ internal sealed partial class JobsViewModel : ObservableObject, IDisposable
     // El servicio emite StatusChanged al guardar o borrar un trabajo (también desde otra app): se vuelve a leer la lista.
     private async void OnStatusChanged(object? sender, StatusChangedEvent e)
     {
+        StoreStates(e.Status);
+        for (var i = 0; i < Jobs.Count; i++)
+        {
+            var readOnly = IsReadOnly(Jobs[i].Job.Id);
+            if (Jobs[i].IsReadOnly != readOnly)
+            {
+                Jobs[i] = Jobs[i] with { IsReadOnly = readOnly };
+            }
+        }
+
         if (!IsLoaded || Jobs.Count != e.Status.Jobs.Count || e.Status.Jobs.Any(s => !Jobs.Any(j => j.Job.Id == s.JobId && j.Job.Name == s.JobName)))
         {
             await LoadAsync().ConfigureAwait(true);
+        }
+    }
+
+    private bool IsReadOnly(Guid jobId) => _repositoryStates.TryGetValue(jobId, out var state) && state == RepositoryState.ReadOnlyNewerFormat;
+
+    private void StoreStates(ServiceStatus status)
+    {
+        _repositoryStates.Clear();
+        foreach (var job in status.Jobs)
+        {
+            _repositoryStates[job.JobId] = job.RepositoryState;
+        }
+    }
+
+    // El estado del repositorio llega en GetStatus; si falla, la lista se muestra sin aviso (no es un error de la lista).
+    private async Task LoadRepositoryStatesAsync(CancellationToken ct)
+    {
+        try
+        {
+            StoreStates(await _service.GetStatusAsync(ct).ConfigureAwait(true));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _repositoryStates.Clear();
         }
     }
 

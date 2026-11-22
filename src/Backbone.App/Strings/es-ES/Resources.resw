@@ -36,7 +36,7 @@
   <data name="Validation_DestinationNotUnc" xml:space="preserve"><value>El destino debe ser una ruta de red con el formato \\servidor\recurso.</value></data>
   <data name="Validation_DestinationInsideSource" xml:space="preserve"><value>El destino está dentro de una de las carpetas que se copian. Elige un destino fuera de ellas.</value></data>
   <data name="Validation_DestinationUsedByOtherJob" xml:space="preserve"><value>Otro trabajo ya usa este destino, o uno contenido en él o que lo contiene. Elige un destino distinto para cada trabajo.</value></data>
-  <data name="Validation_DestinationNotRepository" xml:space="preserve"><value>El destino contiene archivos que no son una copia de Backbone y no se escribirá nada en él. Elige una carpeta vacía o un repositorio de Backbone.</value></data>
+  <data name="Validation_DestinationNotRepository" xml:space="preserve"><value>La carpeta contiene archivos que no son una copia de Backbone. Elija otra carpeta o vacíela.</value></data>
   <data name="Validation_RepositoryNewerFormat" xml:space="preserve"><value>El destino tiene copias de una versión más nueva de Backbone: solo se podrán consultar y restaurar. Actualiza Backbone para añadir copias nuevas.</value></data>
   <data name="Validation_ExclusionPatternInvalid" xml:space="preserve"><value>Un patrón de exclusión no es válido. Corrígelo o quítalo.</value></data>
   <data name="Validation_ScheduleIncomplete" xml:space="preserve"><value>La programación diaria necesita al menos una hora y un día de la semana.</value></data>
@@ -114,4 +114,6 @@
   <data name="Home_Job_Queued" xml:space="preserve"><value>En cola</value></data>
   <data name="Home_Job_LastSuccessFormat" xml:space="preserve"><value>Última copia correcta: {0}</value></data>
   <data name="Home_Job_NeverRun" xml:space="preserve"><value>Aún sin copia correcta</value></data>
+  <data name="Repo_ReadOnly.Title" xml:space="preserve"><value>Destino de solo lectura</value></data>
+  <data name="Repo_ReadOnly.Message" xml:space="preserve"><value>Una versión más nueva de Backbone creó este destino. No se harán copias en él hasta que actualices Backbone.</value></data>
 </root>

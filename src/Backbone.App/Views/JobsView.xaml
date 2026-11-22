@@ -41,6 +41,8 @@
               <TextBlock Text="{x:Bind Name}" Style="{StaticResource BodyStrongTextBlockStyle}" />
               <TextBlock Text="{x:Bind Summary}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                          TextTrimming="CharacterEllipsis" />
+              <InfoBar Severity="Warning" IsClosable="False" IsOpen="True" Margin="0,8,0,0"
+                         x:Uid="Repo_ReadOnly" Visibility="{x:Bind IsReadOnly}" />
             </StackPanel>
           </DataTemplate>
         </ListView.ItemTemplate>

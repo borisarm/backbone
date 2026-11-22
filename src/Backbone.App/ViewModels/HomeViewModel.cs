@@ -10,7 +10,8 @@ namespace Backbone.App.ViewModels;
 /// <param name="JobId">Identificador.</param>
 /// <param name="Name">Nombre.</param>
 /// <param name="Summary">Estado en una línea.</param>
-internal sealed record JobCard(Guid JobId, string Name, string Summary);
+/// <param name="IsReadOnly">El destino tiene un formato más nuevo (RNF-14): se muestra el aviso de solo lectura.</param>
+internal sealed record JobCard(Guid JobId, string Name, string Summary, bool IsReadOnly = false);
 
 /// <summary>Página Inicio (§9.2): una tarjeta por trabajo y estado vacío si no hay ninguno (§9.3).</summary>
 internal sealed partial class HomeViewModel : ObservableObject, IDisposable
@@ -90,7 +91,7 @@ internal sealed partial class HomeViewModel : ObservableObject, IDisposable
         Cards.Clear();
         foreach (var job in status.Jobs)
         {
-            Cards.Add(new JobCard(job.JobId, job.JobName, Describe(job)));
+            Cards.Add(new JobCard(job.JobId, job.JobName, Describe(job), job.RepositoryState == RepositoryState.ReadOnlyNewerFormat));
         }
 
         IsLoaded = true;
