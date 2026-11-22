@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Runtime.InteropServices;
 using Backbone.Service.Os;
 using Microsoft.Win32.SafeHandles;
@@ -41,21 +42,29 @@ internal sealed class Win32SourceFileApi : ISourceFileApi
         }
 
         // Copia en vivo con letra (\??\X:\): la letra se vuelve a mirar en el mapa de dispositivos del proceso antes de abrir,
-        // como en la validación, para que una letra que ahora apunte a \Device\Mup no llegue a abrirse (abrirla podría provocar
-        // una autenticación de red con la cuenta del equipo). Las rutas \??\Volume{guid}\ y \Device\… nunca son de red.
-        if (ntRootPath.Length == 7 && ntRootPath[5] == ':')
+        // como en la validación (§8.2, §8.3 paso 1): lo que no sea DRIVE_FIXED (una letra que ahora apunte a \Device\Mup, un
+        // extraíble…) no llega a abrirse (abrir una de red podría provocar una autenticación con la cuenta del equipo). Las
+        // rutas \??\Volume{guid}\ y \Device\… nunca son de red.
+        if (ntRootPath.Length == 7 && ntRootPath[5] == ':' && RejectDriveType(N.GetDriveType(ntRootPath[4..])) is { } rejected)
         {
-            switch (N.GetDriveType(ntRootPath[4..]))
-            {
-                case N.DriveRemote:
-                    throw new SourceFileApiException(N.ErrorBadNetPath, "GetDriveType(remote)");
-                case N.DriveNoRootDir:
-                    throw new SourceFileApiException(N.ErrorPathNotFound, "GetDriveType(no root)");
-            }
+            throw rejected;
         }
 
         return Open(ntRootPath, null, SourceOpenMode.Directory);
     }
+
+    /// <summary>
+    /// Filtro previo de una raíz con letra (BAJA-N1): <see langword="null"/> si es <c>DRIVE_FIXED</c>; si no, la excepción que
+    /// se lanza sin abrir nada (<c>DRIVE_NO_ROOT_DIR</c>: no encontrada; red: <c>ERROR_BAD_NETPATH</c>; el resto:
+    /// <c>ERROR_NOT_SUPPORTED</c>).
+    /// </summary>
+    internal static SourceFileApiException? RejectDriveType(uint driveType) => driveType switch
+    {
+        N.DriveFixed => null,
+        N.DriveNoRootDir => new SourceFileApiException(N.ErrorPathNotFound, "GetDriveType(no root)"),
+        N.DriveRemote => new SourceFileApiException(N.ErrorBadNetPath, "GetDriveType(remote)"),
+        _ => new SourceFileApiException(N.ErrorNotSupported, string.Create(CultureInfo.InvariantCulture, $"GetDriveType({driveType}, not fixed)")),
+    };
 
     public ISourceHandle OpenChild(ISourceHandle parent, string name, SourceOpenMode mode, bool exactCase, CancellationToken timeoutSignal)
     {

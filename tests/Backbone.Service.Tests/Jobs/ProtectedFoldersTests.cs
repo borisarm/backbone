@@ -126,7 +126,7 @@ public sealed class ProtectedFoldersTests
 
         var result = set.Classify(@"C:\");
 
-        Assert.Equal(SourceProtectionKind.ProtectedFoldersUnknown, result.Kind);
+        Assert.Equal(SourceProtectionKind.ProtectedFoldersIncomplete, result.Kind);
         Assert.True(result.IsNotAllowed);
         Assert.Equal(ProgramData, result.ProtectedPath);
     }
@@ -182,7 +182,7 @@ public sealed class ProtectedFoldersTests
 
         Assert.False(set.IsComplete);
         Assert.Empty(set.QuarantinedFolderNames);
-        Assert.Equal(SourceProtectionKind.ProtectedFoldersUnknown, set.Classify(FakeLocalFileSystemInspector.FakeGuidPath(@"C:\")).Kind);
+        Assert.Equal(SourceProtectionKind.ProtectedFoldersIncomplete, set.Classify(FakeLocalFileSystemInspector.FakeGuidPath(@"C:\")).Kind);
         Assert.Contains(logs.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("100", StringComparison.Ordinal));
 
         // MEDIA-1: deja de abrir entradas en cuanto encuentra la 101.

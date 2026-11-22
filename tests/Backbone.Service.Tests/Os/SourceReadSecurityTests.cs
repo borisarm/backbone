@@ -155,6 +155,72 @@ public sealed class SourceReadSecurityTests
         SourceOpen.Validate(NativeMethods.GenericRead, R.FileOpen, SourceOpen.RequiredOptions, string.Empty, relative: true);
     }
 
+    /// <summary>
+    /// BAJA-N1 (§8.2, §8.3 paso 1): antes de abrir la raíz con letra, todo lo que no sea <c>DRIVE_FIXED</c> se rechaza;
+    /// <c>DRIVE_NO_ROOT_DIR</c> es "no encontrado".
+    /// </summary>
+    [Theory]
+    [InlineData(NativeMethods.DriveUnknown)]
+    [InlineData(NativeMethods.DriveNoRootDir)]
+    [InlineData(NativeMethods.DriveRemovable)]
+    [InlineData(NativeMethods.DriveFixed)]
+    [InlineData(NativeMethods.DriveRemote)]
+    [InlineData(5u)] // DRIVE_CDROM
+    [InlineData(6u)] // DRIVE_RAMDISK
+    [InlineData(99u)]
+    public void BAJAN1_Only_a_fixed_drive_letter_is_opened(uint driveType)
+    {
+        var live = Win32SourceFileApi.RejectDriveType(driveType);
+        var validation = WindowsLocalFileSystemInspector.ClassifyDriveType(driveType);
+
+        switch (driveType)
+        {
+            case NativeMethods.DriveFixed:
+                Assert.Null(live);
+                Assert.Null(validation);
+                break;
+            case NativeMethods.DriveNoRootDir:
+                Assert.Equal(NativeMethods.ErrorPathNotFound, live?.Error);
+                Assert.Equal(LocalFolderStatus.NotFound, validation);
+                break;
+            default:
+                Assert.NotNull(live);
+                Assert.NotEqual(NativeMethods.ErrorPathNotFound, live.Error);
+                Assert.Equal(LocalFolderStatus.NotLocal, validation);
+                break;
+        }
+    }
+
+    /// <summary>BAJA-N1: una letra que no existe no se abre: falla en el filtro previo, sin <c>NtCreateFile</c>.</summary>
+    [Fact]
+    public void BAJAN1_A_missing_drive_letter_fails_before_opening_the_root()
+    {
+        var free = Enumerable.Range('D', 'Z' - 'D' + 1).Select(c => (char)c)
+            .FirstOrDefault(c => NativeMethods.GetDriveType(c + @":\") == NativeMethods.DriveNoRootDir);
+        Assert.SkipWhen(free == default, "No queda ninguna letra libre en este equipo.");
+
+        var ex = Assert.Throws<SourceFileApiException>(() => new Win32SourceFileApi().OpenVolumeRoot(@"\??\" + free + @":\", Ct));
+
+        Assert.Equal(NativeMethods.ErrorPathNotFound, ex.Error);
+        Assert.Equal(0, ex.NtStatus); // no viene de NtCreateFile
+    }
+
+    /// <summary>INFO-1: si el token del proceso tiene <c>SeBackupPrivilege</c> activado se registra como aviso.</summary>
+    [Theory]
+    [InlineData(true, LogLevel.Warning)]
+    [InlineData(false, LogLevel.Information)]
+    [InlineData(null, LogLevel.Information)]
+    public void INFO1_The_backup_privilege_of_the_process_token_is_a_warning_when_enabled(bool? enabled, LogLevel expected)
+    {
+        var logs = new CapturingLoggerProvider();
+
+        SourceReadToken.ReportProcessBackupPrivilege(new LoggerFactory([logs]).CreateLogger("prueba"), enabled);
+
+        var entry = Assert.Single(logs.Entries);
+        Assert.Equal(expected, entry.Level);
+        Assert.Contains("SeBackupPrivilege", entry.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void The_open_function_refuses_before_calling_the_system()
     {

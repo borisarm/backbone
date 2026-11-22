@@ -52,8 +52,7 @@ internal sealed partial class SourceReadToken : IDisposable
             }
 
             using var process = new SafeAccessTokenHandle(processRaw);
-            var processHasBackup = IsBackupPrivilegeEnabled(process);
-            LogProcessBackupPrivilege(logger, processHasBackup);
+            ReportProcessBackupPrivilege(logger, IsBackupPrivilegeEnabled(process));
             if (!S.DuplicateTokenEx(process, S.TokenImpersonate | NativeMethods.TokenQuery | S.TokenAdjustPrivileges | NativeMethods.TokenDuplicate, 0, S.SecurityImpersonation, S.TokenTypeImpersonation, out var copyRaw))
             {
                 return Fail(logger, "DuplicateTokenEx", Marshal.GetLastPInvokeError());
@@ -206,6 +205,22 @@ internal sealed partial class SourceReadToken : IDisposable
         return privileges.Any(p => p.Luid.LowPart == backup.LowPart && p.Luid.HighPart == backup.HighPart && (p.Attributes & S.SePrivilegeEnabled) != 0);
     }
 
+    /// <summary>
+    /// INFO-1: registra si el token del proceso tiene <c>SeBackupPrivilege</c> activado; como aviso si lo tiene (no debería:
+    /// solo la copia de los hilos de lectura).
+    /// </summary>
+    internal static void ReportProcessBackupPrivilege(ILogger logger, bool? enabled)
+    {
+        if (enabled == true)
+        {
+            LogProcessBackupPrivilegeEnabled(logger);
+        }
+        else
+        {
+            LogProcessBackupPrivilege(logger, enabled);
+        }
+    }
+
     private static int Adjust(SafeHandle token, string name, uint attributes)
     {
         if (!LookupLuid(name, out var luid))
@@ -236,6 +251,9 @@ internal sealed partial class SourceReadToken : IDisposable
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Token del proceso del servicio: SeBackupPrivilege activado = {Enabled} (se espera False; solo lo activa la copia de los hilos de lectura de orígenes, ADR-21).")]
     private static partial void LogProcessBackupPrivilege(ILogger logger, bool? enabled);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "El token del proceso del servicio tiene SeBackupPrivilege activado: cualquier apertura con FILE_OPEN_FOR_BACKUP_INTENT fuera de los hilos de lectura de orígenes saltaría la DACL. Solo debería activarlo la copia de esos hilos (ADR-21).")]
+    private static partial void LogProcessBackupPrivilegeEnabled(ILogger logger);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "No se ha podido asignar el token de lectura de orígenes al hilo (SetThreadToken, error {Error}); el hilo lee sin el privilegio.")]
     private static partial void LogApplyFailed(ILogger logger, int error);

@@ -311,13 +311,12 @@ internal sealed partial class WindowsLocalFileSystemInspector(ILogger<WindowsLoc
         root = null;
         if (volume.Length == 2)
         {
-            // Unidad de red o inexistente: se descarta sin abrir nada (GetDriveType usa el mapa de dispositivos del proceso).
-            switch (guard.Run(_ => GetDriveType(volume + @"\")))
+            // Filtro previo que no abre nada (§8.3 paso 1; GetDriveType usa el mapa de dispositivos del proceso): lo que no sea
+            // DRIVE_FIXED (red, \Device\Mup, extraíble…) es NotLocal; una letra inexistente, NotFound.
+            var driveType = guard.Run(_ => GetDriveType(volume + @"\"));
+            if (ClassifyDriveType(driveType) is { } rejected)
             {
-                case DriveRemote:
-                    return Fail(LocalFolderStatus.NotLocal, "network drive");
-                case DriveNoRootDir:
-                    return Fail(LocalFolderStatus.NotFound, "the drive does not exist");
+                return Fail(rejected, string.Create(CultureInfo.InvariantCulture, $"drive type {driveType}"));
             }
         }
 
@@ -685,6 +684,17 @@ internal sealed partial class WindowsLocalFileSystemInspector(ILogger<WindowsLoc
         handle = opened.Take();
         return opened.Status;
     }
+
+    /// <summary>
+    /// BAJA-N1: <see langword="null"/> si la letra es <c>DRIVE_FIXED</c>; <see cref="LocalFolderStatus.NotFound"/> si no existe
+    /// (<c>DRIVE_NO_ROOT_DIR</c>); <see cref="LocalFolderStatus.NotLocal"/> en cualquier otro caso.
+    /// </summary>
+    internal static LocalFolderStatus? ClassifyDriveType(uint driveType) => driveType switch
+    {
+        DriveFixed => null,
+        DriveNoRootDir => LocalFolderStatus.NotFound,
+        _ => LocalFolderStatus.NotLocal,
+    };
 
     private static bool IsExactVolumeRoot(string guidPath) =>
         guidPath.Length == 4 + 44 + 1

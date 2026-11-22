@@ -21,11 +21,18 @@ internal enum SourceProtectionKind
     ContainsProtectedFolders = 2,
 
     /// <summary>
+    /// No se sabe en qué volumen están las carpetas protegidas o el origen: falta la ruta <c>VOLUME_NAME_GUID</c> de
+    /// <c>%ProgramData%</c> o la del origen ha venido vacía (§8.3 "<c>PD</c> desconocida"). Falla cerrado con
+    /// <c>ProtectedFoldersUnavailable</c> en la validación y <c>ValidationFailed</c> en la ejecución (R16).
+    /// </summary>
+    ProtectedFoldersUnknown = 3,
+
+    /// <summary>
     /// El origen contiene <c>%ProgramData%</c> pero la lista de carpetas apartadas no se ha podido completar (más de
     /// <see cref="ProtectedFolderResolver.MaxQuarantinedFolders"/>, o <c>%ProgramData%</c> no se ha podido enumerar): falla
     /// cerrado con <c>SourceNotAllowed</c> en la validación y <c>ValidationFailed</c> en la ejecución (M-B).
     /// </summary>
-    ProtectedFoldersUnknown = 3,
+    ProtectedFoldersIncomplete = 4,
 }
 
 /// <summary>Resultado de <see cref="ProtectedFolderSet.Classify"/>.</summary>
@@ -43,8 +50,11 @@ internal sealed record SourceProtection(SourceProtectionKind Kind, string Protec
 {
     public static SourceProtection None { get; } = new(SourceProtectionKind.None, string.Empty, []);
 
-    /// <summary>El origen no se puede copiar (error <c>SourceNotAllowed</c>).</summary>
-    public bool IsNotAllowed => Kind is SourceProtectionKind.InsideProtectedFolder or SourceProtectionKind.ProtectedFoldersUnknown;
+    /// <summary>
+    /// El origen no se puede copiar: error <c>SourceNotAllowed</c> o, con <see cref="SourceProtectionKind.ProtectedFoldersUnknown"/>,
+    /// <c>ProtectedFoldersUnavailable</c>.
+    /// </summary>
+    public bool IsNotAllowed => Kind is SourceProtectionKind.InsideProtectedFolder or SourceProtectionKind.ProtectedFoldersUnknown or SourceProtectionKind.ProtectedFoldersIncomplete;
 }
 
 /// <summary>
@@ -130,7 +140,7 @@ internal sealed record ProtectedFolderSet(
 
         if (!IsComplete)
         {
-            return new SourceProtection(SourceProtectionKind.ProtectedFoldersUnknown, ProgramDataPath, []);
+            return new SourceProtection(SourceProtectionKind.ProtectedFoldersIncomplete, ProgramDataPath, []);
         }
 
         var relativeProgramData = string.Join('\\', programData[source.Length..]);
