@@ -29,9 +29,14 @@ namespace Backbone.Core.Engine;
 /// </description></item>
 /// <item><description>
 /// Sobre <b>ese mismo handle</b>, antes de leer nada, comprueban (<c>GetFileInformationByHandleEx</c>,
-/// <c>FileAttributeTagInfo</c>) que no es un punto de reanálisis y que es carpeta o archivo según lo pedido. Si es un
-/// punto de reanálisis lanzan <see cref="SourceAccessException"/> con <see cref="RunIssueCode.ReparsePointSkipped"/> y no
-/// lo siguen; el motor omite el elemento con ese aviso (RF-06).
+/// <c>FileAttributeTagInfo</c>) los atributos y la etiqueta de reanálisis, y que es carpeta o archivo según lo pedido, y
+/// repiten la clasificación de ADR-19 (<see cref="SourceAttributes.Classify(FileAttributes, uint)"/>, §8.2 "Clasificación
+/// por etiqueta"), porque el elemento puede haber cambiado desde que se enumeró: un <b>enlace</b> lanza
+/// <see cref="SourceAccessException"/> con <see cref="RunIssueCode.ReparsePointSkipped"/> y no se sigue (RF-06); <b>solo
+/// en la nube</b> (también por el estado <c>PARTIAL</c> del marcador, que la enumeración no muestra),
+/// <see cref="RunIssueCode.CloudOnlySkipped"/>; <b>no legible</b> (etiqueta fuera de la lista blanca),
+/// <see cref="RunIssueCode.ReadError"/> con la etiqueta en hexadecimal. Lo de la lista blanca se lee por su contenido
+/// (§8.2 "Apertura para leer el contenido").
 /// </description></item>
 /// <item><description>
 /// La enumeración se hace <b>desde ese handle</b> (<c>FileIdBothDirectoryInfo</c> o <c>FileFullDirectoryInfo</c>), sin
@@ -39,8 +44,10 @@ namespace Backbone.Core.Engine;
 /// <see cref="GetFileInfoAsync"/>, del suyo.
 /// </description></item>
 /// <item><description>
-/// Los elementos que la enumeración devuelve como punto de reanálisis llevan <see cref="FileAttributes.ReparsePoint"/> en
-/// <see cref="SourceEntry.Attributes"/>; el motor no los abre ni los enumera.
+/// Cada elemento enumerado lleva en <see cref="SourceEntry.Attributes"/> sus atributos tal como los da el sistema y en
+/// <see cref="SourceEntry.ReparseTag"/> su etiqueta (de <c>EaSize</c> de <c>FILE_ID_BOTH_DIR_INFO</c> cuando hay
+/// <c>FILE_ATTRIBUTE_REPARSE_POINT</c>; 0 si no). El motor clasifica cada uno con esos dos valores antes de abrirlo y no
+/// abre ni enumera los enlaces, los que están solo en la nube ni los no legibles.
 /// </description></item>
 /// <item><description>
 /// <b>Ruta final sobre el mismo handle</b> (ADR-18, revisión de seguridad final de HU-13, M-A).
@@ -69,6 +76,19 @@ namespace Backbone.Core.Engine;
 /// (<see cref="SourceEntry.FullPath"/>: raíz, <c>\</c> y nombre enumerado), así que esto no rechaza nada legítimo.
 /// </description></item>
 /// </list>
+/// <para>
+/// <b>Archivos y carpetas solo en la nube</b> (R4, RF-06, HU-08): el motor no abre ni enumera lo que la clasificación da
+/// por solo en la nube (<see cref="SourceEntryKind.CloudOnly"/>) y conserva su versión del snapshot padre (en una carpeta,
+/// todo lo que tenía debajo). Si, al abrir un archivo, al leer sus metadatos o al enumerar una carpeta, la implementación ve
+/// sobre el handle que ha pasado a estar solo en la nube, lanza <see cref="SourceAccessException"/> con
+/// <see cref="RunIssueCode.CloudOnlySkipped"/> sin leer nada, y el motor lo omite igual, conservando lo del padre.
+/// </para>
+/// <para>
+/// <b>Plazo</b> (§8.2 "Plazo de las lecturas de los orígenes"): si una apertura, una enumeración, una consulta de metadatos
+/// o la lectura de un bloque supera su plazo, la implementación lanza <see cref="SourceAccessException"/> con
+/// <see cref="RunIssueCode.ReadError"/>; el motor omite el elemento y conserva su versión del padre (RF-25), también si
+/// ocurre al volver a leer los metadatos después de copiarlo.
+/// </para>
 /// <para>
 /// Si lo que falla es la <b>raíz</b> de un origen (cualquier error, también <see cref="RunIssueCode.ReparsePointSkipped"/>),
 /// el motor emite <see cref="RunIssueCode.SourceRootUnreadable"/> y conserva todo el origen del snapshot padre (§8.4, R11).
@@ -124,9 +144,10 @@ public interface ISourceFileSystem
     /// </summary>
     /// <remarks>
     /// Abre por handle sin seguir puntos de reanálisis, hace sobre ese handle las mismas comprobaciones (punto de
-    /// reanálisis, ruta final) y lee sus metadatos (ver el contrato de la interfaz). Para el motor,
-    /// <see cref="RunIssueCode.ReparsePointSkipped"/> hace que el archivo se omita y cualquier otro error, que cambió
-    /// durante la copia.
+    /// reanálisis, ruta final) y lee sus metadatos, con la etiqueta en <see cref="SourceEntry.ReparseTag"/> (ver el
+    /// contrato de la interfaz). Para el motor, <see cref="RunIssueCode.ReparsePointSkipped"/> hace que el archivo se omita
+    /// sin conservar nada; <see cref="RunIssueCode.CloudOnlySkipped"/> y <see cref="RunIssueCode.ReadError"/> (p. ej. plazo
+    /// vencido), que se omita conservando su versión anterior; cualquier otro error, que cambió durante la copia.
     /// </remarks>
     /// <exception cref="SourceAccessException">
     /// Con <see cref="RunIssueCode.ReparsePointSkipped"/> si el archivo ha pasado a ser un punto de reanálisis, o si su ruta
@@ -144,14 +165,33 @@ public interface ISourceFileSystem
 /// <param name="IsDirectory">Si es una carpeta.</param>
 /// <param name="Length">Tamaño en bytes; 0 en carpetas.</param>
 /// <param name="LastWriteTimeUtc">Última modificación (UTC).</param>
-/// <param name="Attributes">Atributos del archivo; <see cref="FileAttributes.ReparsePoint"/> si es un punto de reanálisis.</param>
+/// <param name="Attributes">
+/// Atributos del archivo tal como los da el sistema; <see cref="FileAttributes.ReparsePoint"/> si es un punto de reanálisis
+/// (con su etiqueta en <see cref="ReparseTag"/>).
+/// </param>
 public sealed record SourceEntry(
     string Name,
     string FullPath,
     bool IsDirectory,
     long Length,
     DateTime LastWriteTimeUtc,
-    FileAttributes Attributes);
+    FileAttributes Attributes)
+{
+    /// <summary>
+    /// Etiqueta de reanálisis (<c>IO_REPARSE_TAG_*</c>) si <see cref="Attributes"/> tiene
+    /// <see cref="FileAttributes.ReparsePoint"/>; 0 si no (sin punto de reanálisis), y entonces el motor la ignora.
+    /// </summary>
+    /// <remarks>
+    /// Con la clasificación de ADR-19 (<see cref="SourceAttributes.Classify(SourceEntry)"/>, §8.2 "Clasificación por
+    /// etiqueta") el motor decide, antes de abrir nada, si el elemento es un enlace, está solo en la nube, no es legible o se
+    /// lee por su contenido. En la enumeración de Windows sale de <c>EaSize</c> de <c>FILE_ID_BOTH_DIR_INFO</c> cuando hay
+    /// <c>FILE_ATTRIBUTE_REPARSE_POINT</c>, y en <see cref="ISourceFileSystem.GetFileInfoAsync"/> de
+    /// <c>FileAttributeTagInfo</c>. Un punto de reanálisis con etiqueta 0 (implementación que no la rellena) se trata como
+    /// no legible, nunca como normal. Se declara aquí y no como parámetro posicional para que el valor por defecto no
+    /// obligue a cambiar quien construye el tipo.
+    /// </remarks>
+    public uint ReparseTag { get; init; }
+}
 
 /// <summary>
 /// Error de lectura de un elemento de origen con su motivo (<see cref="RunIssueCode"/>), para que el aviso de la ejecución

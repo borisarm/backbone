@@ -37,11 +37,17 @@ internal enum LocalFolderStatus
 /// Motivo técnico para el log (código de estado, destino de un enlace rechazado). Puede contener texto de un enlace plantado
 /// por un usuario: se registra con <c>UntrustedText.Describe</c> y nunca va al cliente.
 /// </param>
+/// <param name="GuidPath">
+/// Ruta final en la forma <c>VOLUME_NAME_GUID</c> (<c>\\?\Volume{guid}\…</c>) sobre el mismo handle: la que se compara con
+/// las carpetas protegidas, por la identidad del volumen y no por la letra (§8.3 punto 2, I-5). Vacía si
+/// <paramref name="Status"/> no es <see cref="LocalFolderStatus.Ok"/>.
+/// </param>
 internal sealed record LocalFolderInfo(
     LocalFolderStatus Status,
     string FinalPath = "",
     string FileSystem = "",
-    string Detail = "");
+    string Detail = "",
+    string GuidPath = "");
 
 /// <summary>Carpetas reales encontradas por <see cref="ILocalFileSystemInspector.FindRealDirectories"/>.</summary>
 /// <param name="Names">Nombres tal como están en disco; como mucho el máximo pedido.</param>

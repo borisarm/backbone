@@ -276,7 +276,14 @@ internal sealed partial class JobValidator(
 
         // §8.3, capa 1: comparando rutas finales; la lista se calcula una vez por validación.
         protectedSet ??= protectedFolders.Resolve(guard);
-        var protection = protectedSet.Classify(folder.FinalPath);
+        // I-5: por la identidad del volumen (VOLUME_NAME_GUID), nunca comparando una letra con un GUID.
+        var protection = protectedSet.Classify(folder.GuidPath);
+        if (protection.Kind == SourceProtectionKind.ProtectedFoldersUnknown)
+        {
+            // R16 (contrato 1.4): no se sabe en qué volumen están las carpetas protegidas; código propio y Value nulo.
+            return new SourceCheck(Issue(field, ValidationIssueCode.ProtectedFoldersUnavailable), null, folder.FinalPath);
+        }
+
         if (protection.IsNotAllowed)
         {
             return new SourceCheck(Issue(field, ValidationIssueCode.SourceNotAllowed, protection.ProtectedPath), null, folder.FinalPath);

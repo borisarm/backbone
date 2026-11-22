@@ -121,6 +121,7 @@ internal static partial class NativeMethods
     internal const int ErrorAccessDenied = 5;
     internal const int ErrorSharingViolation = 32;
     internal const int ErrorNotSupported = 50;
+    internal const int ErrorBadNetPath = 53;
     internal const int ErrorInvalidParameter = 87;
     internal const int ErrorAlreadyExists = 183;
 
@@ -654,5 +655,215 @@ internal static partial class NativeMethods
 
         [LibraryImport("kernel32.dll")]
         internal static partial nint GetCurrentProcess();
+    }
+
+    /// <summary>
+    /// Lectura de los orígenes (<c>SourceFileSystem</c>, HU-08, §8.2) y token de lectura (ADR-21). Solo lo que no está ya en
+    /// <see cref="NativeMethods"/> ni en <see cref="Resolution"/> (<c>NtCreateFile</c>, <c>CancelSynchronousIo</c>,
+    /// <c>OpenThread</c>, <c>CfGetPlaceholderStateFromAttributeTag</c>… se usan de allí). Firmas y valores comprobados en
+    /// Microsoft Learn (winternl.h, ntifs.h, winbase.h, ioapiset.h, winioctl.h, securitybaseapi.h, processthreadsapi.h, winnt.h).
+    /// </summary>
+    internal static partial class SourceIo
+    {
+        // ---- Códigos de error Win32 ----
+        internal const int ErrorInvalidHandle = 6;
+        internal const int ErrorLockViolation = 33;
+        internal const int ErrorInvalidName = 123;
+        internal const int ErrorBadPathName = 161;
+        internal const int ErrorFilenameExcedRange = 206;
+        internal const int ErrorMoreData = 234;
+        internal const int ErrorDirectory = 267;
+        internal const int ErrorIoPending = 997;
+        internal const int ErrorNotAllAssigned = 1300;
+
+        /// <summary>
+        /// <c>ERROR_CANT_ACCESS_FILE</c>: el filtro propietario de la etiqueta no está en la pila
+        /// (<c>STATUS_IO_REPARSE_TAG_NOT_HANDLED</c>), §8.2 "Apertura para leer el contenido", punto 3.
+        /// </summary>
+        internal const int ErrorCantAccessFile = 1920;
+
+        // ---- NtCreateFile: CreateOptions que añade la lectura de orígenes (ntifs.h) ----
+        internal const uint FileDirectoryFile = 0x0000_0001;
+        internal const uint FileNonDirectoryFile = 0x0000_0040;
+
+        /// <summary><c>FILE_SEQUENTIAL_ONLY</c>: el equivalente de <c>FILE_FLAG_SEQUENTIAL_SCAN</c>.</summary>
+        internal const uint FileSequentialOnly = 0x0000_0004;
+
+        /// <summary><c>FILE_COMPLETE_IF_OPLOCKED</c>: no espera la ruptura de un oplock (§8.2 "Oplocks").</summary>
+        internal const uint FileCompleteIfOplocked = 0x0000_0100;
+
+        /// <summary><c>FILE_DELETE_ON_CLOSE</c>: prohibido en las aperturas de lectura (ADR-21).</summary>
+        internal const uint FileDeleteOnClose = 0x0000_1000;
+
+        /// <summary><c>FILE_OPEN_BY_FILE_ID</c>: prohibido en las aperturas de lectura (ADR-21).</summary>
+        internal const uint FileOpenByFileId = 0x0000_2000;
+
+        // ---- NTSTATUS ----
+        /// <summary><c>STATUS_OPLOCK_BREAK_IN_PROGRESS</c>: un éxito (<c>NT_SUCCESS</c>) con <c>FILE_COMPLETE_IF_OPLOCKED</c>.</summary>
+        internal const int StatusOplockBreakInProgress = 0x0000_0108;
+        internal const int StatusAccessDenied = unchecked((int)0xC000_0022);
+        internal const int StatusSharingViolation = unchecked((int)0xC000_0043);
+        internal const int StatusFileIsADirectory = unchecked((int)0xC000_00BA);
+        internal const int StatusIoReparseTagNotHandled = unchecked((int)0xC000_0279);
+
+        // ---- FILE_INFO_BY_HANDLE_CLASS ----
+        internal const int FileBasicInfo = 0;
+        internal const int FileIdBothDirectoryInfo = 10;
+        internal const int FileIdBothDirectoryRestartInfo = 11;
+        internal const int FileIdInfo = 18;
+
+        /// <summary><c>FILE_NAME_NORMALIZED</c> | <c>VOLUME_NAME_NT</c>: <c>\Device\HarddiskVolumeN\…</c> (también en VSS).</summary>
+        internal const uint FileNameNormalizedVolumeNameNt = 0x2;
+
+        /// <summary><c>FSCTL_QUERY_ALLOCATED_RANGES</c> = CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 51, METHOD_NEITHER, FILE_READ_DATA).</summary>
+        internal const uint FsctlQueryAllocatedRanges = 0x0009_40CF;
+
+        /// <summary><c>PHCM_EXPOSE_PLACEHOLDERS</c>.</summary>
+        internal const sbyte PhcmExposePlaceholders = 2;
+
+        // ---- SECURITY_QUALITY_OF_SERVICE ----
+        /// <summary><c>SecurityIdentification</c> de <c>SECURITY_IMPERSONATION_LEVEL</c>.</summary>
+        internal const int SecurityIdentification = 1;
+
+        /// <summary><c>SecurityImpersonation</c> de <c>SECURITY_IMPERSONATION_LEVEL</c>.</summary>
+        internal const int SecurityImpersonation = 2;
+
+        /// <summary><c>SECURITY_STATIC_TRACKING</c>.</summary>
+        internal const byte SecurityStaticTracking = 0;
+
+        // ---- Tokens ----
+        internal const uint TokenAssignPrimary = 0x0001;
+        internal const uint TokenImpersonate = 0x0004;
+        internal const uint TokenAdjustPrivileges = 0x0020;
+
+        /// <summary><c>TokenImpersonation</c> de <c>TOKEN_TYPE</c>.</summary>
+        internal const int TokenTypeImpersonation = 2;
+
+        /// <summary><c>TokenPrivileges</c> de <c>TOKEN_INFORMATION_CLASS</c>.</summary>
+        internal const int TokenPrivilegesClass = 3;
+
+        internal const uint SePrivilegeEnabled = 0x0000_0002;
+        internal const uint SePrivilegeRemoved = 0x0000_0004;
+
+        /// <summary><c>SECURITY_QUALITY_OF_SERVICE</c>: <c>DWORD Length; SECURITY_IMPERSONATION_LEVEL; BOOLEAN; BOOLEAN</c>.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct SecurityQualityOfService
+        {
+            public uint Length;
+            public int ImpersonationLevel;
+            public byte ContextTrackingMode;
+            public byte EffectiveOnly;
+        }
+
+        /// <summary><c>FILE_BASIC_INFO</c> (cuatro <c>LARGE_INTEGER</c> y un <c>DWORD</c>; 40 bytes con relleno).</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct FileBasicInformation
+        {
+            public long CreationTime;
+            public long LastAccessTime;
+            public long LastWriteTime;
+            public long ChangeTime;
+            public uint FileAttributes;
+        }
+
+        /// <summary><c>FILE_ID_INFO</c>: número de serie del volumen e identificador de 128 bits (<c>FILE_ID_128</c>).</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct FileIdInformation
+        {
+            public ulong VolumeSerialNumber;
+            public ulong FileIdLow;
+            public ulong FileIdHigh;
+        }
+
+        /// <summary><c>FILE_ALLOCATED_RANGE_BUFFER</c>.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct FileAllocatedRangeBuffer
+        {
+            public long FileOffset;
+            public long Length;
+        }
+
+        /// <summary><c>TOKEN_PRIVILEGES</c> con un solo <c>LUID_AND_ATTRIBUTES</c>.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct TokenPrivilege
+        {
+            public uint PrivilegeCount;
+            public Luid Luid;
+            public uint Attributes;
+        }
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool GetFileInformationByHandleEx(SafeHandle file, int fileInformationClass, out FileBasicInformation fileInformation, uint bufferSize);
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool GetFileInformationByHandleEx(SafeHandle file, int fileInformationClass, out FileIdInformation fileInformation, uint bufferSize);
+
+        /// <summary>
+        /// <c>DeviceIoControl</c> con <c>OVERLAPPED</c>: obligatorio si el handle es de E/S asíncrona (sin
+        /// <c>FILE_SYNCHRONOUS_IO_*</c>). Distinta de <see cref="Resolution.DeviceIoControl"/>, que es síncrona.
+        /// </summary>
+        [LibraryImport("kernel32.dll", EntryPoint = "DeviceIoControl", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static unsafe partial bool DeviceIoControlOverlapped(
+            SafeHandle device,
+            uint ioControlCode,
+            void* inBuffer,
+            uint inBufferSize,
+            void* outBuffer,
+            uint outBufferSize,
+            uint* bytesReturned,
+            NativeOverlapped* overlapped);
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static unsafe partial bool GetOverlappedResult(SafeHandle file, NativeOverlapped* overlapped, out uint bytesTransferred, [MarshalAs(UnmanagedType.Bool)] bool wait);
+
+        /// <summary><c>CancelIoEx</c> con <c>lpOverlapped</c> = NULL: cancela toda la E/S pendiente del handle, de cualquier hilo.</summary>
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool CancelIoEx(SafeHandle file, nint overlapped);
+
+        /// <summary>
+        /// <c>RtlSetProcessPlaceholderCompatibilityMode</c> (Windows 10 1803+): devuelve el modo anterior (<c>PHCM_*</c>) o un
+        /// valor negativo si falla (<c>PHCM_ERROR_INVALID_PARAMETER</c> = -1, <c>PHCM_ERROR_NO_TEB</c> = -2).
+        /// </summary>
+        [LibraryImport("ntdll.dll")]
+        internal static partial sbyte RtlSetProcessPlaceholderCompatibilityMode(sbyte mode);
+
+        [LibraryImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool OpenProcessToken(nint processHandle, uint desiredAccess, out nint tokenHandle);
+
+        /// <summary><c>DuplicateTokenEx</c>: <c>lpTokenAttributes</c> siempre NULL.</summary>
+        [LibraryImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool DuplicateTokenEx(SafeHandle existingToken, uint desiredAccess, nint tokenAttributes, int impersonationLevel, int tokenType, out nint newToken);
+
+        [LibraryImport("advapi32.dll", EntryPoint = "LookupPrivilegeValueW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool LookupPrivilegeValue(string? systemName, string name, out Luid luid);
+
+        /// <summary>
+        /// <c>AdjustTokenPrivileges</c>: devuelve <see langword="true"/> también si no ha podido asignar todo; entonces
+        /// <c>GetLastError</c> es <see cref="ErrorNotAllAssigned"/>.
+        /// </summary>
+        [LibraryImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool AdjustTokenPrivileges(SafeHandle token, [MarshalAs(UnmanagedType.Bool)] bool disableAllPrivileges, in TokenPrivilege newState, uint bufferLength, nint previousState, nint returnLength);
+
+        [LibraryImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool GetTokenInformation(SafeHandle token, int tokenInformationClass, [Out] byte[]? tokenInformation, uint tokenInformationLength, out uint returnLength);
+
+        /// <summary><c>SetThreadToken</c> con <c>Thread</c> = NULL: el hilo actual.</summary>
+        [LibraryImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool SetThreadToken(nint thread, SafeHandle token);
+
+        [LibraryImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool RevertToSelf();
     }
 }

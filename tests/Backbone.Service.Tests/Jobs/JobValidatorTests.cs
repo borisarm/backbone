@@ -189,6 +189,38 @@ public sealed class JobValidatorTests
         Assert.Equal(protectedPath, error.Value);
     }
 
+    /// <summary>
+    /// R16 (contrato 1.4) y BAJA-2: sin ruta GUID del origen no se sabe si contiene PD; falla cerrado con
+    /// <c>ProtectedFoldersUnavailable</c> y <c>Value</c> nulo.
+    /// </summary>
+    [Fact]
+    [Trait("Story", "HU-08")]
+    public async Task A_source_whose_volume_path_is_unknown_is_ProtectedFoldersUnavailable()
+    {
+        _fileSystem.AddFolder(@"D:\Datos", guidPath: string.Empty);
+
+        var error = await AssertSingleErrorAsync(ValidJob(new JobSource { Alias = "Datos", Path = @"D:\Datos" }), "Sources[0].Path", ValidationIssueCode.ProtectedFoldersUnavailable);
+        Assert.Null(error.Value);
+    }
+
+    /// <summary>R16: sin la ruta GUID de PD, todos los orígenes fallan cerrados con <c>ProtectedFoldersUnavailable</c>.</summary>
+    [Fact]
+    [Trait("Story", "HU-08")]
+    public async Task Without_the_volume_path_of_ProgramData_every_source_is_ProtectedFoldersUnavailable()
+    {
+        _fileSystem.AddFolder(@"C:\ProgramData", guidPath: string.Empty);
+        _fileSystem.AddFolder(@"D:\Fotos");
+
+        var result = await Validator.CheckAsync(
+            ValidJob(new JobSource { Alias = "Documentos", Path = Documents }, new JobSource { Alias = "Fotos", Path = @"D:\Fotos" }),
+            []);
+
+        Assert.False(result.IsValid);
+        Assert.Equal(
+            [("Sources[0].Path", ValidationIssueCode.ProtectedFoldersUnavailable, (string?)null), ("Sources[1].Path", ValidationIssueCode.ProtectedFoldersUnavailable, null)],
+            result.Errors.Select(e => (e.Field, e.Code, e.Value)));
+    }
+
     [Fact]
     public async Task A_junction_to_the_data_folder_is_SourceNotAllowed_comparing_final_paths()
     {

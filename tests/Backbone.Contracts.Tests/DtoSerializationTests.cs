@@ -163,6 +163,38 @@ public sealed class DtoSerializationTests
     }
 
     [Fact]
+    public void Protected_folders_unavailable_round_trips_with_its_stable_value_and_a_null_value()
+    {
+        // Contrato 1.4 (§8.3, PD desconocida): error en Sources[i].Path, sin Value.
+        var result = new ValidationResult { Errors = [new ValidationIssue { Field = "Sources[0].Path", Code = ValidationIssueCode.ProtectedFoldersUnavailable }] };
+
+        var json = JsonSerializer.Serialize(result, ContractTypes.FormatterOptions);
+        var copy = JsonSerializer.Deserialize<ValidationResult>(json, ContractTypes.FormatterOptions);
+
+        using var doc = JsonDocument.Parse(json);
+        var issue = doc.RootElement.GetProperty("Errors")[0];
+        Assert.Equal(30, issue.GetProperty("Code").GetInt32());
+        Assert.Null(ContractTypes.FindDifference(result, copy, nameof(ValidationResult)));
+        Assert.Null(copy?.Errors[0].Value);
+        Assert.False(copy?.IsValid);
+    }
+
+    [Fact]
+    public void A_validation_code_newer_than_this_contract_is_kept_as_an_undefined_value()
+    {
+        // Compatibilidad de versiones menores: así ve un cliente 1.3 el código 30, y este cliente uno futuro.
+        const string json = """{"Errors":[{"Field":"Sources[0].Path","Code":31}]}""";
+
+        var copy = JsonSerializer.Deserialize<ValidationResult>(json, ContractTypes.FormatterOptions);
+
+        Assert.NotNull(copy);
+        var code = Assert.Single(copy.Errors).Code;
+        Assert.Equal(31, (int)code);
+        Assert.False(Enum.IsDefined(code));
+        Assert.False(copy.IsValid);
+    }
+
+    [Fact]
     public void Dates_keep_UTC_and_100ns_precision()
     {
         var instant = new DateTimeOffset(2026, 1, 31, 10, 22, 1, TimeSpan.Zero).AddTicks(1_234_567);

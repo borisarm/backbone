@@ -14,10 +14,12 @@ namespace Backbone.Service.Tests.Ipc;
 public sealed class RejectionAndRevocationTests : IAsyncLifetime
 {
     private static readonly TimeSpan Wait = TimeSpan.FromSeconds(10);
-    private readonly BlockingProtector _protector = new();
     private readonly IpcTestHarness _server;
 
-    public RejectionAndRevocationTests() => _server = new IpcTestHarness(protector: _protector);
+    /// <summary>Retiene la llamada en curso (conexión al NAS que no responde) hasta que la prueba, o su limpieza, la libere.</summary>
+    private readonly TaskCompletionSource _inProgress = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public RejectionAndRevocationTests() => _server = new IpcTestHarness();
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -25,9 +27,8 @@ public sealed class RejectionAndRevocationTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        _protector.Release();
+        _inProgress.TrySetResult();
         await _server.DisposeAsync();
-        _protector.Dispose();
     }
 
     // ---- Revocación de una conexión ya autorizada (B-1 de la revisión) ----
@@ -35,12 +36,18 @@ public sealed class RejectionAndRevocationTests : IAsyncLifetime
     [Fact]
     public async Task Revocation_detected_in_a_call_closes_at_once_and_cancels_the_calls_in_progress()
     {
+        // La llamada en curso espera de forma asíncrona (el conector del NAS no responde): así la conexión sigue leyendo
+        // mensajes. Una llamada que se bloquease de forma síncrona antes de su primer await (como lo hacía esta prueba con DPAPI,
+        // con un tiempo máximo de 30 s) detiene el bucle de lectura de StreamJsonRpc y la llamada que detecta la revocación ni
+        // siquiera se procesa hasta que la otra termina: la prueba tardaba siempre 30 s y fallaba de forma intermitente en el
+        // límite de esos 30 s, cuando la respuesta de la llamada en curso llegaba antes que el cierre.
+        _server.ShareConnector.ConnectGate = _inProgress;
         var ana = await _server.ConnectAuthorizedAsync(TestSids.Identity(TestSids.Ana));
-        var save = ana.Proxy.SaveCredentialAsync(@"\\nas\copias", new CredentialInput { UserName = "u", Password = "p" }, Ct);
-        Assert.True(_protector.Entered.Wait(Wait, Ct), "La llamada en curso no ha llegado a cifrar.");
+        var test = ana.Proxy.TestConnectionAsync(@"\\nas\copias", new CredentialInput { UserName = "u", Password = "p" }, Ct);
+        await WaitUntilAsync(() => !_server.ShareConnector.Connections.IsEmpty, "La llamada en curso no ha llegado a conectar.");
 
         _server.Accounts.SetAdministrator(TestSids.Ana, false);
-        var revoking = await Record.ExceptionAsync(() => ana.Proxy.GetServiceInfoAsync(Ct));
+        var revoking = await Record.ExceptionAsync(() => ana.Proxy.GetServiceInfoAsync(Ct).WaitAsync(Wait, Ct));
 
         // La llamada que lo detecta no recibe nada útil (NotAuthorized si llega a salir, o la conexión cerrada) y la conexión
         // deja de estar autorizada en el acto, sin esperar a RejectionLinger (el reloj no avanza en toda la prueba).
@@ -48,11 +55,11 @@ public sealed class RejectionAndRevocationTests : IAsyncLifetime
         Assert.False(ana.RequiredServer.IsAuthorized);
 
         // La llamada en curso se queda sin respuesta: el cliente ve la conexión cerrada antes de que la operación termine.
-        var inProgress = await Record.ExceptionAsync(() => save.WaitAsync(Wait, Ct));
+        var inProgress = await Record.ExceptionAsync(() => test.WaitAsync(Wait, Ct));
         Assert.IsType<ConnectionLostException>(inProgress);
-        Assert.False(_protector.Released, "La llamada en curso no debía haber terminado aún.");
+        Assert.False(_inProgress.Task.IsCompleted, "La llamada en curso no debía haber terminado aún.");
 
-        _protector.Release();
+        _inProgress.TrySetResult();
         await ana.WaitClosedAsync();
         Assert.True(ana.Channel.IsDisposed);
         Assert.Equal(0, _server.Manager.Count);
@@ -233,31 +240,13 @@ public sealed class RejectionAndRevocationTests : IAsyncLifetime
         return tcs.Task;
     }
 
-    /// <summary>DPAPI real que, al cifrar, se queda esperando hasta <see cref="Release"/> (una llamada que queda en curso).</summary>
-    private sealed class BlockingProtector : IDataProtector, IDisposable
+    private static async Task WaitUntilAsync(Func<bool> condition, string message)
     {
-        private readonly DpapiMachineProtector _inner = new();
-        private readonly ManualResetEventSlim _gate = new(false);
-
-        public ManualResetEventSlim Entered { get; } = new(false);
-
-        public bool Released => _gate.IsSet;
-
-        public void Release() => _gate.Set();
-
-        public byte[] Protect(ReadOnlySpan<byte> plaintext, ReadOnlySpan<byte> entropy)
+        var deadline = DateTime.UtcNow + Wait;
+        while (!condition())
         {
-            Entered.Set();
-            _gate.Wait(TimeSpan.FromSeconds(30));
-            return _inner.Protect(plaintext, entropy);
-        }
-
-        public byte[] Unprotect(ReadOnlySpan<byte> ciphertext, ReadOnlySpan<byte> entropy) => _inner.Unprotect(ciphertext, entropy);
-
-        public void Dispose()
-        {
-            _gate.Dispose();
-            Entered.Dispose();
+            Assert.True(DateTime.UtcNow < deadline, message);
+            await Task.Delay(10, Ct);
         }
     }
 }

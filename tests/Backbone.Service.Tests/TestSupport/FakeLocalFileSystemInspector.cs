@@ -57,13 +57,35 @@ internal sealed class FakeLocalFileSystemInspector : ILocalFileSystemInspector, 
     /// <summary>Máximo de resoluciones simultáneas observadas.</summary>
     public int MaxConcurrent => Volatile.Read(ref _maxConcurrent);
 
-    /// <summary>Declara una carpeta NTFS en un disco fijo; <paramref name="finalPath"/> por defecto es la propia ruta.</summary>
-    public FakeLocalFileSystemInspector AddFolder(string path, string? finalPath = null, string fileSystem = "NTFS", FakeVolumeKind volume = FakeVolumeKind.Fixed)
+    /// <summary>
+    /// Declara una carpeta NTFS en un disco fijo; <paramref name="finalPath"/> por defecto es la propia ruta y
+    /// <paramref name="guidPath"/> (<c>VOLUME_NAME_GUID</c>), la de <see cref="FakeGuidPath"/>.
+    /// </summary>
+    public FakeLocalFileSystemInspector AddFolder(string path, string? finalPath = null, string fileSystem = "NTFS", FakeVolumeKind volume = FakeVolumeKind.Fixed, string? guidPath = null)
     {
+        var final = finalPath ?? path;
         _folders[path] = volume == FakeVolumeKind.Fixed
-            ? new LocalFolderInfo(LocalFolderStatus.Ok, finalPath ?? path, fileSystem)
+            ? new LocalFolderInfo(LocalFolderStatus.Ok, final, fileSystem, GuidPath: guidPath ?? FakeGuidPath(final))
             : new LocalFolderInfo(LocalFolderStatus.NotLocal, Detail: "fake: not a fixed disk");
         return this;
+    }
+
+    /// <summary>Ruta <c>VOLUME_NAME_GUID</c> simulada: cada letra es un volumen con un GUID fijo.</summary>
+    public static string FakeGuidPath(string dosPath)
+    {
+        // Como la resolución real, una carpeta resuelta siempre tiene ruta GUID (BAJA-2: vacía, el origen falla cerrado).
+        if (dosPath.StartsWith(@"\\?\", StringComparison.Ordinal) && dosPath.Length >= 6 && dosPath[5] == ':')
+        {
+            dosPath = dosPath[4..];
+        }
+
+        if (dosPath.Length < 2 || dosPath[1] != ':')
+        {
+            return dosPath;
+        }
+
+        var letter = char.ToUpperInvariant(dosPath[0]);
+        return $@"\\?\Volume{{00000000-0000-0000-0000-0000000000{(int)letter:X2}}}" + (dosPath.Length > 3 ? dosPath[2..] : @"\");
     }
 
     public FakeLocalFileSystemInspector AddStatus(string path, LocalFolderStatus status)
@@ -129,7 +151,7 @@ internal sealed class FakeLocalFileSystemInspector : ILocalFileSystemInspector, 
 
             if (_finalDirectories.TryGetValue(normalizedPath, out var final))
             {
-                return new LocalFolderInfo(LocalFolderStatus.Ok, final, "NTFS");
+                return new LocalFolderInfo(LocalFolderStatus.Ok, final, "NTFS", GuidPath: FakeGuidPath(final));
             }
 
             return new LocalFolderInfo(LocalFolderStatus.NotFound, Detail: "fake: not declared");

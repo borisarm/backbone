@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using Backbone.Contracts;
 using Backbone.Service.Nas;
 using Backbone.Service.Os;
@@ -73,7 +74,7 @@ public sealed class WindowsShareConnectorTests : IDisposable
         var result = await _tester.TestAsync(@"\\192.0.2.1\backups", new CredentialInput { UserName = "nadie", Password = "x" }, Ct);
 
         watch.Stop();
-        Assert.Equal(BackboneErrorCode.NasUnreachable, result.ErrorCode);
+        Assert.True(result.ErrorCode == BackboneErrorCode.NasUnreachable, Why(result, BackboneErrorCode.NasUnreachable));
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(15), $"Tardó {watch.Elapsed}.");
     }
 
@@ -84,7 +85,7 @@ public sealed class WindowsShareConnectorTests : IDisposable
         var result = await _tester.TestAsync(Share!, new CredentialInput { UserName = User!, Password = Password! }, Ct);
         await _tester.WhenCleanupsCompleteAsync();
 
-        Assert.True(result.Success, $"ErrorCode = {result.ErrorCode}");
+        Assert.True(result.Success, Why(result, null));
         Assert.True(result.FreeBytes > 0 && result.TotalBytes >= result.FreeBytes);
         Assert.Matches(@"^[23]\.\d+(\.\d+)?$", result.SmbDialect);
         await AssertNoProbeFilesAsync();
@@ -97,7 +98,7 @@ public sealed class WindowsShareConnectorTests : IDisposable
     {
         var result = await _tester.TestAsync(Share!, new CredentialInput { UserName = User!, Password = Password + "-mala" }, Ct);
 
-        Assert.Equal(BackboneErrorCode.CredentialsRejected, result.ErrorCode);
+        Assert.True(result.ErrorCode == BackboneErrorCode.CredentialsRejected, Why(result, BackboneErrorCode.CredentialsRejected));
     }
 
     /// <summary>Criterio 4: recurso inexistente.</summary>
@@ -109,7 +110,7 @@ public sealed class WindowsShareConnectorTests : IDisposable
 
         var result = await _tester.TestAsync(server + @"\no-existe-" + Guid.NewGuid().ToString("N")[..8], new CredentialInput { UserName = User!, Password = Password! }, Ct);
 
-        Assert.Equal(BackboneErrorCode.ShareNotFound, result.ErrorCode);
+        Assert.True(result.ErrorCode == BackboneErrorCode.ShareNotFound, Why(result, BackboneErrorCode.ShareNotFound));
     }
 
     /// <summary>Criterio 4: sin permiso de escritura.</summary>
@@ -120,12 +121,30 @@ public sealed class WindowsShareConnectorTests : IDisposable
 
         var result = await _tester.TestAsync(readOnly, new CredentialInput { UserName = User!, Password = Password! }, Ct);
 
-        Assert.Equal(BackboneErrorCode.AccessDenied, result.ErrorCode);
+        Assert.True(result.ErrorCode == BackboneErrorCode.AccessDenied, Why(result, BackboneErrorCode.AccessDenied));
         Assert.True(result.CanRead);
         Assert.False(result.CanWrite);
     }
 
     public static bool HasReadOnlyShare => HasShare && Environment.GetEnvironmentVariable("BACKBONE_IT_SMB_READONLY_SHARE") is not null;
+
+    /// <summary>
+    /// Mensaje de una aserción sobre un resultado: el código de negocio y los códigos nativos de Windows que dejó el log
+    /// ("error Win32 N", p. ej. 86 o 1326 frente a 1219). Solo números: ni la ruta ni la contraseña.
+    /// </summary>
+    private string Why(ConnectionTestResult result, BackboneErrorCode? expected)
+    {
+        var native = _logs.Entries
+            .Select(e => Regex.Match(e.Message, @"[Ww]in32 (?:error )?(\d+)"))
+            .Concat(_logs.Entries.Select(e => Regex.Match(e.Exception?.Message ?? string.Empty, @"[Ww]in32 error (\d+)")))
+            .Where(m => m.Success)
+            .Select(m => m.Groups[1].Value)
+            .Distinct()
+            .ToList();
+        var codes = native.Count == 0 ? "ninguno en el log" : string.Join(", ", native);
+        var wanted = expected is { } code ? $"se esperaba {code}, " : string.Empty;
+        return $"{wanted}ErrorCode = {result.ErrorCode?.ToString() ?? "(ninguno)"}; códigos nativos de Windows: {codes} (1219 = otra credencial contra el mismo servidor, 1326 = usuario o contraseña erróneos, 86 = contraseña errónea, 53/67 = no se encuentra).";
+    }
 
     private async Task AssertNoProbeFilesAsync()
     {

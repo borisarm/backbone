@@ -431,13 +431,41 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 4. Modificar `nube.bin` desde otro equipo o desde la web de OneDrive sin descargarlo en esta máquina, y copiar: no debe aparecer ninguna versión nueva. Comprobar sobre `objects\` que ningún objeto del tamaño de `nube.bin` es todo ceros.
 5. Repetir los pasos 1 a 4 **sin VSS**, deshabilitando el servicio de instantáneas o con un origen en un volumen sin VSS.
 6. Con el servicio en ejecución, comprobar con Process Monitor que el proceso `Backbone.Service` no genera lecturas de datos sobre `nube.bin`.
-7. Registrar el resultado de leer `wof.bin` y los marcadores de nube **desde VSS**, para confirmar §8.2 "Apertura para leer el contenido", punto 3: ¿abre el segundo handle (reapertura relativa al primero, sin `FILE_OPEN_REPARSE_POINT`) o falla con `STATUS_IO_REPARSE_TAG_NOT_HANDLED`/`ERROR_CANT_ACCESS_FILE`?
+7. Registrar el resultado de leer los marcadores de nube **desde VSS**, para confirmar §8.2 "Apertura para leer el contenido", punto 3: ¿abre el segundo handle (reapertura relativa al primero, sin `FILE_OPEN_REPARSE_POINT`) o falla con `STATUS_IO_REPARSE_TAG_NOT_HANDLED`/`ERROR_CANT_ACCESS_FILE`?
+   - **`wof.bin`**: en Windows 11 26320 el filtro WOF oculta la etiqueta (`FileAttributeTagInfo` da 0 también con `FILE_OPEN_REPARSE_POINT`), así que el servicio lo trata como archivo **normal** y lo lee del primer handle, sin reapertura ni lista blanca (§8.2). No se espera ningún aviso. Lo que se comprueba es que su `h`, en vivo **y desde VSS**, es el SHA-256 anotado del contenido descomprimido. Si desde VSS no coincide (p. ej. ceros), parar y avisar: el filtro no atiende la instantánea y nada lo detecta por la etiqueta. Anotar también la etiqueta que se ve (con `fsutil reparsepoint query wof.bin` y en el log del servicio, si lo registra) por si otra versión de Windows la expone.
 8. **Enlaces duros hacia la carpeta de datos** (ADR-21, revisión del `SourceFileSystem` de HU-08, I-3): con el servicio instalado y al menos una credencial guardada, como **usuario estándar** (sin elevar), en una carpeta de su perfil: `mklink /H enlace.bin C:\ProgramData\Backbone\credentials\<hash>.bin`. Tiene que **fallar** (acceso denegado). Repetirlo con `New-Item -ItemType HardLink` en PowerShell. Si alguna de las dos funciona, parar y avisar: con `SeBackupPrivilege` el servicio leería ese enlace y lo subiría al NAS.
 9. **`SeBackupPrivilege`** (ADR-21): crear en el origen `privado.bin` y quitarle la herencia dejando solo al usuario con control total (`icacls privado.bin /inheritance:r /grant:r "%USERNAME%:F"`), de modo que SYSTEM no tenga acceso por la DACL. Copiar en vivo y con VSS: `privado.bin` está, con su SHA-256. Cifrar otro archivo con EFS (`cipher /e cifrado.bin`) y copiar: aviso `ReadError` y no está. Con Process Explorer, comprobar que el token del **proceso** `Backbone.Service` tiene `SeBackupPrivilege` desactivado (o ausente) y, si el instalador ya fija los privilegios (`sc qprivs BackboneService`), que no aparecen `SeDebugPrivilege` ni `SeTakeOwnershipPrivilege`.
 
 **Resultado esperado:** los archivos descargados, los fijados y los WOF se copian con su contenido real; un archivo no descargado nunca se descarga ni se guarda como ceros, en vivo ni desde VSS, y conserva su versión anterior; los enlaces no se siguen; un usuario estándar no puede crear un enlace duro hacia `credentials\`; un archivo cuya DACL excluye a SYSTEM se copia y uno cifrado con EFS da `ReadError`.
 
 **Estado:** pendiente (requiere `SourceFileSystem` de HU-08, servicio instalado y VSS de HU-15).
+
+## PM-HU08-02 · Letra de un origen reasignada a una unidad de red entre la validación y la copia (BAJA-5)
+
+**Cubre:** HU-08, cierre de la parte de servicio (BAJA-5), HU-14 (`ReadPath` = ruta final de la resolución); §8.2 "Apertura relativa" (raíz en vivo), §8.3 "Resolución controlada de los orígenes", puntos 1 y 6, y ADR-20.
+
+**Por qué es manual:** hace falta que la **misma letra** pase de un volumen local a una unidad de red **visible para SYSTEM**, es decir, asignada en la sesión de inicio `0x3e7` que comparten los servicios LocalSystem (§8.2 "Sesión de inicio compartida"), y comprobar en el NAS real que no llega ninguna autenticación ni apertura. Las pruebas automáticas simulan `GetDriveType` y `FileFsDeviceInformation`.
+
+**Preparación** (PowerShell elevado; servicio instalado; NAS de pruebas `192.168.1.163`)
+1. Crear y montar un VHDX NTFS de 1 GiB con la letra `V:` (`New-VHD`, `Mount-VHD`, `Initialize-Disk`, `New-Partition -DriveLetter V`, `Format-Volume -FileSystem NTFS`). Crear `V:\Datos` con unos archivos.
+2. Tener a mano una consola como SYSTEM (`psexec -s -i cmd` de Sysinternals) para asignar la letra en la sesión del servicio.
+3. En el NAS, dejar a la vista el registro de Samba (`/var/log/samba/`, con `log level = 3` o más) y `smbstatus`.
+4. En el equipo, Process Monitor con un filtro `Process Name is Backbone.Service.exe` y `Path begins with V:` o `Path contains 192.168.1.163`.
+
+**Pasos**
+1. Crear y guardar un trabajo con dos orígenes: primero `C:\Users\<usuario>` (o cualquier carpeta grande, para que la copia dure varios minutos) y después `V:\Datos`. Hacer una copia completa: termina bien y `V:\Datos` está en el snapshot.
+2. **Reasignación antes de la ejecución**: quitar la letra al VHDX (`Remove-PartitionAccessPath -DriveLetter V -AccessPath V:\`) y, en la consola de SYSTEM, `net use V: \\192.168.1.163\<recurso> /user:<usuario> <contraseña>`. Lanzar "Copiar ahora". Según §8.3, punto 1, la repetición de la resolución en el `JobRunner` da `SourceNotLocal` por `GetDriveType` sin abrir `V:\`, y la ejecución termina `Failed` con `ValidationFailed`. Anotar el resultado.
+3. Deshacer: `net use V: /delete` en la consola de SYSTEM y volver a asignar `V:` al VHDX. Comprobar que una copia vuelve a terminar bien.
+4. **Reasignación durante la ejecución** (el caso de BAJA-5): lanzar "Copiar ahora" y, **mientras se copia el primer origen** (antes de que empiece `V:\Datos`), hacer la misma reasignación del paso 2. La ejecución termina `CompletedWithWarnings` con el aviso **`SourceRootUnreadable`** para el origen `Datos`, que conserva lo que tenía en el snapshot padre. El primer origen se copia con normalidad. Este paso supone que `SourceFileSystem` abre la raíz de cada origen cuando el motor llega a ella. Si backbone-service la abre al empezar la ejecución, la reasignación tiene que hacerse justo entre la resolución del `JobRunner` y esa apertura (con un punto de interrupción en una compilación de depuración del servicio instalado). Anotar qué variante se ha usado.
+5. Durante los pasos 2 y 4, comprobar:
+   - en Process Monitor, que `Backbone.Service` **no** hace ninguna operación sobre `V:\…` ni hacia `192.168.1.163` después de la reasignación (sí puede aparecer la consulta del tipo de unidad);
+   - en el NAS, que en el registro de Samba no hay ninguna sesión nueva ni apertura de archivo de ese equipo aparte de la del propio `net use`, y en particular ninguna de la cuenta del equipo (`<EQUIPO>$`) ni NTLM anónimo; `smbstatus` no muestra archivos abiertos en el recurso;
+   - en el log del servicio, el motivo (`SourceNotLocal` en el paso 2; en el paso 4, la causa dentro del `message` de `SourceRootUnreadable`).
+6. Limpiar: `net use V: /delete` como SYSTEM, desmontar y borrar el VHDX.
+
+**Resultado esperado:** con la letra reasignada a una unidad de red, el servicio no abre nada en ella ni intenta autenticarse ante el NAS. Antes de la ejecución el resultado es `Failed`/`ValidationFailed` (`SourceNotLocal`). Durante la ejecución es `SourceRootUnreadable`, conservando el origen del padre.
+
+**Estado:** pendiente (requiere el `JobRunner` de HU-14).
 
 ## PM-HU05-01 · Probar la conexión contra el NAS real (OpenMediaVault)
 

@@ -75,13 +75,13 @@ public sealed class InMemorySourceFileSystem : ISourceFileSystem
         }
     }
 
-    public void AddFile(string path, byte[] content, DateTime? modifiedUtc = null, FileAttributes attributes = FileAttributes.Archive)
+    public void AddFile(string path, byte[] content, DateTime? modifiedUtc = null, FileAttributes attributes = FileAttributes.Archive, uint reparseTag = 0)
     {
         lock (gate)
         {
             var parent = EnsureDirectory(ParentOf(path));
             var name = NameOf(path);
-            var node = new Node(path, isDirectory: false) { Content = content, ModifiedUtc = modifiedUtc ?? DefaultModified, Attributes = attributes };
+            var node = new Node(path, isDirectory: false) { Content = content, ModifiedUtc = modifiedUtc ?? DefaultModified, Attributes = attributes, ReparseTag = reparseTag };
             parent.Children[name] = node;
             nodes[path] = node;
         }
@@ -98,11 +98,40 @@ public sealed class InMemorySourceFileSystem : ISourceFileSystem
         }
     }
 
-    public void SetAttributes(string path, FileAttributes attributes)
+    public void SetAttributes(string path, FileAttributes attributes, uint reparseTag = 0)
     {
         lock (gate)
         {
-            nodes[path].Attributes = attributes;
+            var node = nodes[path];
+            node.Attributes = attributes;
+            node.ReparseTag = reparseTag;
+        }
+    }
+
+    /// <summary>
+    /// Si las tres operaciones repiten la clasificación de ADR-19 sobre el "handle", como <c>SourceFileSystem</c> (§8.2):
+    /// un enlace lanza <see cref="Backbone.Contracts.RunIssueCode.ReparsePointSkipped"/>, lo que está solo en la nube
+    /// <see cref="Backbone.Contracts.RunIssueCode.CloudOnlySkipped"/> y lo no legible
+    /// <see cref="Backbone.Contracts.RunIssueCode.ReadError"/>. Desactivado por defecto (las pruebas de HU-13 no lo esperan).
+    /// </summary>
+    public bool ClassifyOnOpen { get; set; }
+
+    private void ThrowIfNotReadable(Node node)
+    {
+        if (!ClassifyOnOpen)
+        {
+            return;
+        }
+
+        var attributes = node.IsDirectory ? node.Attributes | FileAttributes.Directory : node.Attributes;
+        switch (SourceAttributes.Classify(attributes, node.ReparseTag))
+        {
+            case SourceEntryKind.Link:
+                throw new SourceAccessException(Backbone.Contracts.RunIssueCode.ReparsePointSkipped, $"{node.Path} es un enlace; no se sigue.");
+            case SourceEntryKind.CloudOnly:
+                throw new SourceAccessException(Backbone.Contracts.RunIssueCode.CloudOnlySkipped, $"{node.Path} está solo en la nube.");
+            case SourceEntryKind.Unreadable:
+                throw new SourceAccessException(Backbone.Contracts.RunIssueCode.ReadError, $"{node.Path} tiene la etiqueta {ReparseTags.Format(node.ReparseTag)}, fuera de la lista blanca.");
         }
     }
 
@@ -146,6 +175,15 @@ public sealed class InMemorySourceFileSystem : ISourceFileSystem
         }
     }
 
+    /// <summary>La consulta de metadatos del archivo falla con <paramref name="error"/>.</summary>
+    public void FailInfo(string path, Exception? error)
+    {
+        lock (gate)
+        {
+            nodes[path].InfoError = error;
+        }
+    }
+
     /// <summary>La enumeración de la carpeta falla con <paramref name="error"/>.</summary>
     public void FailEnumerate(string path, Exception? error)
     {
@@ -164,12 +202,13 @@ public sealed class InMemorySourceFileSystem : ISourceFileSystem
         }
     }
 
-    /// <summary>Marca un elemento como punto de reanálisis.</summary>
-    public void MakeReparsePoint(string path)
+    /// <summary>Marca un elemento como punto de reanálisis; por defecto, un <i>junction</i> (<see cref="ReparseTags.MountPoint"/>).</summary>
+    public void MakeReparsePoint(string path, uint tag = ReparseTags.MountPoint)
     {
         lock (gate)
         {
             nodes[path].Attributes |= FileAttributes.ReparsePoint;
+            nodes[path].ReparseTag = tag;
         }
     }
 
@@ -216,6 +255,8 @@ public sealed class InMemorySourceFileSystem : ISourceFileSystem
                 throw node.EnumerateError;
             }
 
+            ThrowIfNotReadable(node);
+
             children = [.. node.Children.Values.Select(c => c.ToEntry())];
         }
 
@@ -241,6 +282,8 @@ public sealed class InMemorySourceFileSystem : ISourceFileSystem
                 throw node.OpenError;
             }
 
+            ThrowIfNotReadable(node);
+
             return Task.FromResult<Stream>(new NodeStream(this, node));
         }
     }
@@ -251,7 +294,18 @@ public sealed class InMemorySourceFileSystem : ISourceFileSystem
         lock (gate)
         {
             infoQueries++;
-            return Task.FromResult(nodes.TryGetValue(filePath, out var node) && !node.IsDirectory ? node.ToEntry() : null);
+            if (!nodes.TryGetValue(filePath, out var node) || node.IsDirectory)
+            {
+                return Task.FromResult<SourceEntry?>(null);
+            }
+
+            if (node.InfoError is not null)
+            {
+                throw node.InfoError;
+            }
+
+            ThrowIfNotReadable(node);
+            return Task.FromResult<SourceEntry?>(node.ToEntry());
         }
     }
 
@@ -299,6 +353,10 @@ public sealed class InMemorySourceFileSystem : ISourceFileSystem
 
         public Exception? EnumerateError { get; set; }
 
+        public Exception? InfoError { get; set; }
+
+        public uint ReparseTag { get; set; }
+
         public Action? AfterFirstRead { get; set; }
 
         public SourceEntry ToEntry() => new(
@@ -307,7 +365,10 @@ public sealed class InMemorySourceFileSystem : ISourceFileSystem
             IsDirectory,
             IsDirectory ? 0 : Content.Length,
             ModifiedUtc,
-            IsDirectory ? Attributes | FileAttributes.Directory : Attributes);
+            IsDirectory ? Attributes | FileAttributes.Directory : Attributes)
+        {
+            ReparseTag = ReparseTag, // tal cual: el motor ignora la etiqueta sin FileAttributes.ReparsePoint
+        };
     }
 
     /// <summary>Lee el contenido <b>actual</b> del nodo en cada llamada, como un archivo que otro proceso está escribiendo.</summary>

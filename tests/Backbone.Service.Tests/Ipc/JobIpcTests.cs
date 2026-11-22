@@ -220,6 +220,22 @@ public sealed class JobIpcTests : IAsyncLifetime
         Assert.Equal(("Sources[0].Path", ValidationIssueCode.SourceContainsDataFolder), (warning.Field, warning.Code));
     }
 
+    /// <summary>R16 (contrato 1.4): sin ruta GUID del origen, ValidateJobAsync y SaveJobAsync dan ProtectedFoldersUnavailable.</summary>
+    [Fact]
+    [Trait("Story", "HU-08")]
+    public async Task A_source_with_an_unknown_volume_path_is_ProtectedFoldersUnavailable_on_validate_and_on_save()
+    {
+        _server.FileSystem.AddFolder(@"D:\Desconocido", guidPath: string.Empty);
+        var job = NewJob() with { Sources = [new JobSource { Alias = "X", Path = @"D:\Desconocido" }] };
+
+        var validation = await _ana.Proxy.ValidateJobAsync(job, Ct);
+        await RpcAssert.ValidationFailsAsync("Sources[0].Path", ValidationIssueCode.ProtectedFoldersUnavailable, () => _ana.Proxy.SaveJobAsync(job, Ct));
+
+        var error = Assert.Single(validation.Errors);
+        Assert.Equal(("Sources[0].Path", ValidationIssueCode.ProtectedFoldersUnavailable), (error.Field, error.Code));
+        Assert.Null(error.Value);
+    }
+
     [Fact]
     public async Task The_returned_job_does_not_carry_unknown_or_secret_fields()
     {

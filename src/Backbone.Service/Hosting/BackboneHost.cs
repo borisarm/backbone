@@ -3,6 +3,7 @@ using Backbone.Service.Jobs;
 using Backbone.Service.Nas;
 using Backbone.Service.Os;
 using Backbone.Service.Persistence;
+using Backbone.Service.Sources;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -99,7 +100,13 @@ internal static class BackboneHost
         // resolución controlada de los orígenes (ADR-20) se hace fuera del hilo RPC, con plazo y como mucho 4 a la vez.
         services.TryAddSingleton<ILocalFileSystemInspector, WindowsLocalFileSystemInspector>();
         services.TryAddSingleton(new SourceIoOptions());
-        services.AddSingleton<SourceValidationRunner>();
+        // Un solo token de lectura (ADR-21) y un solo contador de hilos abandonados (R12) para la validación, su repetición en
+        // el JobRunner y la lectura de los orígenes (AddSourceReading).
+        services.AddSingleton(sp => new SourceValidationRunner(
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<SourceIoOptions>(),
+            sp.GetRequiredService<SourceReadToken>(),
+            sp.GetRequiredService<AbandonedSourceThreads>()));
         services.TryAddSingleton<IProcessMitigations, WindowsProcessMitigations>();
         services.AddSingleton(sp => new JobStore(
             sp.GetRequiredService<ServicePaths>().JobsFile,
@@ -129,6 +136,9 @@ internal static class BackboneHost
         services.AddSingleton<IpcEventPublisher>();
         services.AddSingleton<IIpcEventPublisher>(sp => sp.GetRequiredService<IpcEventPublisher>());
         services.AddSingleton<IpcServer>();
+
+        // Lectura de los orígenes (HU-08, §8.2): expone los marcadores de la nube al arrancar.
+        services.AddSourceReading();
 
         // Orden de arranque: Redirection Guard (§8.3), comprobación de la carpeta y ajustes (StartingAsync) antes de crear el pipe.
         services.AddHostedService<ProcessMitigationStartup>();

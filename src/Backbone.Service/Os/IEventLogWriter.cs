@@ -35,6 +35,12 @@ internal static class BackboneEventIds
     /// como <c>jobs.json.bad-&lt;marca UTC&gt;</c> en la siguiente escritura (§8.2, §8.5).
     /// </summary>
     public const int JobsFileCorrupt = 1004;
+
+    /// <summary>
+    /// Error: lectura de orígenes detenida; hay 4 o más hilos de lectura abandonados porque un controlador no atendió la
+    /// cancelación. Las copias y validaciones fallan con <c>Internal</c> hasta reiniciar el servicio (§8.2, R12).
+    /// </summary>
+    public const int SourceReadingStopped = 1005;
 }
 
 /// <summary>
