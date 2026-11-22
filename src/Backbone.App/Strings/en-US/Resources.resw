@@ -23,4 +23,5 @@
   <data name="Tray_Menu_Pause" xml:space="preserve"><value>&amp;Pause (coming soon)</value></data>
   <data name="Tray_Menu_Open" xml:space="preserve"><value>&amp;Open Backbone</value></data>
   <data name="Tray_Menu_Exit" xml:space="preserve"><value>E&amp;xit</value></data>
+  <data name="Validation_ProtectedFoldersUnavailable" xml:space="preserve"><value>Backbone could not check its data folder in %ProgramData%, so no source is backed up, for safety. Try again and, if it happens again, check the service log.</value></data>
 </root>
