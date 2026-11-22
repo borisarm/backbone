@@ -52,7 +52,11 @@ public sealed class RepositoryPreparationShutdownTests : IAsyncLifetime
             await Task.Run(() => _server.Time.Advance(_server.PreparationOptions.Timeout + TimeSpan.FromSeconds(1)), Ct);
             var timeout = await Assert.ThrowsAsync<BackboneException>(() => call);
             Assert.Equal(BackboneErrorCode.NasUnreachable, timeout.Code);
-            Assert.False(storage.Cancelled.Task.IsCompleted); // abandonada, pero la E/S sigue en curso
+
+            // Al vencer el plazo, PrepareAsync cancela el token de la preparación abandonada (finally), de forma asíncrona respecto
+            // a la excepción: se espera a que la E/S lo note antes de parar, en vez de suponer que aún no lo ha hecho. La parada
+            // tiene que terminar igualmente, sin operaciones nuevas.
+            await storage.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(10), Ct);
         }
 
         // Sin avanzar el reloj: si la parada solo esperase, agotaría los 5 s del plazo (que aquí no pasan) y no terminaría.
@@ -61,6 +65,7 @@ public sealed class RepositoryPreparationShutdownTests : IAsyncLifetime
         await storage.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(10), Ct);
         if (!abandoned)
         {
+            // Aquí la única cancelación posible es la de CancelAll (el cliente sigue esperando y el plazo no ha vencido).
             var failure = await Assert.ThrowsAsync<BackboneException>(() => call);
             Assert.Equal(BackboneErrorCode.Interrupted, failure.Code);
         }
