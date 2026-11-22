@@ -18,10 +18,12 @@
   <ItemGroup>
     <Compile Include="..\..\src\Backbone.App\Ipc\**\*.cs" LinkBase="App\Ipc" />
     <Compile Include="..\..\src\Backbone.App\Tray\**\*.cs" LinkBase="App\Tray" />
+    <Compile Include="..\..\src\Backbone.App\ViewModels\**\*.cs" LinkBase="App\ViewModels" />
     <Compile Include="..\..\src\Backbone.App\Validation\**\*.cs" LinkBase="App\Validation" />
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" />
     <PackageReference Include="StreamJsonRpc" />
     <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
   </ItemGroup>

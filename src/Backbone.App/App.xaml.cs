@@ -1,5 +1,8 @@
 using Backbone.App.Ipc;
 using Backbone.App.Shell;
+using Backbone.App.ViewModels;
+using Backbone.Contracts;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.Windows.ApplicationModel.Resources;
@@ -21,6 +24,7 @@ public partial class App : Application
     private MainWindow? _window;
     private BackboneClient? _client;
     private TrayController? _tray;
+    private ServiceProvider? _services;
     private bool _exiting;
 
     public App()
@@ -46,6 +50,28 @@ public partial class App : Application
             new NamedPipeBackboneConnector(new ServiceProcessVerifier(), TimeProvider.System),
             TimeProvider.System,
             post: action => dispatcher.TryEnqueue(() => action()));
+
+        // Composición (§9.1): el cliente IPC compartido es el IBackboneService de todos los view models.
+        _services = new ServiceCollection()
+            .AddSingleton<IBackboneService>(_client)
+            .AddSingleton<Func<string, string>>(strings.GetString)
+            .AddSingleton<IFolderPicker>(new WindowFolderPicker(_window))
+            .AddSingleton<HomeViewModel>()
+            .AddSingleton<JobsViewModel>()
+            .BuildServiceProvider();
+        var home = _services.GetRequiredService<HomeViewModel>();
+        var jobs = _services.GetRequiredService<JobsViewModel>();
+        _window.Initialize(home, jobs);
+        // Al conectar (y al reconectar) se vuelve a leer el estado: los eventos perdidos no se recuperan (§9.1).
+        _client.StateChanged += (_, state) =>
+        {
+            if (state == ConnectionState.Connected)
+            {
+                _ = home.LoadAsync();
+                _ = jobs.LoadAsync();
+            }
+        };
+
         _tray = new TrayController(_client, strings.GetString, dispatcher, ShowMainWindow, ExitApplication);
         _client.Start();
 
@@ -68,6 +94,7 @@ public partial class App : Application
 
         _exiting = true;
         _tray?.Dispose();
+        _services?.Dispose();
         _window?.AllowClose();
         var client = _client;
         _ = Task.Run(async () =>

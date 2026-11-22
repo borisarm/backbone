@@ -16,7 +16,8 @@ internal sealed class ValidationIssueTexts(Func<string, string> getString)
     public string Translate(ValidationIssue issue)
     {
         ArgumentNullException.ThrowIfNull(issue);
-        return getString(KeyFor(issue.Code));
+        // Un servicio más nuevo puede enviar un código que esta app no conoce (§7.5): texto genérico.
+        return getString(KeyFor(Enum.IsDefined(issue.Code) ? issue.Code : ValidationIssueCode.Other));
     }
 
     /// <summary>Textos por campo (<c>Sources[0].Path</c>…), en el orden recibido; el campo vacío es el de la entrada entera.</summary>
