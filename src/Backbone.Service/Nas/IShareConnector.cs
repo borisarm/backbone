@@ -44,6 +44,13 @@ internal interface IShareConnection : IAsyncDisposable
     string ShareRoot { get; }
 
     /// <summary>
+    /// Tras <see cref="IAsyncDisposable.DisposeAsync"/>: la desconexión (<c>WNetCancelConnection2</c> sin forzar) ha fallado y la
+    /// conexión puede seguir viva en el sistema (p. ej. <c>ERROR_OPEN_FILES</c>). <see cref="ShareConnectionManager"/> lo guarda
+    /// para reintentarla a la fuerza y para cerrarla en la parada del servicio.
+    /// </summary>
+    bool DisconnectFailed { get; }
+
+    /// <summary>
     /// Indica si el sistema sigue teniendo el registro de uso (la conexión con credencial explícita) de <see cref="ShareRoot"/>.
     /// Sin él, la E/S saldría con la cuenta del equipo (§7.5 A-3): p. ej. si una desconexión pendiente lo ha borrado (§8.2 B-1).
     /// Quien va a escribir lo comprueba antes de la primera E/S.

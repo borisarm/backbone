@@ -128,6 +128,12 @@ internal sealed class FakeShare
     /// <summary>Error al cerrar la conexión.</summary>
     public Exception? DisposeError { get; set; }
 
+    /// <summary>
+    /// <c>WNetCancelConnection2</c> sin forzar falla sin lanzar (p. ej. <c>ERROR_OPEN_FILES</c>, 2401): la conexión y su registro
+    /// de uso siguen vivos y <see cref="IShareConnection.DisconnectFailed"/> es verdadero.
+    /// </summary>
+    public bool DisconnectFails { get; set; }
+
     /// <summary>Si no es nulo, cerrar la conexión (<c>WNetCancelConnection2</c>) espera a que se complete.</summary>
     public TaskCompletionSource? DisposeGate { get; set; }
 
@@ -178,6 +184,8 @@ internal sealed class FakeShareConnection(FakeShareConnector owner, string share
     public string ShareRoot { get; } = shareRoot;
 
     public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+
+    public bool DisconnectFailed { get; private set; }
 
     /// <summary>Se cerró con operaciones aún en curso (no debe pasar).</summary>
     public bool DisposedWithOperationsInFlight { get; private set; }
@@ -260,6 +268,14 @@ internal sealed class FakeShareConnection(FakeShareConnector owner, string share
             if (Share.DisposeGate is { } gate)
             {
                 await gate.Task.ConfigureAwait(false);
+            }
+
+            if (Share.DisconnectFails)
+            {
+                DisconnectFailed = true;
+                owner.Events.Enqueue("disconnect-failed:" + ShareRoot);
+                owner.Closed();
+                return;
             }
 
             owner.UseRecords.TryRemove(ShareRoot, out _);

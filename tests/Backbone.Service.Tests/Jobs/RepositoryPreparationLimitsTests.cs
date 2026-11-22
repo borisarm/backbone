@@ -268,9 +268,9 @@ public sealed class RepositoryPreparationLimitsTests : IAsyncLifetime
         Assert.Equal([@"\\nas1\b"], _server.ShareConnector.ForcedDisconnects);
         if (!abandoned)
         {
-            // Según quién llegue antes, la preparación termina o ve que la parada ya cerró la conexión (nunca escribe sin ella).
+            // Según quién llegue antes, la preparación termina, la cancela la parada o ve que ya cerró la conexión (nunca escribe sin ella).
             var failure = await Record.ExceptionAsync(() => call.WaitAsync(TimeSpan.FromSeconds(10), Ct));
-            Assert.True(failure is null or BackboneException { Code: BackboneErrorCode.NasUnreachable }, failure?.ToString());
+            Assert.True(failure is null or BackboneException { Code: BackboneErrorCode.NasUnreachable or BackboneErrorCode.Interrupted }, failure?.ToString());
         }
 
         Assert.Equal(BackboneErrorCode.Interrupted, await CodeOfAsync(Preparer.PrepareAsync(Nas2, Ct)));

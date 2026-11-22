@@ -94,10 +94,11 @@ internal sealed partial class WindowsShareConnector(ILogger<WindowsShareConnecto
             throw new ShareException(ShareErrors.FromWin32(error, ShareOperation.Connect), error);
         }
 
-        var size = 16 * 1024u;
-        var buffer = NativeMemory.Alloc(size);
+        void* buffer = null;
         try
         {
+            var size = 16 * 1024u;
+            buffer = NativeMemory.Alloc(size);
             var wanted = shareRoot.TrimEnd('\\');
             while (true)
             {
@@ -111,7 +112,15 @@ internal sealed partial class WindowsShareConnector(ILogger<WindowsShareConnecto
 
                 if (error == NativeMethods.ErrorMoreData)
                 {
-                    size = Math.Max(available, size * 2);
+                    // Tope (INFO-1): un búfer mayor es un fallo seguro, "sin registro de uso" (no se usa la conexión). Se
+                    // calcula en 64 bits para que size * 2 no desborde.
+                    var grown = Math.Max((ulong)available, (ulong)size * 2);
+                    if (grown > MaxEnumBufferBytes)
+                    {
+                        return false;
+                    }
+
+                    size = (uint)grown;
                     buffer = NativeMemory.Realloc(buffer, size);
                     continue;
                 }
@@ -139,6 +148,9 @@ internal sealed partial class WindowsShareConnector(ILogger<WindowsShareConnecto
         }
     }
 
+    /// <summary>Tope del búfer de <c>WNetEnumResource</c> (1 MiB); superado, <see cref="UseRecordExists"/> responde "no".</summary>
+    internal const uint MaxEnumBufferBytes = 1024 * 1024;
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "No se pudo cerrar la conexión con el recurso {ShareRoot} (error Win32 {Error}).")]
     private static partial void LogDisconnectFailed(ILogger logger, string shareRoot, int error);
 
@@ -148,8 +160,11 @@ internal sealed partial class WindowsShareConnector(ILogger<WindowsShareConnecto
     private sealed class WindowsShareConnection(string shareRoot, ILogger logger) : IShareConnection
     {
         private int _disposed;
+        private int _disconnectFailed;
 
         public string ShareRoot { get; } = shareRoot;
+
+        public bool DisconnectFailed => Volatile.Read(ref _disconnectFailed) != 0;
 
         public Task<bool> HasUseRecordAsync(CancellationToken ct) =>
             Run(() => UseRecordExists(ShareRoot), ct);
@@ -258,6 +273,7 @@ internal sealed partial class WindowsShareConnector(ILogger<WindowsShareConnecto
                 var error = NativeMethods.WNetCancelConnection2(ShareRoot, 0, force: false);
                 if (error is not NativeMethods.ErrorSuccess and not ErrorNotConnected)
                 {
+                    Volatile.Write(ref _disconnectFailed, 1);
                     LogDisconnectFailed(logger, UntrustedText.Describe(ShareRoot), error);
                 }
             }));

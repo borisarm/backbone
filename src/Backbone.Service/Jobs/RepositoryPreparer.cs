@@ -161,7 +161,7 @@ internal sealed partial class RepositoryPreparer(
     ILogger<RepositoryPreparer> logger)
 {
     private readonly Lock _gate = new();
-    private readonly HashSet<Task> _pending = [];
+    private readonly Dictionary<Task, CancellationTokenSource> _pending = [];
     private readonly Dictionary<string, ServerTurn> _serverTurns = new(StringComparer.OrdinalIgnoreCase);
     private int _active;
 
@@ -177,13 +177,38 @@ internal sealed partial class RepositoryPreparer(
         Task[] pending;
         lock (_gate)
         {
-            pending = [.. _pending];
+            pending = [.. _pending.Keys];
         }
 
         // Las abandonadas terminan canceladas o con el error que ya no interesa a nadie.
         foreach (var task in pending)
         {
             await task.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        }
+    }
+
+    /// <summary>
+    /// Cancela todas las preparaciones pendientes, también las abandonadas (parada del servicio, BAJA-N1): su E/S termina antes
+    /// de que la parada cierre a la fuerza las conexiones, y ninguna toca el almacenamiento después.
+    /// </summary>
+    public void CancelAll()
+    {
+        CancellationTokenSource[] sources;
+        lock (_gate)
+        {
+            sources = [.. _pending.Values];
+        }
+
+        foreach (var source in sources)
+        {
+            try
+            {
+                source.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // La preparación terminó entretanto.
+            }
         }
     }
 
@@ -240,6 +265,11 @@ internal sealed partial class RepositoryPreparer(
         {
             LogTimeout(logger, described, options.Timeout);
             throw new BackboneException(BackboneErrorCode.NasUnreachable, "The NAS did not respond in time.");
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && work.IsCanceled)
+        {
+            // La preparación se canceló por la parada del servicio (CancelAll), no por el cliente.
+            throw new BackboneException(BackboneErrorCode.Interrupted, "The service is stopping.");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested && !work.IsCompleted)
         {
@@ -453,18 +483,19 @@ internal sealed partial class RepositoryPreparer(
     {
         lock (_gate)
         {
-            _pending.Add(work);
+            _pending.Add(work, abandon);
         }
 
         _ = work.ContinueWith(
             completed =>
             {
                 _ = completed.Exception; // observada: ya se ha respondido al cliente
-                abandon.Dispose();
                 lock (_gate)
                 {
                     _pending.Remove(completed);
                 }
+
+                abandon.Dispose();
             },
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
