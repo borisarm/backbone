@@ -16,6 +16,9 @@
   <ItemGroup Label="Aplicación (ADR-02: Windows App SDK, última estable 1.x)">
     <PackageVersion Include="Microsoft.WindowsAppSDK" Version="1.8.260921001" />
     <PackageVersion Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2957" />
+    <!-- MVVM e inyección de dependencias de la app (§9.1). -->
+    <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.14" />
   </ItemGroup>
 
   <ItemGroup Label="IPC (ADR-03)">

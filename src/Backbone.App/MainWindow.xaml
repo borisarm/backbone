@@ -6,5 +6,20 @@
   <Window.SystemBackdrop>
     <MicaBackdrop />
   </Window.SystemBackdrop>
-  <Grid />
+  <NavigationView x:Name="Navigation" IsBackButtonVisible="Collapsed" IsSettingsVisible="False"
+                  PaneDisplayMode="Left" SelectionChanged="OnSelectionChanged">
+    <NavigationView.MenuItems>
+      <NavigationViewItem x:Name="HomeItem" x:Uid="Nav_Home" Tag="home">
+        <NavigationViewItem.Icon>
+          <FontIcon Glyph="&#xE80F;" />
+        </NavigationViewItem.Icon>
+      </NavigationViewItem>
+      <NavigationViewItem x:Name="JobsItem" x:Uid="Nav_Jobs" Tag="jobs">
+        <NavigationViewItem.Icon>
+          <FontIcon Glyph="&#xE8B7;" />
+        </NavigationViewItem.Icon>
+      </NavigationViewItem>
+    </NavigationView.MenuItems>
+    <Grid x:Name="Host" Padding="24,12,0,0" />
+  </NavigationView>
 </Window>

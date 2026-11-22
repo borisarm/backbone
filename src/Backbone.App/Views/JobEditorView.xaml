@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="Backbone.App.Views.JobEditorView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:Backbone.App.ViewModels">
+
+  <ScrollViewer VerticalScrollBarVisibility="Auto" IsTabStop="False">
+    <StackPanel Spacing="16" MaxWidth="760" Padding="0,0,16,24" HorizontalAlignment="Left">
+
+      <TextBlock x:Uid="Editor_Title" Style="{StaticResource SubtitleTextBlockStyle}" AutomationProperties.HeadingLevel="Level1" />
+
+      <!-- General -->
+      <StackPanel Spacing="4">
+        <TextBox x:Name="NameBox" x:Uid="Editor_Name" TabIndex="1"
+                 Text="{x:Bind ViewModel.Name, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                 MaxLength="128" />
+        <TextBlock Text="{x:Bind ViewModel.NameError, Mode=OneWay}"
+                   Visibility="{x:Bind ViewModel.HasNameError, Mode=OneWay}"
+                   Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                   TextWrapping="WrapWholeWords"
+                   AutomationProperties.LiveSetting="Polite" />
+      </StackPanel>
+
+      <!-- Orígenes -->
+      <StackPanel Spacing="8">
+        <TextBlock x:Uid="Editor_SourcesHeader" Style="{StaticResource BodyStrongTextBlockStyle}"
+                   AutomationProperties.HeadingLevel="Level2" />
+        <TextBlock x:Uid="Editor_SourcesHint" TextWrapping="WrapWholeWords"
+                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+        <ItemsRepeater ItemsSource="{x:Bind ViewModel.Sources, Mode=OneWay}" TabFocusNavigation="Local">
+          <ItemsRepeater.Layout>
+            <StackLayout Spacing="8" />
+          </ItemsRepeater.Layout>
+          <ItemsRepeater.ItemTemplate>
+            <DataTemplate x:DataType="vm:SourceItemViewModel">
+              <Border Padding="12" CornerRadius="{ThemeResource ControlCornerRadius}"
+                      Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                <Grid ColumnSpacing="8" RowSpacing="4">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                  </Grid.RowDefinitions>
+                  <TextBlock Grid.Row="0" Text="{x:Bind Path}" TextWrapping="Wrap" IsTextSelectionEnabled="True"
+                             AutomationProperties.Name="{x:Bind Path}" />
+                  <Button Grid.Row="0" Grid.Column="1" x:Uid="Editor_RemoveSource"
+                          Tag="{x:Bind}" Click="OnRemoveSourceClick">
+                    <FontIcon Glyph="&#xE74D;" FontFamily="{ThemeResource SymbolThemeFontFamily}" />
+                  </Button>
+                  <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="6"
+                              Visibility="{x:Bind HasPathError, Mode=OneWay}">
+                    <FontIcon Glyph="&#xE783;" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="14"
+                              Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                    <TextBlock Text="{x:Bind PathError, Mode=OneWay}" TextWrapping="WrapWholeWords"
+                               Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                               AutomationProperties.LiveSetting="Polite" />
+                  </StackPanel>
+                  <StackPanel Grid.Row="2" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="6"
+                              Visibility="{x:Bind HasPathWarning, Mode=OneWay}">
+                    <FontIcon Glyph="&#xE7BA;" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="14"
+                              Foreground="{ThemeResource SystemFillColorCautionBrush}" />
+                    <TextBlock Text="{x:Bind PathWarning, Mode=OneWay}" TextWrapping="WrapWholeWords"
+                               AutomationProperties.LiveSetting="Polite" />
+                  </StackPanel>
+                  <TextBox Grid.Row="3" Grid.ColumnSpan="2" x:Uid="Editor_Alias"
+                           Text="{x:Bind Alias, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                           MaxLength="64" LostFocus="OnSourceFieldLostFocus" />
+                  <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="6"
+                              Visibility="{x:Bind HasAliasError, Mode=OneWay}">
+                    <FontIcon Glyph="&#xE783;" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="14"
+                              Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                    <TextBlock Text="{x:Bind AliasError, Mode=OneWay}" TextWrapping="WrapWholeWords"
+                               Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                               AutomationProperties.LiveSetting="Polite" />
+                  </StackPanel>
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ItemsRepeater.ItemTemplate>
+        </ItemsRepeater>
+        <Button x:Name="AddFolderButton" x:Uid="Editor_AddFolder" Command="{x:Bind ViewModel.AddFolderCommand}">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <FontIcon Glyph="&#xE710;" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="14" />
+            <TextBlock x:Uid="Editor_AddFolderText" />
+          </StackPanel>
+        </Button>
+        <TextBlock Text="{x:Bind ViewModel.SourcesError, Mode=OneWay}"
+                   Visibility="{x:Bind ViewModel.HasSourcesError, Mode=OneWay}"
+                   Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                   TextWrapping="WrapWholeWords" AutomationProperties.LiveSetting="Polite" />
+        <InfoBar x:Uid="Editor_DataFolderNote" Severity="Informational" IsClosable="False"
+                 IsOpen="{x:Bind ViewModel.ShowDataFolderNote, Mode=OneWay}" />
+      </StackPanel>
+
+      <!-- Destino -->
+      <StackPanel Spacing="8">
+        <TextBlock x:Uid="Editor_DestinationHeader" Style="{StaticResource BodyStrongTextBlockStyle}"
+                   AutomationProperties.HeadingLevel="Level2" />
+        <TextBox x:Uid="Editor_Destination"
+                 Text="{x:Bind ViewModel.Destination, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                 MaxLength="1024" LostFocus="OnDestinationLostFocus" />
+        <TextBlock Text="{x:Bind ViewModel.DestinationError, Mode=OneWay}"
+                   Visibility="{x:Bind ViewModel.HasDestinationError, Mode=OneWay}"
+                   Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                   TextWrapping="WrapWholeWords" AutomationProperties.LiveSetting="Polite" />
+        <TextBox x:Uid="Editor_UserName"
+                 Text="{x:Bind ViewModel.UserName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                 MaxLength="256" />
+        <PasswordBox x:Uid="Editor_Password"
+                     Password="{x:Bind ViewModel.Password, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                     MaxLength="256" />
+        <StackPanel Orientation="Horizontal" Spacing="12">
+          <Button x:Uid="Editor_TestConnection" Command="{x:Bind ViewModel.TestConnectionCommand}" />
+          <ProgressRing IsActive="{x:Bind ViewModel.IsBusy, Mode=OneWay}" Width="20" Height="20"
+                        x:Uid="Editor_Busy" />
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" Spacing="6" Visibility="{x:Bind ViewModel.HasConnectionMessage, Mode=OneWay}">
+          <FontIcon Glyph="&#xE73E;" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="14"
+                    Foreground="{ThemeResource SystemFillColorSuccessBrush}"
+                    Visibility="{x:Bind ViewModel.ConnectionSucceeded, Mode=OneWay}" />
+          <TextBlock Text="{x:Bind ViewModel.ConnectionMessage, Mode=OneWay}" TextWrapping="WrapWholeWords"
+                     AutomationProperties.LiveSetting="Polite" />
+        </StackPanel>
+      </StackPanel>
+
+      <!-- Avisos y errores generales -->
+      <ItemsRepeater ItemsSource="{x:Bind ViewModel.Warnings, Mode=OneWay}">
+        <ItemsRepeater.ItemTemplate>
+          <DataTemplate x:DataType="x:String">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <FontIcon Glyph="&#xE7BA;" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="14"
+                        Foreground="{ThemeResource SystemFillColorCautionBrush}" />
+              <TextBlock Text="{x:Bind}" TextWrapping="WrapWholeWords" AutomationProperties.LiveSetting="Polite" />
+            </StackPanel>
+          </DataTemplate>
+        </ItemsRepeater.ItemTemplate>
+      </ItemsRepeater>
+      <InfoBar Severity="Error" IsClosable="False" IsOpen="{x:Bind ViewModel.HasGeneralError, Mode=OneWay}"
+               Message="{x:Bind ViewModel.GeneralError, Mode=OneWay}" />
+
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <Button x:Name="SaveButton" x:Uid="Editor_Save" Style="{StaticResource AccentButtonStyle}"
+                Command="{x:Bind ViewModel.SaveCommand}" />
+        <Button x:Uid="Editor_Cancel" Command="{x:Bind ViewModel.CancelCommand}" />
+      </StackPanel>
+    </StackPanel>
+  </ScrollViewer>
+</UserControl>
