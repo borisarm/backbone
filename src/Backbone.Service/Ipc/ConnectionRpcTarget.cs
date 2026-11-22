@@ -61,10 +61,10 @@ internal sealed partial class ConnectionRpcTarget(IpcConnection connection, Back
     // ---- Ejecución ----
 
     public Task RunNowAsync(Guid jobId, CancellationToken ct = default) =>
-        InvokeAsync(nameof(RunNowAsync), Write, _ => throw NotYet(nameof(RunNowAsync)));
+        InvokeAsync(nameof(RunNowAsync), Write, _ => operations.RunNowAsync(jobId, ct));
 
     public Task CancelRunAsync(Guid jobId, CancellationToken ct = default) =>
-        InvokeAsync(nameof(CancelRunAsync), Write, _ => throw NotYet(nameof(CancelRunAsync)));
+        InvokeAsync(nameof(CancelRunAsync), Write, _ => operations.CancelRunAsync(jobId, ct));
 
     public Task SetPauseAsync(PauseRequest request, CancellationToken ct = default) =>
         InvokeAsync(nameof(SetPauseAsync), Write, _ =>
@@ -76,8 +76,8 @@ internal sealed partial class ConnectionRpcTarget(IpcConnection connection, Back
     // ---- NAS y credenciales ----
 
     public Task SaveCredentialAsync(string shareRoot, CredentialInput credential, CancellationToken ct = default) =>
-        InvokeAsync(nameof(SaveCredentialAsync), Write, _ =>
-            operations.SaveCredentialAsync(IpcInputValidator.Destination(shareRoot), IpcInputValidator.Credential(credential), ct));
+        InvokeAsync(nameof(SaveCredentialAsync), Write, caller =>
+            operations.SaveCredentialAsync(caller.Sid, IpcInputValidator.Destination(shareRoot), IpcInputValidator.Credential(credential), ct));
 
     public Task<CredentialInfo?> GetCredentialInfoAsync(string shareRoot, CancellationToken ct = default) =>
         InvokeAsync(nameof(GetCredentialInfoAsync), Read, _ =>
@@ -88,8 +88,8 @@ internal sealed partial class ConnectionRpcTarget(IpcConnection connection, Back
             operations.DeleteCredentialAsync(IpcInputValidator.Destination(shareRoot), ct));
 
     public Task<ConnectionTestResult> TestConnectionAsync(string destination, CredentialInput? credential, CancellationToken ct = default) =>
-        InvokeAsync(nameof(TestConnectionAsync), Write, _ =>
-            operations.TestConnectionAsync(IpcInputValidator.Destination(destination), IpcInputValidator.OptionalCredential(credential), ct));
+        InvokeAsync(nameof(TestConnectionAsync), Write, caller =>
+            operations.TestConnectionAsync(caller, IpcInputValidator.Destination(destination), IpcInputValidator.OptionalCredential(credential), ct));
 
     public Task<StorageInfo> GetStorageInfoAsync(Guid jobId, CancellationToken ct = default) =>
         InvokeAsync<StorageInfo>(nameof(GetStorageInfoAsync), Read, _ => throw NotYet(nameof(GetStorageInfoAsync)));

@@ -27,6 +27,22 @@ internal sealed record ConnectionTestOptions
 
     /// <summary>Pruebas simultáneas en total (BAJA-2); por servidor, siempre una.</summary>
     public int MaxConcurrentTests { get; init; } = 2;
+
+    /// <summary>
+    /// <see cref="BackboneErrorCode.CredentialsRejected"/> seguidos de un mismo SID (cualquier servidor) a partir de los cuales sus
+    /// pruebas con credencial explícita dan <see cref="BackboneErrorCode.NasBusy"/> sin conectar (§8.2 "Conexiones al NAS", M-1).
+    /// </summary>
+    public int MaxConsecutiveRejections { get; init; } = 5;
+
+    /// <summary>Cuánto dura ese bloqueo (M-1).</summary>
+    public TimeSpan RejectionBlock { get; init; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Tras guardar una credencial, durante cuánto cuentan también los rechazos de las pruebas con la credencial guardada del
+    /// mismo SID en el contador de <see cref="MaxConsecutiveRejections"/> (B-2 de la revisión de seguridad de HU-14: guardar y
+    /// probar sin credencial explícita permitiría probar contraseñas sin límite).
+    /// </summary>
+    public TimeSpan SavedCredentialWindow { get; init; } = TimeSpan.FromMinutes(5);
 }
 
 /// <summary>Paso de la prueba en el que se ha fallado (para el log).</summary>
@@ -53,8 +69,12 @@ internal enum ConnectionTestStep
 /// con <see cref="ValidationIssueCode.DestinationNotAllowed"/>. Si la resolución falla, se sigue (la conexión dará
 /// <see cref="BackboneErrorCode.NasUnreachable"/>); si no termina en <see cref="ConnectionTestOptions.DnsTimeout"/>,
 /// <see cref="BackboneErrorCode.NasUnreachable"/> sin conectar.</item>
-/// <item><b>Conexiones</b>: siempre por <see cref="ShareConnectionManager"/> (una por raíz, con referencias; una credencial
-/// distinta de la de una conexión viva con el mismo servidor se rechaza, BAJA-1).</item>
+/// <item><b>Conexiones</b>: siempre por <see cref="ShareConnectionManager"/> (una por raíz, con referencias). Una credencial
+/// explícita nunca comparte una conexión viva y, si ya hay otra con ese servidor, la respuesta es
+/// <see cref="BackboneErrorCode.NasBusy"/> coincida o no el secreto (M-1). Además, tras
+/// <see cref="ConnectionTestOptions.MaxConsecutiveRejections"/> <see cref="BackboneErrorCode.CredentialsRejected"/> seguidos
+/// de un mismo SID, sus pruebas con credencial explícita dan <see cref="BackboneErrorCode.NasBusy"/> sin conectar durante
+/// <see cref="ConnectionTestOptions.RejectionBlock"/>.</item>
 /// <item><b>Turnos</b> (BAJA-2): una prueba a la vez por servidor y <see cref="ConnectionTestOptions.MaxConcurrentTests"/> en
 /// total; si queda una limpieza pendiente del mismo servidor, se espera dentro del plazo y, si no termina,
 /// <see cref="BackboneErrorCode.NasUnreachable"/> sin conectar.</item>
@@ -87,6 +107,8 @@ internal sealed partial class ConnectionTester : IDisposable
     private readonly Lock _gate = new();
     private readonly Dictionary<Task, string> _cleanups = [];
     private readonly Dictionary<string, SemaphoreSlim> _serverTurns = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, RejectionState> _rejections = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<(string Sid, string ShareRoot), DateTimeOffset> _savedCredentials = new(SavedKeyComparer.Instance);
     private readonly SemaphoreSlim _globalTurns;
 
     public ConnectionTester(
@@ -132,17 +154,32 @@ internal sealed partial class ConnectionTester : IDisposable
     /// <summary>Prueba la conexión con <paramref name="destination"/>.</summary>
     /// <param name="destination">Destino UNC (<c>\\servidor\recurso[\ruta]</c>), con la longitud ya validada por IPC.</param>
     /// <param name="credential">Credencial a probar o <see langword="null"/> para usar la guardada.</param>
+    /// <param name="callerSid">
+    /// SID del cliente que pide la prueba (el que calcula el servidor de su token, nunca el que diga el cliente): cuenta los
+    /// rechazos seguidos de credenciales explícitas (M-1).
+    /// </param>
     /// <param name="ct">Cancelación del cliente: lanza <see cref="OperationCanceledException"/> y la limpieza sigue en segundo plano.</param>
     /// <exception cref="BackboneException">
     /// <see cref="BackboneErrorCode.ValidationFailed"/> si el destino o la credencial no son válidos o el servidor resuelve al
     /// propio equipo.
     /// </exception>
-    public async Task<ConnectionTestResult> TestAsync(string destination, CredentialInput? credential, CancellationToken ct)
+    public async Task<ConnectionTestResult> TestAsync(string destination, CredentialInput? credential, string callerSid, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(callerSid);
         if (!CredentialStore.TryNormalizeShareRoot(destination, out var shareRoot, out var issue)
             || !UncPaths.TryParse(destination, out _, out var normalizedDestination, out issue))
         {
             throw BackboneException.ValidationFailed(string.Empty, issue);
+        }
+
+        // M-1: tras demasiados rechazos seguidos, las pruebas con credencial explícita de este SID no llegan a conectar.
+        // Se comprueba antes de validar la credencial, para que la respuesta no dependa de ella. B-2: también las que usan la
+        // credencial que ese mismo SID acaba de guardar (guardar y probar sin credencial explícita es lo mismo).
+        var testsJustSaved = credential is null && SavedRecently(callerSid, shareRoot);
+        if ((credential is not null || testsJustSaved) && IsBlocked(callerSid))
+        {
+            LogBlocked(_logger, UntrustedText.Describe(shareRoot));
+            return new ConnectionTestResult { ShareRoot = shareRoot, ErrorCode = BackboneErrorCode.NasBusy };
         }
 
         NasCredential nasCredential;
@@ -164,7 +201,130 @@ internal sealed partial class ConnectionTester : IDisposable
         }
 
         var attempt = new Attempt(this, shareRoot, normalizedDestination, nasCredential, ct);
-        return await attempt.RunAsync().ConfigureAwait(false);
+        var result = await attempt.RunAsync().ConfigureAwait(false);
+        if (credential is not null || testsJustSaved)
+        {
+            RecordOutcome(callerSid, ShareConnectionManager.ServerOf(shareRoot), result, attempt.NativeError);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// El SID <paramref name="callerSid"/> acaba de guardar la credencial de <paramref name="shareRoot"/> (B-2): durante
+    /// <see cref="ConnectionTestOptions.SavedCredentialWindow"/>, los rechazos de las pruebas con la credencial guardada cuentan
+    /// como los de una explícita.
+    /// </summary>
+    public void NoteCredentialSaved(string callerSid, string shareRoot)
+    {
+        ArgumentNullException.ThrowIfNull(callerSid);
+        ArgumentNullException.ThrowIfNull(shareRoot);
+        var now = _timeProvider.GetUtcNow();
+        lock (_gate)
+        {
+            foreach (var expired in _savedCredentials.Where(e => now - e.Value >= _options.SavedCredentialWindow).Select(e => e.Key).ToArray())
+            {
+                _savedCredentials.Remove(expired);
+            }
+
+            _savedCredentials[(callerSid, shareRoot)] = now;
+        }
+    }
+
+    private bool SavedRecently(string sid, string shareRoot)
+    {
+        lock (_gate)
+        {
+            return _savedCredentials.TryGetValue((sid, shareRoot), out var savedUtc)
+                   && _timeProvider.GetUtcNow() - savedUtc < _options.SavedCredentialWindow;
+        }
+    }
+
+    /// <summary>El SID tiene bloqueadas las pruebas con credencial explícita (M-1).</summary>
+    private bool IsBlocked(string sid)
+    {
+        lock (_gate)
+        {
+            if (!_rejections.TryGetValue(sid, out var state) || state.BlockedUntil is not { } until)
+            {
+                return false;
+            }
+
+            if (_timeProvider.GetUtcNow() < until)
+            {
+                return true;
+            }
+
+            _rejections.Remove(sid); // el bloqueo ha vencido: se empieza de cero
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Una prueba correcta pone a cero el contador <b>de ese servidor</b> (B-1: un éxito contra otro servidor no sirve para
+    /// reiniciar los rechazos de este); cada <see cref="BackboneErrorCode.CredentialsRejected"/> lo suma (los demás fallos no lo
+    /// tocan: no dicen nada de la credencial). <c>ERROR_SESSION_CREDENTIAL_CONFLICT</c> (1219) no cuenta: es un conflicto con una
+    /// sesión ya abierta, no una contraseña probada. Los rechazos de todos los servidores se suman por SID; al llegar al máximo,
+    /// el SID queda bloqueado.
+    /// </summary>
+    private void RecordOutcome(string sid, string server, ConnectionTestResult result, int nativeError)
+    {
+        lock (_gate)
+        {
+            if (result.Success)
+            {
+                if (_rejections.TryGetValue(sid, out var previous))
+                {
+                    previous.PerServer.Remove(server);
+                    if (previous.PerServer.Count == 0 && previous.BlockedUntil is null)
+                    {
+                        _rejections.Remove(sid);
+                    }
+                }
+
+                return;
+            }
+
+            if (result.ErrorCode != BackboneErrorCode.CredentialsRejected || nativeError == ShareErrors.ErrorSessionCredentialConflict)
+            {
+                return;
+            }
+
+            _rejections.TryGetValue(sid, out var state);
+            state ??= new RejectionState();
+            state.PerServer[server] = state.PerServer.GetValueOrDefault(server) + 1;
+            var total = state.Count;
+            if (total >= _options.MaxConsecutiveRejections && state.BlockedUntil is null)
+            {
+                state.BlockedUntil = _timeProvider.GetUtcNow() + _options.RejectionBlock;
+                LogBlockStarted(_logger, total, _options.RejectionBlock);
+            }
+
+            _rejections[sid] = state;
+        }
+    }
+
+    /// <summary>Rechazos seguidos de un SID, por servidor (M-1, B-1). Solo en memoria.</summary>
+    private sealed class RejectionState
+    {
+        public Dictionary<string, int> PerServer { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Rechazos de todos los servidores.</summary>
+        public int Count => PerServer.Values.Sum();
+
+        public DateTimeOffset? BlockedUntil { get; set; }
+    }
+
+    /// <summary>SID y recurso, sin distinguir mayúsculas.</summary>
+    private sealed class SavedKeyComparer : IEqualityComparer<(string Sid, string ShareRoot)>
+    {
+        public static SavedKeyComparer Instance { get; } = new();
+
+        public bool Equals((string Sid, string ShareRoot) x, (string Sid, string ShareRoot) y) =>
+            string.Equals(x.Sid, y.Sid, StringComparison.OrdinalIgnoreCase) && string.Equals(x.ShareRoot, y.ShareRoot, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((string Sid, string ShareRoot) obj) =>
+            HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Sid), StringComparer.OrdinalIgnoreCase.GetHashCode(obj.ShareRoot));
     }
 
     /// <summary>Mismas reglas que al guardar (HU-04): usuario no vacío y sin controles; ninguno con NUL ni suplentes sueltas.</summary>
@@ -189,7 +349,7 @@ internal sealed partial class ConnectionTester : IDisposable
         // Fijado y con NUL final, como el que devuelve CredentialStore: se pone a cero al desecharlo.
         var buffer = GC.AllocateArray<char>(input.Password.Length + 1, pinned: true);
         input.Password.AsSpan().CopyTo(buffer);
-        return new NasCredential(shareRoot, input.UserName, DateTimeOffset.UnixEpoch, buffer, input.Password.Length);
+        return new NasCredential(shareRoot, input.UserName, DateTimeOffset.UnixEpoch, buffer, input.Password.Length, isExplicit: true);
     }
 
     /// <summary>Indica si <paramref name="finalPath"/> está dentro de <paramref name="finalRoot"/> (sin distinguir mayúsculas).</summary>
@@ -263,8 +423,11 @@ internal sealed partial class ConnectionTester : IDisposable
     [LoggerMessage(Level = LogLevel.Warning, Message = "Prueba de conexión con {ShareRoot}: el servidor resuelve al propio equipo; se rechaza sin conectar (§7.5).")]
     private static partial void LogResolvesToSelf(ILogger logger, string shareRoot);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Prueba de conexión con {ShareRoot}: la carpeta {Folder} está fuera del recurso ({FinalPath}); no se escribe.")]
-    private static partial void LogOutsideShare(ILogger logger, string shareRoot, string folder, string finalPath);
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Prueba de conexión con {ShareRoot}: demasiados rechazos de credencial seguidos de este usuario; NasBusy sin conectar.")]
+    private static partial void LogBlocked(ILogger logger, string shareRoot);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Un usuario ha acumulado {Count} rechazos de credencial seguidos en pruebas de conexión: sus pruebas con credencial explícita dan NasBusy durante {Block}.")]
+    private static partial void LogBlockStarted(ILogger logger, int count, TimeSpan block);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Prueba de conexión con {ShareRoot}: no se pudo obtener {What} (error Win32 {NativeError}).")]
     private static partial void LogOptionalFailed(ILogger logger, string shareRoot, string what, int nativeError);
@@ -310,6 +473,9 @@ internal sealed partial class ConnectionTester : IDisposable
 
         private ILogger Logger => owner._logger;
 
+        /// <summary>Código Win32 del fallo de la prueba (0 si no lo hubo o no es de un <see cref="ShareException"/>).</summary>
+        public int NativeError { get; private set; }
+
         public async Task<ConnectionTestResult> RunAsync()
         {
             var canceled = false;
@@ -323,6 +489,7 @@ internal sealed partial class ConnectionTester : IDisposable
             }
             catch (ShareException ex)
             {
+                NativeError = ex.NativeErrorCode;
                 var systemMessage = SystemMessage(ex.NativeErrorCode);
                 LogFailed(Logger, _describedRoot, _step, ex.Code, ex.NativeErrorCode, systemMessage);
                 return Result(ex.Code);
@@ -370,9 +537,11 @@ internal sealed partial class ConnectionTester : IDisposable
             _dialect = await OptionalAsync(connection.GetSmbDialectAsync(shareRoot, ct), "el dialecto SMB").ConfigureAwait(false);
 
             _step = ConnectionTestStep.Write;
-            await EnsureInsideShareAsync(connection, target).ConfigureAwait(false);
+            var finalRoot = await FinalRootAsync(connection).ConfigureAwait(false);
             _probePath = Path.Join(target, ProbeFilePrefix + Guid.NewGuid().ToString("N") + ".tmp");
-            await BoundedAsync(connection.WriteProbeFileAsync(_probePath, ProbeContent, ct)).ConfigureAwait(false);
+
+            // B-3: la conexión comprueba la ruta final del archivo sobre su handle abierto, antes de escribir.
+            await BoundedAsync(connection.WriteProbeFileAsync(_probePath, ProbeContent, finalRoot, ct)).ConfigureAwait(false);
             _canWrite = true;
 
             _step = ConnectionTestStep.Delete;
@@ -442,31 +611,25 @@ internal sealed partial class ConnectionTester : IDisposable
         }
 
         /// <summary>
-        /// Antes de escribir, la carpeta destino (ruta final, <c>GetFinalPathNameByHandle</c>) sigue dentro de la ruta final del
-        /// recurso (así también un recurso DFS redirigido). Si el redirector no la da, no se comprueba.
+        /// Ruta final de la raíz conectada (así también un recurso DFS redirigido). Si el redirector no la da, la que sale del
+        /// nombre: <c>\\?\UNC\servidor\recurso</c>. La ruta final del archivo de prueba se compara con ella sobre su handle
+        /// (<see cref="IShareConnection.WriteProbeFileAsync"/>, B-3).
         /// </summary>
-        private async Task EnsureInsideShareAsync(IShareConnection connection, string target)
+        private async Task<string> FinalRootAsync(IShareConnection connection)
         {
-            string? finalRoot;
-            string? finalTarget;
             try
             {
-                finalRoot = await BoundedAsync(connection.GetFinalPathAsync(shareRoot, ct)).ConfigureAwait(false);
-                finalTarget = string.Equals(target, shareRoot, StringComparison.OrdinalIgnoreCase)
-                    ? finalRoot
-                    : await BoundedAsync(connection.GetFinalPathAsync(target, ct)).ConfigureAwait(false);
+                if (await BoundedAsync(connection.GetFinalPathAsync(shareRoot, ct)).ConfigureAwait(false) is { } finalRoot)
+                {
+                    return finalRoot;
+                }
             }
             catch (ShareException ex)
             {
-                LogOptionalFailed(Logger, _describedRoot, "la ruta final", ex.NativeErrorCode);
-                return;
+                LogOptionalFailed(Logger, _describedRoot, "la ruta final del recurso", ex.NativeErrorCode);
             }
 
-            if (finalRoot is not null && finalTarget is not null && !IsWithin(finalTarget, finalRoot))
-            {
-                LogOutsideShare(Logger, _describedRoot, UntrustedText.Describe(target), UntrustedText.Describe(finalTarget));
-                throw new ShareException(BackboneErrorCode.AccessDenied, 0);
-            }
+            return @"\\?\UNC\" + shareRoot[2..];
         }
 
         /// <summary>La carpeta más profunda del destino que ya existe (el repositorio se crea al guardar el trabajo, HU-06).</summary>

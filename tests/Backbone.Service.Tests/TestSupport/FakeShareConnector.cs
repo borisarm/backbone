@@ -81,8 +81,12 @@ internal sealed class FakeShareConnector : IShareConnector
     /// <summary>Orden de las operaciones de conexión: <c>connect:&lt;raíz&gt;</c> al empezar a conectar y <c>disconnect:&lt;raíz&gt;</c> al terminar de cerrar.</summary>
     public ConcurrentQueue<string> Events { get; } = new();
 
+    /// <summary>Se llama justo antes de cualquier desconexión (<c>WNetCancelConnection2</c>), normal o a la fuerza (M-A: la concesión ya está revocada).</summary>
+    public Action? BeforeDisconnect { get; set; }
+
     public Task ForceDisconnectAsync(string shareRoot, CancellationToken ct)
     {
+        BeforeDisconnect?.Invoke();
         ForcedDisconnects.Enqueue(shareRoot);
         UseRecords.TryRemove(shareRoot, out _);
         return Task.CompletedTask;
@@ -159,6 +163,9 @@ internal sealed class FakeShare
     /// <summary>Rutas de todos los archivos de prueba que se han intentado crear.</summary>
     public ConcurrentQueue<string> ProbeFiles { get; } = new();
 
+    /// <summary>Veces que se ha llegado a escribir el contenido de un archivo de prueba (B-3: nunca antes de comprobar la ruta final).</summary>
+    public int ContentWrites;
+
     public TaskCompletionSource Gate(string operation)
     {
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -210,7 +217,7 @@ internal sealed class FakeShareConnection(FakeShareConnector owner, string share
     public Task<string?> GetSmbDialectAsync(string path, CancellationToken ct) =>
         RunAsync("Dialect", () => Share.DialectError is { } e ? throw e : Task.FromResult(Share.Dialect));
 
-    public Task WriteProbeFileAsync(string path, ReadOnlyMemory<byte> content, CancellationToken ct) =>
+    public Task WriteProbeFileAsync(string path, ReadOnlyMemory<byte> content, string finalRoot, CancellationToken ct) =>
         RunAsync<object?>("Write", async () =>
         {
             Share.ProbeFiles.Enqueue(path);
@@ -220,13 +227,22 @@ internal sealed class FakeShareConnection(FakeShareConnector owner, string share
                 throw error;
             }
 
-            if (!Share.Files.TryAdd(path, content.ToArray()))
+            // Se crea vacío: el contenido solo se escribe después de comprobar la ruta final sobre el handle (B-3).
+            if (!Share.Files.TryAdd(path, []))
             {
                 throw new ShareException(BackboneErrorCode.AccessDenied, 80);
             }
 
             try
             {
+                var finalPath = FinalPathOfFile(path);
+                if (finalPath is null || !ConnectionTester.IsWithin(finalPath, finalRoot))
+                {
+                    throw new ShareException(BackboneErrorCode.AccessDenied, 0);
+                }
+
+                Share.Files[path] = content.ToArray();
+                Interlocked.Increment(ref Share.ContentWrites);
                 await Share.WaitAsync("Write").ConfigureAwait(false);
                 if (Share.WriteErrorAfterCreate is { } cut)
                 {
@@ -244,6 +260,18 @@ internal sealed class FakeShareConnection(FakeShareConnector owner, string share
             return null;
         },
         gate: false);
+
+    /// <summary>Ruta final del archivo: la de su carpeta (<see cref="FakeShare.FinalPaths"/>) más su nombre; nula si no se sabe.</summary>
+    private string? FinalPathOfFile(string path)
+    {
+        var folder = path[..path.LastIndexOf('\\')];
+        if (!Share.FinalPaths.TryGetValue(folder, out var finalFolder))
+        {
+            return @"\\?\UNC\" + path[2..];
+        }
+
+        return finalFolder is null ? null : finalFolder + path[folder.Length..];
+    }
 
     public Task<bool> FileExistsAsync(string path, CancellationToken ct) =>
         RunAsync("FileExists", () => Task.FromResult(Share.Files.ContainsKey(path)));
@@ -264,6 +292,7 @@ internal sealed class FakeShareConnection(FakeShareConnector owner, string share
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 0)
         {
+            owner.BeforeDisconnect?.Invoke();
             DisposedWithOperationsInFlight = Volatile.Read(ref _inFlight) != 0;
             if (Share.DisposeGate is { } gate)
             {

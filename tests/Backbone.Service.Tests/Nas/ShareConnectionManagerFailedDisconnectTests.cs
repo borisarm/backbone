@@ -29,7 +29,6 @@ public sealed class ShareConnectionManagerFailedDisconnectTests : IDisposable
 
     public void Dispose()
     {
-        _manager.Dispose();
         _loggerFactory.Dispose();
     }
 
@@ -39,7 +38,7 @@ public sealed class ShareConnectionManagerFailedDisconnectTests : IDisposable
     {
         var buffer = GC.AllocateArray<char>(password.Length + 1, pinned: true);
         password.AsSpan().CopyTo(buffer);
-        return new NasCredential(root, user, DateTimeOffset.UnixEpoch, buffer, password.Length);
+        return new NasCredential(root, user, DateTimeOffset.UnixEpoch, buffer, password.Length, isExplicit: false);
     }
 
     private async Task FailedReleaseAsync(string root = Root)

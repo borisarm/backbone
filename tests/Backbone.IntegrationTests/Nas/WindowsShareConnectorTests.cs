@@ -126,6 +126,32 @@ public sealed class WindowsShareConnectorTests : IDisposable
         Assert.False(result.CanWrite);
     }
 
+    /// <summary>
+    /// HU-14, B-3: con <c>WNetAddConnection2</c> y un recurso reales, la ruta final del archivo de prueba se comprueba sobre su
+    /// handle ya abierto y antes de escribir: fuera de la raíz indicada, <c>AccessDenied</c> y sin contenido escrito; dentro,
+    /// correcto.
+    /// </summary>
+    [Fact(Skip = NoShare, SkipUnless = nameof(HasShare))]
+    public async Task The_final_path_of_the_probe_file_is_checked_on_its_open_handle_before_writing()
+    {
+        var connector = new WindowsShareConnector(_loggerFactory.CreateLogger<WindowsShareConnector>());
+        Assert.True(UncPaths.TryParse(Share, out var root, out var destination, out _));
+        await _store.SaveAsync(root, new CredentialInput { UserName = User!, Password = Password! }, Ct);
+        using var credential = (await _store.GetAsync(root, Ct))!;
+        await using var connection = await connector.ConnectAsync(credential, Ct);
+        var folder = Directory.Exists(destination) ? destination : root;
+        var finalRoot = await connection.GetFinalPathAsync(root, Ct);
+        Assert.NotNull(finalRoot);
+        var path = Path.Join(folder, ConnectionTester.ProbeFilePrefix + Guid.NewGuid().ToString("N") + ".tmp");
+
+        var ex = await Assert.ThrowsAsync<ShareException>(() => connection.WriteProbeFileAsync(path, ConnectionTester.ProbeContent, @"\?\UNC\otro\fuera", Ct));
+        Assert.Equal(BackboneErrorCode.AccessDenied, ex.Code);
+        Assert.False(File.Exists(path), "El archivo se borra al cerrar aunque no se haya escrito nada.");
+
+        await connection.WriteProbeFileAsync(path, ConnectionTester.ProbeContent, finalRoot, Ct);
+        Assert.False(File.Exists(path));
+    }
+
     public static bool HasReadOnlyShare => HasShare && Environment.GetEnvironmentVariable("BACKBONE_IT_SMB_READONLY_SHARE") is not null;
 
     /// <summary>

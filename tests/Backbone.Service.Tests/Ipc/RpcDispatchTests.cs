@@ -29,8 +29,7 @@ public sealed partial class RpcDispatchTests : IAsyncLifetime
 
     public static TheoryData<string> MethodsNotYetImplemented =>
     [
-        nameof(IBackboneService.RunNowAsync),
-        nameof(IBackboneService.CancelRunAsync), nameof(IBackboneService.SetPauseAsync),
+        nameof(IBackboneService.SetPauseAsync),
         nameof(IBackboneService.GetStorageInfoAsync), nameof(IBackboneService.GetHistoryAsync),
         nameof(IBackboneService.GetRunDetailAsync), nameof(IBackboneService.GetSnapshotsAsync), nameof(IBackboneService.BrowseSnapshotAsync),
         nameof(IBackboneService.SearchSnapshotAsync), nameof(IBackboneService.GetFileVersionsAsync), nameof(IBackboneService.StartRestoreAsync),
@@ -61,6 +60,8 @@ public sealed partial class RpcDispatchTests : IAsyncLifetime
             nameof(IBackboneService.DeleteJobAsync), nameof(IBackboneService.ValidateJobAsync),
             // HU-05.
             nameof(IBackboneService.TestConnectionAsync),
+            // HU-14.
+            nameof(IBackboneService.RunNowAsync), nameof(IBackboneService.CancelRunAsync),
         };
         var all = typeof(IBackboneService).GetMethods().Where(m => !m.IsSpecialName).Select(m => m.Name).ToHashSet();
 

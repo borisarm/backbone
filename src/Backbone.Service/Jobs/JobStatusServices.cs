@@ -24,29 +24,52 @@ internal sealed class NoJobActivity : IJobActivity
 /// <summary>
 /// Construye <see cref="ServiceStatus"/> para <c>GetStatusAsync</c> y <c>StatusChanged</c>. En HU-07 lleva la lista de
 /// trabajos (identificador, nombre, activado, actividad); en HU-06, el estado del repositorio según la última vez que se abrió
-/// (<see cref="RepositoryStateTracker"/>). La salud, la última y la próxima ejecución, la cola y la pausa los completan las
-/// historias del scheduler, el historial y la pausa (HU-09, HU-11, HU-14, HU-16).
+/// (<see cref="RepositoryStateTracker"/>). En HU-14, con las ejecuciones (<see cref="IRunStatusSource"/>): la ejecución en
+/// curso y su progreso, la cola y la última ejecución de cada trabajo desde que arrancó el servicio, con la salud que se
+/// deduce de ella. La próxima ejecución, la antigüedad y la pausa los completan las historias del scheduler, el historial y la
+/// pausa (HU-09, HU-11, HU-16).
 /// </summary>
-internal sealed class ServiceStatusProvider(IJobList jobs, IJobActivity activity, RepositoryStateTracker repositoryStates, TimeProvider timeProvider)
+internal sealed class ServiceStatusProvider(
+    IJobList jobs,
+    IJobActivity activity,
+    RepositoryStateTracker repositoryStates,
+    TimeProvider timeProvider,
+    IRunStatusSource? runs = null)
 {
-    public ServiceStatus GetStatus() =>
-        new()
+    public ServiceStatus GetStatus()
+    {
+        var statuses = jobs.Jobs.Select(job =>
         {
-            Health = HealthState.Ok,
-            Jobs =
-            [
-                .. jobs.Jobs.Select(job => new JobStatus
-                {
-                    JobId = job.Id,
-                    JobName = job.Name,
-                    Enabled = job.Enabled,
-                    Activity = activity.GetActivity(job.Id),
-                    Health = HealthState.Ok,
-                    RepositoryState = repositoryStates.Get(job.Id),
-                }),
-            ],
+            var last = runs?.LastRun(job.Id);
+            return new JobStatus
+            {
+                JobId = job.Id,
+                JobName = job.Name,
+                Enabled = job.Enabled,
+                Activity = activity.GetActivity(job.Id),
+                Health = HealthOf(last),
+                LastRun = last,
+                LastSuccessUtc = runs?.LastSuccessUtc(job.Id),
+                RepositoryState = repositoryStates.Get(job.Id),
+            };
+        }).ToList();
+        return new ServiceStatus
+        {
+            Health = statuses.Where(s => s.Enabled).Select(s => s.Health).DefaultIfEmpty(HealthState.Ok).Max(),
+            CurrentRun = runs?.CurrentRun,
+            Queue = runs?.Queue ?? [],
+            Jobs = statuses,
             TimestampUtc = timeProvider.GetUtcNow().ToUniversalTime(),
         };
+    }
+
+    /// <summary>Salud que se deduce de la última ejecución: fallida, error; con avisos, aviso; si no, correcta (HU-11 añade la antigüedad).</summary>
+    private static HealthState HealthOf(RunRecord? last) => last?.State switch
+    {
+        RunState.Failed => HealthState.Error,
+        RunState.CompletedWithWarnings => HealthState.Warning,
+        _ => HealthState.Ok,
+    };
 }
 
 /// <summary>
@@ -54,7 +77,7 @@ internal sealed class ServiceStatusProvider(IJobList jobs, IJobActivity activity
 /// <c>DeleteJobAsync</c> lo emiten). Escucha <see cref="IJobList.Changed"/>, que se lanza después de persistir y antes de que
 /// la llamada responda.
 /// </summary>
-internal sealed class StatusBroadcaster(IJobList jobs, ServiceStatusProvider status, IIpcEventPublisher events) : IHostedService, IDisposable
+internal sealed class StatusBroadcaster(IJobList jobs, ServiceStatusProvider status, IIpcEventPublisher events, IRunStatusSource? runs = null) : IHostedService, IDisposable
 {
     private int _subscribed;
 
@@ -78,6 +101,10 @@ internal sealed class StatusBroadcaster(IJobList jobs, ServiceStatusProvider sta
         if (Interlocked.Exchange(ref _subscribed, 1) == 0)
         {
             jobs.Changed += OnJobsChanged;
+            if (runs is not null)
+            {
+                runs.Changed += OnJobsChanged;
+            }
         }
     }
 
@@ -86,6 +113,10 @@ internal sealed class StatusBroadcaster(IJobList jobs, ServiceStatusProvider sta
         if (Interlocked.Exchange(ref _subscribed, 0) == 1)
         {
             jobs.Changed -= OnJobsChanged;
+            if (runs is not null)
+            {
+                runs.Changed -= OnJobsChanged;
+            }
         }
     }
 

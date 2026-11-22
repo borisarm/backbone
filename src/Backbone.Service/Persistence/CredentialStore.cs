@@ -52,7 +52,11 @@ internal sealed class NasCredential : IDisposable
     private char[]? _password;
 
     /// <param name="password">Array fijado con la contraseña seguida de un NUL; pasa a ser propiedad de esta instancia.</param>
-    internal NasCredential(string shareRoot, string userName, DateTimeOffset updatedUtc, char[] password, int passwordLength)
+    /// <param name="isExplicit">
+    /// La credencial no está guardada: la ha indicado el cliente (la de "Probar conexión"). Nunca comparte una conexión ajena
+    /// (§8.2 "Conexiones al NAS", revisión final de seguridad de HU-05, M-1).
+    /// </param>
+    internal NasCredential(string shareRoot, string userName, DateTimeOffset updatedUtc, char[] password, int passwordLength, bool isExplicit)
     {
         if (passwordLength < 0 || passwordLength >= password.Length || password[passwordLength] != '\0')
         {
@@ -64,9 +68,16 @@ internal sealed class NasCredential : IDisposable
         UpdatedUtc = updatedUtc;
         _password = password;
         _passwordLength = passwordLength;
+        IsExplicit = isExplicit;
     }
 
     public string ShareRoot { get; }
+
+    /// <summary>
+    /// La credencial la ha indicado el cliente y no está guardada: su identidad no es la de ninguna credencial guardada, así que
+    /// el gestor de conexiones nunca la comparte con otra conexión (M-1).
+    /// </summary>
+    public bool IsExplicit { get; }
 
     public string UserName { get; }
 
@@ -483,7 +494,7 @@ internal sealed partial class CredentialStore(
                 StrictUtf8.GetChars(passwordBytes, buffer);
             }
 
-            return new NasCredential(shareRoot, userName, new DateTimeOffset(ticks, TimeSpan.Zero), buffer, passwordChars);
+            return new NasCredential(shareRoot, userName, new DateTimeOffset(ticks, TimeSpan.Zero), buffer, passwordChars, isExplicit: false);
         }
         catch (DecoderFallbackException)
         {

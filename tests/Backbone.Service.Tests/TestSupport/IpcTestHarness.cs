@@ -36,7 +36,7 @@ internal sealed class IpcTestHarness : IAsyncDisposable
         Runner = new SourceValidationRunner(Time, IoOptions);
         Validator = new JobValidator(FileSystem, ProtectedFolders, Runner, HostResolver, Time, LoggerFactory.CreateLogger<JobValidator>());
         RepositoryStates = new RepositoryStateTracker();
-        Status = new ServiceStatusProvider(Jobs, Activity, RepositoryStates, Time);
+        var logger = LoggerFactory.CreateLogger<JobRunner>();
         var connections = Connections = new ShareConnectionManager(ShareConnector, LoggerFactory.CreateLogger<ShareConnectionManager>());
         var shareCredentials = ShareCredentials = new ShareCredentialProvider(Credentials, LoggerFactory.CreateLogger<ShareCredentialProvider>());
         ConnectionTester = new ConnectionTester(
@@ -54,17 +54,34 @@ internal sealed class IpcTestHarness : IAsyncDisposable
             Time,
             PreparationOptions,
             LoggerFactory.CreateLogger<RepositoryPreparer>());
-        Operations = new BackboneOperations(Runtime, Settings, Accounts, Credentials, Jobs, Validator, Activity, Status, ConnectionTester, Repositories, RepositoryStates);
+        JobRunner = new JobRunner(shareCredentials, connections, RepositoryStorages, FileSystem, ProtectedFolders, Runner, SourceFactory, RepositoryStates, Runtime, Time, new JobRunnerOptions(), logger);
+        Runs = new RunQueue(Jobs, JobRunner, Time, [], LoggerFactory.CreateLogger<RunQueue>());
+        Activity.Fallback = Runs;
+        Status = new ServiceStatusProvider(Jobs, Activity, RepositoryStates, Time, Runs);
+        Operations = new BackboneOperations(Runtime, Settings, Accounts, Credentials, Jobs, Validator, Activity, Status, ConnectionTester, Repositories, RepositoryStates, Runs);
         Manager = new IpcConnectionManager(Authorizer, Accounts, Settings, Operations, Options, Time, LoggerFactory);
         Events = new IpcEventPublisher(Manager, Options, Time);
-        Broadcaster = new StatusBroadcaster(Jobs, Status, Events);
+        Broadcaster = new StatusBroadcaster(Jobs, Status, Events, Runs);
         Broadcaster.Subscribe();
+        RunBroadcaster = new RunEventBroadcaster(Runs, Events);
+        RunBroadcaster.Subscribe();
+        Runs.Start();
     }
 
     /// <summary>Carpetas locales simuladas para la validación de trabajos (HU-07).</summary>
     public FakeLocalFileSystemInspector FileSystem { get; } = new();
 
     public FakeJobActivity Activity { get; } = new();
+
+    /// <summary>Lectura de los orígenes de las ejecuciones (HU-14).</summary>
+    public FakeSourceFileSystemFactory SourceFactory { get; } = new();
+
+    public JobRunner JobRunner { get; }
+
+    /// <summary>Cola de ejecuciones (HU-14), ya en marcha.</summary>
+    public RunQueue Runs { get; }
+
+    public RunEventBroadcaster RunBroadcaster { get; }
 
     /// <summary>Plazos de la resolución de orígenes (las pruebas de plazo los acortan antes de usar el arnés).</summary>
     public SourceIoOptions IoOptions { get; } = new();
@@ -190,7 +207,10 @@ internal sealed class IpcTestHarness : IAsyncDisposable
             await client.DisposeAsync();
         }
 
+        await Runs.StopAsync(CancellationToken.None);
         await Manager.DisposeAsync();
+        RunBroadcaster.Dispose();
+        Runs.Dispose();
         Broadcaster.Dispose();
         Events.Dispose();
         Jobs.Dispose();

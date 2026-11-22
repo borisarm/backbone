@@ -95,6 +95,17 @@ internal sealed partial class SourceReadingStartup(
     private static partial void LogReadToken(ILogger logger, bool enabled);
 }
 
+/// <summary>
+/// Lectura de los orígenes de una ejecución (<see cref="SourceFileSystem"/>): el <see cref="ISourceFileSystem"/> que usa el
+/// motor, que el <c>JobRunner</c> desecha al terminar y al que pregunta si se abandonó una operación (§8.2, R12). Las pruebas
+/// del <c>JobRunner</c> la sustituyen por un doble en memoria.
+/// </summary>
+internal interface IRunSourceFileSystem : ISourceFileSystem, IDisposable
+{
+    /// <summary>Se ha abandonado una operación: la ejecución tiene que terminar <c>Failed</c>/<c>Internal</c> (R12).</summary>
+    bool IsAbandoned { get; }
+}
+
 /// <summary>Crea el <see cref="SourceFileSystem"/> de cada ejecución con sus orígenes (§8.2 "Rutas y raíces").</summary>
 internal interface ISourceFileSystemFactory
 {
@@ -119,7 +130,12 @@ internal interface ISourceFileSystemFactory
     /// Hay 4 o más hilos de lectura abandonados en el servicio (R12): <c>Failed</c>/<c>Internal</c> sin leer nada.
     /// </exception>
     /// <exception cref="ArgumentException">Un origen o una exclusión obligatoria no son válidos (B-2, I-4): <c>Internal</c>.</exception>
-    SourceFileSystem Create(IReadOnlyList<BackupSource> sources, IReadOnlyCollection<string>? snapshotDevices = null);
+    /// <param name="unreadableSources">
+    /// Posiciones en <paramref name="sources"/> de los orígenes que la resolución controlada no pudo resolver (no existen, no se
+    /// pudieron comprobar o venció el plazo; M-B de la revisión de seguridad de HU-14): llevan la ruta <b>configurada</b>, y su
+    /// raíz no se abre nunca aunque ahora fuera legible; el motor la recibe como raíz ilegible.
+    /// </param>
+    IRunSourceFileSystem Create(IReadOnlyList<BackupSource> sources, IReadOnlyCollection<string>? snapshotDevices = null, IReadOnlyCollection<int>? unreadableSources = null);
 }
 
 /// <inheritdoc />
@@ -132,7 +148,7 @@ internal sealed class SourceFileSystemFactory(
     SourceReadToken? token = null,
     AbandonedSourceThreads? abandonedThreads = null) : ISourceFileSystemFactory
 {
-    public SourceFileSystem Create(IReadOnlyList<BackupSource> sources, IReadOnlyCollection<string>? snapshotDevices = null)
+    public IRunSourceFileSystem Create(IReadOnlyList<BackupSource> sources, IReadOnlyCollection<string>? snapshotDevices = null, IReadOnlyCollection<int>? unreadableSources = null)
     {
         if (!environment.PlaceholdersExposed)
         {
@@ -144,7 +160,7 @@ internal sealed class SourceFileSystemFactory(
             throw new SourceReadingStoppedException();
         }
 
-        return new SourceFileSystem(sources, api, time, options, logger, token, abandonedThreads, snapshotDevices);
+        return new SourceFileSystem(sources, api, time, options, logger, token, abandonedThreads, snapshotDevices, unreadableSources);
     }
 }
 

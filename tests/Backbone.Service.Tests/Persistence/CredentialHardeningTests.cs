@@ -87,7 +87,7 @@ public sealed class CredentialHardeningTests : IDisposable
 
         foreach (var call in new Func<Task>[]
         {
-            () => server.Operations.SaveCredentialAsync(share, new CredentialInput { UserName = "ana", Password = Password }, Ct),
+            () => server.Operations.SaveCredentialAsync(TestSids.Ana, share, new CredentialInput { UserName = "ana", Password = Password }, Ct),
             () => server.Operations.GetCredentialInfoAsync(share, Ct),
             () => server.Operations.DeleteCredentialAsync(share, Ct),
         })
@@ -118,7 +118,7 @@ public sealed class CredentialHardeningTests : IDisposable
     public void ToString_sanitizes_the_share_root_and_never_includes_the_user_or_the_password()
     {
         var root = "\\\\nas\\a\nFALSA LÍNEA\u202Ex";
-        using var credential = new NasCredential(root, "ana", DateTimeOffset.UnixEpoch, Pinned(Password), Password.Length);
+        using var credential = new NasCredential(root, "ana", DateTimeOffset.UnixEpoch, Pinned(Password), Password.Length, isExplicit: false);
 
         var text = credential.ToString();
 

@@ -13,6 +13,7 @@ namespace Backbone.Service.Tests.TestSupport;
 internal sealed class FakeRepositoryStorageFactory : IRepositoryStorageFactory
 {
     private readonly ConcurrentDictionary<string, IRepositoryStorage> _storages = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, InMemoryRepositoryStorage> _memories = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Destinos para los que se ha creado un almacenamiento, en orden.</summary>
     public ConcurrentQueue<string> Requested { get; } = new();
@@ -22,15 +23,18 @@ internal sealed class FakeRepositoryStorageFactory : IRepositoryStorageFactory
 
     /// <summary>Almacenamiento (en memoria) del destino; lo crea vacío si no existía.</summary>
     public InMemoryRepositoryStorage Memory(string destination) =>
-        (InMemoryRepositoryStorage)_storages.GetOrAdd(destination, static _ => new InMemoryRepositoryStorage(createRoot: false));
+        _memories.GetOrAdd(destination, static _ => new InMemoryRepositoryStorage(createRoot: false));
 
-    /// <summary>Sustituye el almacenamiento del destino (p. ej. por uno que falla).</summary>
+    /// <summary>
+    /// Sustituye el almacenamiento del destino (p. ej. por uno que falla o que envuelve a <see cref="Memory"/>); <see cref="Memory"/>
+    /// sigue dando el repositorio en memoria.
+    /// </summary>
     public void Set(string destination, IRepositoryStorage storage) => _storages[destination] = storage;
 
     public IRepositoryStorage Create(IShareConnection connection, string destination)
     {
         Requested.Enqueue(destination);
         Connections.Enqueue(connection);
-        return _storages.GetOrAdd(destination, static _ => new InMemoryRepositoryStorage(createRoot: false));
+        return _storages.TryGetValue(destination, out var storage) ? storage : Memory(destination);
     }
 }

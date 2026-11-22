@@ -28,6 +28,9 @@
     <Compile Include="..\Backbone.Service.Tests\TestSupport\TestFileTrust.cs" LinkBase="ServiceTestSupport" />
     <Compile Include="..\Backbone.Service.Tests\TestSupport\FakeLocalFileSystemInspector.cs" LinkBase="ServiceTestSupport" />
     <Compile Include="..\Backbone.Service.Tests\TestSupport\FakeJobActivity.cs" LinkBase="ServiceTestSupport" />
+    <Compile Include="..\Backbone.Service.Tests\TestSupport\FakeSourceFileSystem.cs" LinkBase="ServiceTestSupport" />
+    <Compile Include="..\Backbone.Service.Tests\TestSupport\ConnectionTesterExtensions.cs" LinkBase="ServiceTestSupport" />
+    <Compile Include="..\Backbone.Service.Tests\TestSupport\TestSids.cs" LinkBase="ServiceTestSupport" />
   </ItemGroup>
 
   <ItemGroup>
