@@ -10,8 +10,9 @@ namespace Backbone.App.ViewModels;
 /// <param name="JobId">Identificador.</param>
 /// <param name="Name">Nombre.</param>
 /// <param name="Summary">Estado en una línea.</param>
+/// <param name="Run">Estado de ejecución: Copiar ahora, Cancelar y progreso (HU-14).</param>
 /// <param name="IsReadOnly">El destino tiene un formato más nuevo (RNF-14): se muestra el aviso de solo lectura.</param>
-internal sealed record JobCard(Guid JobId, string Name, string Summary, bool IsReadOnly = false);
+internal sealed record JobCard(Guid JobId, string Name, string Summary, JobRunState Run, bool IsReadOnly = false);
 
 /// <summary>Página Inicio (§9.2): una tarjeta por trabajo y estado vacío si no hay ninguno (§9.3).</summary>
 internal sealed partial class HomeViewModel : ObservableObject, IDisposable
@@ -19,6 +20,7 @@ internal sealed partial class HomeViewModel : ObservableObject, IDisposable
     private readonly IBackboneService _service;
     private readonly Func<string, string> _getString;
     private readonly BackboneErrorTexts _errorTexts;
+    private readonly JobRunTracker _tracker;
     private int _version;
 
     public HomeViewModel(IBackboneService service, Func<string, string> getString)
@@ -27,6 +29,7 @@ internal sealed partial class HomeViewModel : ObservableObject, IDisposable
         _getString = getString;
         _errorTexts = new BackboneErrorTexts(getString);
         Error = string.Empty;
+        _tracker = new JobRunTracker(service, getString);
         _service.StatusChanged += OnStatusChanged;
     }
 
@@ -74,7 +77,11 @@ internal sealed partial class HomeViewModel : ObservableObject, IDisposable
         }
     }
 
-    public void Dispose() => _service.StatusChanged -= OnStatusChanged;
+    public void Dispose()
+    {
+        _service.StatusChanged -= OnStatusChanged;
+        _tracker.Dispose();
+    }
 
     [RelayCommand]
     private void CreateJob() => CreateJobRequested?.Invoke(this, EventArgs.Empty);
@@ -88,10 +95,11 @@ internal sealed partial class HomeViewModel : ObservableObject, IDisposable
 
     private void Apply(ServiceStatus status)
     {
+        _tracker.Apply(status);
         Cards.Clear();
         foreach (var job in status.Jobs)
         {
-            Cards.Add(new JobCard(job.JobId, job.JobName, Describe(job), job.RepositoryState == RepositoryState.ReadOnlyNewerFormat));
+            Cards.Add(new JobCard(job.JobId, job.JobName, Describe(job), _tracker.Get(job.JobId), job.RepositoryState == RepositoryState.ReadOnlyNewerFormat));
         }
 
         IsLoaded = true;

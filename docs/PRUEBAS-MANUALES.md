@@ -573,3 +573,11 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 - Tras reiniciar el servicio no debe aparecer el aviso hasta volver a guardar o ejecutar el trabajo.
 - Guardar un trabajo con una carpeta con archivos ajenos como destino: el error aparece bajo el campo Destino con el texto del recurso.
 - Escalado al 200 %: el aviso no se recorta.
+
+## HU-14: Copiar ahora y Cancelar (app)
+
+- En Inicio y en Trabajos, cada trabajo muestra "Copiar ahora"; al pulsarlo pasa a "Cancelar" mientras está en cola o en ejecución, y a "Cancelando…" (deshabilitado) hasta que la ejecución termina; después vuelve "Copiar ahora".
+- La tarjeta de Inicio muestra fase, archivos y bytes procesados (sin barra de porcentaje) y se actualiza sin parpadear.
+- Pulsar "Copiar ahora" con el trabajo ya en marcha muestra un aviso informativo, no un error.
+- Bandeja: "Copiar todo ahora" lanza los trabajos activados; con alguno ya en marcha no aparece error.
+- Narrador lee "Copiar ahora"/"Cancelar" dentro de la tarjeta del trabajo; tabulación lógica; alto contraste y escalado al 200 % sin recortes.

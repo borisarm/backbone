@@ -38,9 +38,29 @@
         <ListView.ItemTemplate>
           <DataTemplate x:DataType="vm:JobListItem">
             <StackPanel Padding="0,8" Spacing="2" AutomationProperties.Name="{x:Bind Name}">
-              <TextBlock Text="{x:Bind Name}" Style="{StaticResource BodyStrongTextBlockStyle}" />
-              <TextBlock Text="{x:Bind Summary}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                         TextTrimming="CharacterEllipsis" />
+              <Grid ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Spacing="2">
+                  <TextBlock Text="{x:Bind Name}" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                  <TextBlock Text="{x:Bind Summary}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                             TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+                <Button Grid.Column="1" x:Uid="Run_RunNow" Command="{x:Bind Run.RunNowCommand}"
+                        IsEnabled="{x:Bind Run.CanRunNow, Mode=OneWay}"
+                        Visibility="{x:Bind Run.ShowRunNow, Mode=OneWay}" VerticalAlignment="Center" />
+                <Button Grid.Column="1" Content="{x:Bind Run.CancelText, Mode=OneWay}" Command="{x:Bind Run.CancelCommand}"
+                        IsEnabled="{x:Bind Run.CanCancel, Mode=OneWay}"
+                        Visibility="{x:Bind Run.ShowCancel, Mode=OneWay}" VerticalAlignment="Center" />
+              </Grid>
+              <InfoBar Severity="Informational" IsClosable="False" Margin="0,8,0,0"
+                       IsOpen="{x:Bind Run.HasNotice, Mode=OneWay}" Message="{x:Bind Run.Notice, Mode=OneWay}"
+                       Visibility="{x:Bind Run.HasNotice, Mode=OneWay}" />
+              <InfoBar Severity="Error" IsClosable="False" Margin="0,8,0,0"
+                       IsOpen="{x:Bind Run.HasError, Mode=OneWay}" Message="{x:Bind Run.Error, Mode=OneWay}"
+                       Visibility="{x:Bind Run.HasError, Mode=OneWay}" />
               <InfoBar Severity="Warning" IsClosable="False" IsOpen="True" Margin="0,8,0,0"
                          x:Uid="Repo_ReadOnly" Visibility="{x:Bind IsReadOnly}" />
             </StackPanel>
