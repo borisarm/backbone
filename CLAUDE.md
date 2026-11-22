@@ -2,7 +2,7 @@
 
 Servicio de Windows + app WinUI 3 que hace copias de seguridad versionadas y deduplicadas de carpetas de Windows 11 a un NAS (OpenMediaVault) por SMB.
 
-- Especificación: [docs/ESPECIFICACION.md](docs/ESPECIFICACION.md). **Es la fuente de verdad.** Si el código y la especificación discrepan, se para y se pregunta; no se improvisa.
+- Especificación: [docs/ESPECIFICACION.md](docs/ESPECIFICACION.md) es el índice; el texto está repartido en un archivo por sección en [docs/espec/](docs/espec/). **Es la fuente de verdad.** Si el código y la especificación discrepan, se para y se pregunta; no se improvisa.
 - Historias de usuario y seguimiento: [docs/HISTORIAS.md](docs/HISTORIAS.md).
 - Idioma: documentación, mensajes de commit y textos de interfaz en español; identificadores de código en inglés.
 
@@ -40,10 +40,10 @@ dotnet run --project src/Backbone.App -p:Platform=x64
 La sesión principal actúa de **coordinadora**: no implementa, reparte, integra y verifica. Para cada historia:
 
 1. **Elegir** la siguiente historia según "Orden de desarrollo recomendado" en `docs/HISTORIAS.md`, comprobando que sus dependencias están terminadas.
-2. **Delegar** en el agente indicado en la historia, pasándole el identificador (p. ej. "Implementa HU-13") y cualquier decisión tomada antes. Si la historia tiene colaboradores, primero el propietario y después cada colaborador con lo que le toca.
+2. **Delegar** en el agente indicado en la historia, pasándole el identificador (p. ej. "Implementa HU-13") y cualquier decisión tomada antes. Si la historia tiene colaboradores, primero el propietario y después cada colaborador con lo que le toca. El coordinador pega en el prompt el texto de la historia y las secciones (§) relevantes, para que el agente no lea `docs/HISTORIAS.md` entero. No se lanza un agente aparte para un cambio trivial en una ruta ajena: el propietario lo pide en su informe y se agrupa con el siguiente encargo de ese agente.
 3. **Contrato primero**: si una historia requiere cambiar `Backbone.Contracts`, primero lo hace `backbone-architect`, después el resto.
 4. **Pruebas**: al terminar, `backbone-qa` revisa que cada criterio de aceptación tiene prueba, añade las que falten y ejecuta toda la batería.
-5. **Seguridad**: si la historia toca IPC, credenciales, ACL, restauración, rutas de archivo o el instalador, `backbone-security-review` revisa el diff. Los hallazgos críticos o altos vuelven al agente propietario.
+5. **Seguridad**: si la historia toca IPC, credenciales, ACL, restauración, rutas de archivo o el instalador, `backbone-security-review` revisa el diff. Solo cuando el diff toca de verdad esas áreas; en cambios menores (documentación, textos, pruebas) se omite. Los hallazgos críticos o altos vuelven al agente propietario.
 6. **Cerrar**: `dotnet build -warnaserror` y las pruebas pasan; se actualiza la columna Estado en `docs/HISTORIAS.md`; un commit por historia.
 7. **Paralelismo**: historias de la misma iteración y de agentes distintos pueden ir en paralelo. Si dos agentes van a tocar la misma solución a la vez, lanzarlos con `isolation: "worktree"` y fusionar en orden.
 

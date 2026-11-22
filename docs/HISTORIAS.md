@@ -1,6 +1,6 @@
 # Backbone — Historias de usuario
 
-Referencia: [ESPECIFICACION.md](ESPECIFICACION.md). Cada historia enlaza los requisitos (RF/RNF) que cubre.
+Referencia: [ESPECIFICACION.md](ESPECIFICACION.md) (índice; cada sección está en [`espec/`](espec/)). Cada historia enlaza los requisitos (RF/RNF) que cubre.
 
 **Formato de cada historia**
 
