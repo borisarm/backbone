@@ -40,6 +40,7 @@ internal sealed class FakeShareConnector : IShareConnector
     public async Task<IShareConnection> ConnectAsync(NasCredential credential, CancellationToken ct)
     {
         LastCredential = credential;
+        Events.Enqueue("connect:" + credential.ShareRoot);
         Connections.Enqueue((credential.ShareRoot, credential.UserName, credential.PasswordWithNullTerminator.ToString()));
         if (ConnectGate is { } gate)
         {
@@ -61,6 +62,7 @@ internal sealed class FakeShareConnector : IShareConnector
             throw error;
         }
 
+        UseRecords[credential.ShareRoot] = 0;
         Interlocked.Increment(ref _openConnections);
         var connection = new FakeShareConnection(this, credential.ShareRoot);
         Created.Enqueue(connection);
@@ -70,9 +72,19 @@ internal sealed class FakeShareConnector : IShareConnector
     /// <summary>Raíces cerradas a la fuerza (parada del servicio).</summary>
     public ConcurrentQueue<string> ForcedDisconnects { get; } = new();
 
+    /// <summary>
+    /// Registros de uso de Windows (conexiones con credencial explícita) por raíz. Como en Windows, hay uno por raíz aunque se
+    /// conecte dos veces, y una desconexión lo borra aunque se haya conectado otra vez entretanto (ALTA-1, §8.2 B-1).
+    /// </summary>
+    public ConcurrentDictionary<string, byte> UseRecords { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Orden de las operaciones de conexión: <c>connect:&lt;raíz&gt;</c> al empezar a conectar y <c>disconnect:&lt;raíz&gt;</c> al terminar de cerrar.</summary>
+    public ConcurrentQueue<string> Events { get; } = new();
+
     public Task ForceDisconnectAsync(string shareRoot, CancellationToken ct)
     {
         ForcedDisconnects.Enqueue(shareRoot);
+        UseRecords.TryRemove(shareRoot, out _);
         return Task.CompletedTask;
     }
 
@@ -115,6 +127,15 @@ internal sealed class FakeShare
 
     /// <summary>Error al cerrar la conexión.</summary>
     public Exception? DisposeError { get; set; }
+
+    /// <summary>
+    /// <c>WNetCancelConnection2</c> sin forzar falla sin lanzar (p. ej. <c>ERROR_OPEN_FILES</c>, 2401): la conexión y su registro
+    /// de uso siguen vivos y <see cref="IShareConnection.DisconnectFailed"/> es verdadero.
+    /// </summary>
+    public bool DisconnectFails { get; set; }
+
+    /// <summary>Si no es nulo, cerrar la conexión (<c>WNetCancelConnection2</c>) espera a que se complete.</summary>
+    public TaskCompletionSource? DisposeGate { get; set; }
 
     /// <summary>Error no previsto (no es un <see cref="ShareException"/>) al leer la carpeta.</summary>
     public Exception? UnexpectedListError { get; set; }
@@ -164,10 +185,15 @@ internal sealed class FakeShareConnection(FakeShareConnector owner, string share
 
     public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
+    public bool DisconnectFailed { get; private set; }
+
     /// <summary>Se cerró con operaciones aún en curso (no debe pasar).</summary>
     public bool DisposedWithOperationsInFlight { get; private set; }
 
     private FakeShare Share => owner.Share;
+
+    public Task<bool> HasUseRecordAsync(CancellationToken ct) =>
+        RunAsync("UseRecord", () => Task.FromResult(owner.UseRecords.ContainsKey(ShareRoot)));
 
     public Task<bool> DirectoryExistsAsync(string path, CancellationToken ct) =>
         RunAsync("Exists", () => Task.FromResult(string.Equals(path, ShareRoot, StringComparison.OrdinalIgnoreCase) || Share.Directories.ContainsKey(path)));
@@ -234,19 +260,32 @@ internal sealed class FakeShareConnection(FakeShareConnector owner, string share
             return Task.FromResult<object?>(null);
         });
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 0)
         {
             DisposedWithOperationsInFlight = Volatile.Read(ref _inFlight) != 0;
+            if (Share.DisposeGate is { } gate)
+            {
+                await gate.Task.ConfigureAwait(false);
+            }
+
+            if (Share.DisconnectFails)
+            {
+                DisconnectFailed = true;
+                owner.Events.Enqueue("disconnect-failed:" + ShareRoot);
+                owner.Closed();
+                return;
+            }
+
+            owner.UseRecords.TryRemove(ShareRoot, out _);
+            owner.Events.Enqueue("disconnect:" + ShareRoot);
             owner.Closed();
             if (Share.DisposeError is { } error)
             {
                 throw error;
             }
         }
-
-        return ValueTask.CompletedTask;
     }
 
     private async Task<T> RunAsync<T>(string operation, Func<Task<T>> body, bool gate = true)

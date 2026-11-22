@@ -38,7 +38,8 @@ internal sealed class ServiceRuntimeInfo(TimeProvider timeProvider)
 /// <summary>
 /// Operaciones del servicio expuestas por IPC, ya autorizadas y con la entrada genérica validada por
 /// <see cref="ConnectionRpcTarget"/>. En HT-03: información del servicio y usuarios autorizados (HU-31). En HU-04:
-/// credenciales del NAS. En HU-05: "Probar conexión". En HU-07: trabajos (<c>jobs.json</c>) y su validación.
+/// credenciales del NAS. En HU-05: "Probar conexión". En HU-07: trabajos (<c>jobs.json</c>) y su validación. En HU-06:
+/// inicialización o adopción del repositorio del destino al guardar un trabajo.
 /// </summary>
 internal sealed class BackboneOperations(
     ServiceRuntimeInfo runtime,
@@ -49,7 +50,9 @@ internal sealed class BackboneOperations(
     JobValidator jobValidator,
     IJobActivity jobActivity,
     ServiceStatusProvider status,
-    ConnectionTester connectionTester)
+    ConnectionTester connectionTester,
+    RepositoryPreparer repositories,
+    RepositoryStateTracker repositoryStates)
 {
     // ---- Estado y trabajos (HU-07) ----
 
@@ -83,8 +86,14 @@ internal sealed class BackboneOperations(
     /// impiden);</item>
     /// <item><see cref="BackboneErrorCode.CredentialRequired"/> si no hay credencial guardada para el recurso del destino
     /// (§7.5 A-3: nunca se usa la cuenta del equipo);</item>
+    /// <item>inicialización o adopción del repositorio del destino (RF-63, HU-06, <see cref="RepositoryPreparer"/>): un
+    /// destino con archivos que no son un repositorio falla con <see cref="BackboneErrorCode.ValidationFailed"/>
+    /// (<see cref="ValidationIssueCode.DestinationNotRepository"/>) y uno dañado con
+    /// <see cref="BackboneErrorCode.RepositoryCorrupt"/>, en los dos casos sin escribir nada; uno de formato superior se
+    /// guarda con <see cref="Contracts.RepositoryState.ReadOnlyNewerFormat"/> en <see cref="JobStatus.RepositoryState"/>
+    /// (RNF-14). Los fallos de conexión dan su código (§7.2);</item>
     /// <item>escritura atómica de <c>jobs.json</c>, con las rutas de origen y el destino <b>normalizados</b> (§7.5 "Ruta de
-    /// origen", BAJA-1), y <c>StatusChanged</c>.</item>
+    /// origen", BAJA-1), y <c>StatusChanged</c> (que ya lleva el estado del repositorio).</item>
     /// </list>
     /// Existencia, destino repetido y credencial (BAJA-2) se comprueban otra vez bajo el bloqueo de escritura, por si otro
     /// cliente ha guardado o borrado entretanto.
@@ -111,8 +120,34 @@ internal sealed class BackboneOperations(
 
         await RequireCredentialAsync(shareRoot, ct).ConfigureAwait(false);
 
+        // RF-63: antes de guardar nada en jobs.json, el destino tiene que ser un repositorio utilizable (o quedar inicializado).
+        var prepared = await repositories.PrepareAsync(destination, ct).ConfigureAwait(false);
+        var repositoryState = prepared == RepositoryPreparationOutcome.ReadOnlyNewerFormat
+            ? Contracts.RepositoryState.ReadOnlyNewerFormat
+            : Contracts.RepositoryState.ReadWrite;
+
         var toSave = validation.Job with { Id = job.Id == Guid.Empty ? Guid.NewGuid() : job.Id };
-        return await jobs.UpdateAsync(
+        var previousState = repositoryStates.Get(toSave.Id);
+        try
+        {
+            return await SaveValidatedJobAsync(job, toSave, destination, shareRoot, repositoryState, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Solo si nadie lo ha cambiado entretanto (otro guardado del mismo trabajo): su valor es más reciente que el nuestro.
+            repositoryStates.RestoreIfUnchanged(toSave.Id, repositoryState, previousState);
+            throw;
+        }
+    }
+
+    private Task<JobDefinition> SaveValidatedJobAsync(
+        JobDefinition job,
+        JobDefinition toSave,
+        string destination,
+        string shareRoot,
+        Contracts.RepositoryState repositoryState,
+        CancellationToken ct) =>
+        jobs.UpdateAsync(
             async (list, token) =>
             {
                 var index = IndexOf(list, toSave.Id);
@@ -128,10 +163,12 @@ internal sealed class BackboneOperations(
 
                 // BAJA-2: la credencial puede haberse borrado mientras se validaba.
                 await RequireCredentialAsync(shareRoot, token).ConfigureAwait(false);
+
+                // Antes de persistir: StatusChanged se emite al persistir y ya debe llevar el estado del repositorio.
+                repositoryStates.Set(toSave.Id, repositoryState);
                 return (index < 0 ? list.Add(toSave) : list.SetItem(index, toSave), toSave);
             },
-            ct).ConfigureAwait(false);
-    }
+            ct);
 
     private async Task RequireCredentialAsync(string shareRoot, CancellationToken ct)
     {
@@ -161,6 +198,7 @@ internal sealed class BackboneOperations(
                     throw new BackboneException(BackboneErrorCode.JobAlreadyRunning, "The job is running or queued; cancel it first.");
                 }
 
+                repositoryStates.Remove(jobId);
                 return (list.RemoveAt(index), true);
             },
             ct);

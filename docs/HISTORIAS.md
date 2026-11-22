@@ -168,6 +168,7 @@ Como Luis, quiero que si reinstalo Windows y apunto al mismo destino, Backbone r
   2. Dado un destino con un repositorio v1 válido, entonces se adopta y sus snapshots aparecen en Restaurar.
   3. Dado un destino con archivos que no son un repositorio, entonces la validación falla con un mensaje que lo explica y no se escribe nada.
   4. Dado un repositorio de formato superior, se muestra solo lectura y aviso (RNF-14).
+- **Decidido (revisión de seguridad de HU-06, coordinador)**: se adelantan de HU-14 el estado "cerrando" (B-1) y el cierre del gestor en la parada (B-2), porque `SaveJobAsync` es la primera operación IPC que escribe en el NAS. Además: comprobación del registro de uso antes de la primera E/S, preparaciones limitadas (1 por servidor y 4 en total, `NasBusy`), cancelación de las preparaciones pendientes en la parada, y reintento forzado de las desconexiones fallidas. Un error de E/S durante el examen nunca cuenta como destino vacío. M-1 sigue en HU-14. Detalle en §8.2 y §7.
 
 ---
 
@@ -333,13 +334,14 @@ Como Luis, quiero lanzar una copia en el momento y poder cancelarla, para contro
   3. Tras cancelar, `check` del repositorio es correcto y la siguiente ejecución termina bien.
 - **Requisito previo (revisión final de seguridad de HU-05; decisión del coordinador)**: antes de que las copias usen `ShareConnectionManager`, backbone-service corrige en el gestor (§8.2 "Conexiones al NAS"):
   - **M-1, oráculo de contraseñas**: la reutilización de una conexión se decide por la **identidad** de la credencial guardada (raíz más `UpdatedUtc`), no por su contenido. Se quita la huella HMAC. Una credencial explícita no guardada nunca comparte una conexión ajena. Si ya hay otra conexión con ese servidor que no se puede compartir, la respuesta es `NasBusy` (1018, contrato 1.3), coincida o no el secreto. Además, tras 5 `CredentialsRejected` seguidos de un SID, sus pruebas con credencial explícita dan `NasBusy` durante 5 min. backbone-app traduce `NasBusy` (es-ES y en-US).
-  - **B-1**: un `AcquireAsync` de una raíz en estado "cerrando" espera a que termine la desconexión pendiente.
-  - **B-2**: en la parada, el gestor queda cerrado (`AcquireAsync` lanza) y las conexiones aún en curso se desconectan a la fuerza cuando terminan. 2250 no se registra como "forzada". El límite de dos pruebas en total cuenta las operaciones abandonadas, y los semáforos por servidor se liberan cuando quedan libres.
+  - **B-1** (hecho en HU-06): un `AcquireAsync` de una raíz en estado "cerrando" espera a que termine la desconexión pendiente.
+  - **B-2** (hecho en HU-06): en la parada, el gestor queda cerrado (`AcquireAsync` lanza) y las conexiones aún en curso se desconectan a la fuerza cuando terminan. 2250 no se registra como "forzada". El límite de dos pruebas en total cuenta las operaciones abandonadas, y los semáforos por servidor se liberan cuando quedan libres.
   - **B-3**: la ruta final del archivo de prueba se comprueba sobre su handle ya abierto, antes de escribir. Si no se puede obtener, `AccessDenied`.
   - Informativo: la sesión de inicio `0x3e7` es común a todos los servicios LocalSystem (§8.2). Riesgo de *DNS rebinding* y de referencias DFS hacia el propio equipo: R14 (§13).
 - **Requisito (revisión final de HU-07, B-3; revisión del `SourceFileSystem` de HU-08, M-1)**: la repetición de la validación en el `JobRunner` no pasa por el límite de 4 validaciones simultáneas, pero sus hilos abandonados cuentan en el **mismo contador** de hilos abandonados que la lectura de orígenes; con 4, la ejecución termina `Failed`/`Internal` sin resolver ni leer nada y se registra el evento 1005 (§8.2 "Plazo de las lecturas de los orígenes").
 - **Al empezar cada ejecución** (HU-07, §8.4 paso 2): el `JobRunner` repite la resolución controlada de los orígenes (ADR-20) y la comprobación de la credencial guardada (`CredentialRequired` sin conectar).
 - **Requisito (cierre de HU-08 servicio; decisión del coordinador)**: en una copia en vivo, el `JobRunner` pasa como `ReadPath` de cada `BackupSource` la **ruta final** de esa resolución (`FinalPath`, o `GuidPath` si el volumen no tiene letra), **nunca la ruta configurada** en `jobs.json`. `SourceFileSystem` vuelve a bajar hasta ella desde el volumen sin seguir ningún enlace (§8.2 "Apertura relativa", §8.3 punto 6), así que con la ruta configurada un origen con un *junction* legítimo daría `SourceRootUnreadable`. Hace falta una prueba que lo compruebe.
+- **Requisito (cierre de HU-06; decisión del coordinador)**: `RepositoryStateTracker` es orientativo y no autoriza escrituras. Al abrir el repositorio en cada ejecución, el `JobRunner` vuelve a examinarlo (`ProbeAsync`), llama a `RepositoryStateTracker.Set` y, si es de formato superior, termina sin escribir (RNF-14). Hay que detallarlo en §8.4 paso 3.
 
 ### HU-15 · Copiar archivos abiertos (VSS)
 Como Ana, quiero que se copien también los archivos que tengo abiertos, como el correo de Outlook, para que no queden fuera de la copia.
@@ -611,7 +613,7 @@ Las historias de una misma fila pueden desarrollarse en paralelo por agentes dis
 | HU-03 | F2 | 5 | backbone-app | Pendiente |
 | HU-04 | MVP | 5 | backbone-service | Hecha (servicio; criterio 4 pendiente de la app; criterio 5 en PM-HU04-01) |
 | HU-05 | MVP | 3 | backbone-service | Hecha (servicio; botón de la app pendiente; PM-HU05-01 pendiente; integración contra el NAS superada el 2026-11-22, salvo el recurso de solo lectura) |
-| HU-06 | MVP | 3 | backbone-service | Pendiente |
+| HU-06 | MVP | 3 | backbone-service | Hecha (servicio; aviso de solo lectura y textos de la app pendientes; criterio 2 "aparecen en Restaurar" pendiente de `GetSnapshotsAsync`; integración contra el NAS y PM-HU06-01 pendientes) |
 | HU-07 | MVP | 5 | backbone-app | Hecha (servicio e interfaz; pruebas manuales PM-HU07-01 a 08 y pruebas elevadas pendientes) |
 | HU-08 | MVP | 3 | backbone-core | Hecha (motor y servicio; traducción en el JobRunner con HU-14; vista previa por IPC (criterio 5, F2) pendiente; PM-HU08-01 y PM-HU08-02 pendientes; pruebas elevadas superadas el 2026-11-22) |
 | HU-09 | MVP | 5 | backbone-service | Pendiente |

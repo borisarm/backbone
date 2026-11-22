@@ -118,6 +118,7 @@ internal static class BackboneHost
         services.AddSingleton<ProtectedFolderResolver>();
         services.AddSingleton<JobValidator>();
         services.TryAddSingleton<IJobActivity, NoJobActivity>();
+        services.AddSingleton<RepositoryStateTracker>();
         services.AddSingleton<ServiceStatusProvider>();
 
         // Conexión al NAS (HU-05, §8.2 ShareConnector).
@@ -126,6 +127,9 @@ internal static class BackboneHost
         services.AddSingleton<ShareConnectionManager>();
         services.TryAddSingleton(new ConnectionTestOptions());
         services.AddSingleton<ConnectionTester>();
+        services.TryAddSingleton<IRepositoryStorageFactory, UncRepositoryStorageFactory>();
+        services.TryAddSingleton(new RepositoryPreparationOptions());
+        services.AddSingleton<RepositoryPreparer>();
         services.AddHostedService<ShareConnectionShutdown>();
 
         // IPC.

@@ -545,3 +545,24 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 **Resultado esperado:** cada caso con su código y su mensaje, en menos de 15 s; ningún archivo de prueba en el NAS; la contraseña no aparece en ningún archivo.
 
 **Estado:** pendiente. El 2026-11-18, sin elevar: `A_server_that_does_not_exist_is_NasUnreachable_in_less_than_15_seconds` correcta contra 192.0.2.1 (unos 11 s); con `net use` contra 192.168.1.163, un usuario inexistente y una contraseña errónea, Samba devuelve 86 o 1326 (los dos se traducen a `CredentialsRejected`). El 2026-11-21, paso 1 contra `\192.168.1.163` (sin elevar, ejecutado por el usuario): 4 correctas y 1 omitida (`A_read_only_share_is_AccessDenied_after_reading`, falta `BACKBONE_IT_SMB_READONLY_SHARE`). Pendientes ese caso de solo lectura y los pasos 2 a 13.
+
+## PM-HU06-01 · Reinstalar Windows y apuntar al mismo destino: se adopta el repositorio
+
+**Cubre:** HU-06, criterio 2 (RF-63): un destino con un repositorio v1 válido se adopta y su historial aparece en Restaurar; y, de paso, criterios 1, 3 y 4 con el NAS real.
+
+**Por qué es manual:** exige un equipo (o máquina virtual) recién instalado sin ninguna configuración de Backbone y el NAS real. "Aparecen en Restaurar" depende de `GetSnapshotsAsync` y de la pantalla Restaurar, que aún no existen; las pruebas automáticas (`RepositoryPreparationTests`, y `RepositoryPreparationIntegrationTests` en `Backbone.IntegrationTests`) solo verifican que el repositorio se adopta sin escribir y conserva sus snapshots.
+
+**Pasos**
+1. En el equipo original, con un trabajo configurado hacia `\\192.168.1.163\<recurso>\<carpeta>`, hacer al menos dos copias (con algún cambio entre ellas). Anotar los identificadores de los snapshots y la huella de `repo.json` en el NAS (`ls -la snapshots`, `sha256sum repo.json`).
+2. Reinstalar Windows 11 (o usar una máquina virtual limpia) e instalar Backbone. No importar ninguna configuración.
+3. En la app, guardar la credencial del recurso y crear un trabajo nuevo con el **mismo** destino (otro nombre y otros orígenes si se quiere).
+4. Guardar el trabajo: se acepta sin error. En el log del servicio: "Repositorio existente adoptado en ... (creado por Backbone ... en <PC anterior>)".
+5. En el NAS, comprobar que no se ha modificado nada: `sha256sum repo.json` igual, ningún archivo con fecha posterior al guardado y ninguna carpeta `tmp` nueva.
+6. Abrir Restaurar para ese trabajo (cuando exista `GetSnapshotsAsync` y la pantalla): aparecen los snapshots del paso 1 con sus fechas.
+7. Variante, carpeta con archivos ajenos: apuntar un trabajo nuevo a una carpeta del NAS con un `notas.txt` y sin `repo.json`. Guardar: error de validación en el campo Destino que explica que la carpeta tiene archivos y no es un repositorio de Backbone; en el NAS no se ha creado nada.
+8. Variante, formato superior: en una carpeta de pruebas, crear un `repo.json` con `"formatVersion": 2`. Guardar el trabajo: se guarda con el aviso de repositorio de solo lectura (formato más reciente) y no se escribe nada en el NAS.
+9. Buscar la contraseña en `%ProgramData%\Backbone` como en PM-HU04-01, paso 6: ninguna coincidencia.
+
+**Resultado esperado:** el repositorio existente se adopta sin tocarlo y su historial es visible; las variantes se rechazan o quedan en solo lectura con su mensaje.
+
+**Estado:** pendiente (Restaurar no existe aún).

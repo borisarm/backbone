@@ -424,6 +424,30 @@ internal static partial class NativeMethods
     [LibraryImport("mpr.dll", EntryPoint = "WNetCancelConnection2W", StringMarshalling = StringMarshalling.Utf16)]
     internal static partial int WNetCancelConnection2(string name, uint flags, [MarshalAs(UnmanagedType.Bool)] bool force);
 
+    /// <summary><c>RESOURCE_CONNECTED</c> de <c>WNetOpenEnumW.dwScope</c>: las conexiones actuales (también sin letra de unidad).</summary>
+    internal const uint ResourceConnected = 0x1;
+
+    /// <summary><c>RESOURCETYPE_ANY</c>.</summary>
+    internal const uint ResourceTypeAny = 0x0;
+
+    /// <summary><c>ERROR_MORE_DATA</c>: el búfer es pequeño; el tamaño necesario se devuelve en <c>lpBufferSize</c>.</summary>
+    internal const int ErrorMoreData = 234;
+
+    /// <summary><c>ERROR_NO_MORE_ITEMS</c>: fin de la enumeración.</summary>
+    internal const int ErrorNoMoreItems = 259;
+
+    /// <summary><c>WNetOpenEnumW</c> (<c>lpNetResource</c> debe ser NULL con <c>RESOURCE_CONNECTED</c>). Devuelve un código Win32.</summary>
+    [LibraryImport("mpr.dll", EntryPoint = "WNetOpenEnumW")]
+    internal static unsafe partial int WNetOpenEnum(uint scope, uint type, uint usage, NetResource* netResource, out nint enumHandle);
+
+    /// <summary><c>WNetEnumResourceW</c>. <paramref name="buffer"/> debe estar alineado (contiene punteros). Devuelve un código Win32.</summary>
+    [LibraryImport("mpr.dll", EntryPoint = "WNetEnumResourceW")]
+    internal static unsafe partial int WNetEnumResource(nint enumHandle, ref uint count, void* buffer, ref uint bufferSize);
+
+    /// <summary><c>WNetCloseEnum</c>. Devuelve un código Win32.</summary>
+    [LibraryImport("mpr.dll", EntryPoint = "WNetCloseEnum")]
+    internal static partial int WNetCloseEnum(nint enumHandle);
+
     /// <summary><c>GetDiskFreeSpaceExW</c>. Con una ruta UNC, la ruta debe acabar en barra invertida.</summary>
     [LibraryImport("kernel32.dll", EntryPoint = "GetDiskFreeSpaceExW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
     [return: MarshalAs(UnmanagedType.Bool)]

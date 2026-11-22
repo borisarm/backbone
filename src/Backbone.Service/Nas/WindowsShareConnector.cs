@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using Backbone.Contracts;
 using Backbone.Service.Os;
 using Backbone.Service.Persistence;
@@ -81,6 +82,75 @@ internal sealed partial class WindowsShareConnector(ILogger<WindowsShareConnecto
             : string.Create(CultureInfo.InvariantCulture, $"{major}.{minor}.{revision}");
     }
 
+    /// <summary>
+    /// Indica si <paramref name="shareRoot"/> figura entre las conexiones actuales de la sesión de inicio del servicio
+    /// (<c>WNetOpenEnum</c> con <c>RESOURCE_CONNECTED</c>, que también lista las conexiones sin letra de unidad).
+    /// </summary>
+    internal static unsafe bool UseRecordExists(string shareRoot)
+    {
+        var error = NativeMethods.WNetOpenEnum(NativeMethods.ResourceConnected, NativeMethods.ResourceTypeAny, 0, null, out var handle);
+        if (error != NativeMethods.ErrorSuccess)
+        {
+            throw new ShareException(ShareErrors.FromWin32(error, ShareOperation.Connect), error);
+        }
+
+        void* buffer = null;
+        try
+        {
+            var size = 16 * 1024u;
+            buffer = NativeMemory.Alloc(size);
+            var wanted = shareRoot.TrimEnd('\\');
+            while (true)
+            {
+                var count = uint.MaxValue;
+                var available = size;
+                error = NativeMethods.WNetEnumResource(handle, ref count, buffer, ref available);
+                if (error == NativeMethods.ErrorNoMoreItems)
+                {
+                    return false;
+                }
+
+                if (error == NativeMethods.ErrorMoreData)
+                {
+                    // Tope (INFO-1): un búfer mayor es un fallo seguro, "sin registro de uso" (no se usa la conexión). Se
+                    // calcula en 64 bits para que size * 2 no desborde.
+                    var grown = Math.Max((ulong)available, (ulong)size * 2);
+                    if (grown > MaxEnumBufferBytes)
+                    {
+                        return false;
+                    }
+
+                    size = (uint)grown;
+                    buffer = NativeMemory.Realloc(buffer, size);
+                    continue;
+                }
+
+                if (error != NativeMethods.ErrorSuccess)
+                {
+                    throw new ShareException(ShareErrors.FromWin32(error, ShareOperation.Connect), error);
+                }
+
+                var items = (NativeMethods.NetResource*)buffer;
+                for (var i = 0u; i < count; i++)
+                {
+                    if (items[i].RemoteName is not null
+                        && string.Equals(new string(items[i].RemoteName).TrimEnd('\\'), wanted, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        finally
+        {
+            _ = NativeMethods.WNetCloseEnum(handle);
+            NativeMemory.Free(buffer);
+        }
+    }
+
+    /// <summary>Tope del búfer de <c>WNetEnumResource</c> (1 MiB); superado, <see cref="UseRecordExists"/> responde "no".</summary>
+    internal const uint MaxEnumBufferBytes = 1024 * 1024;
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "No se pudo cerrar la conexión con el recurso {ShareRoot} (error Win32 {Error}).")]
     private static partial void LogDisconnectFailed(ILogger logger, string shareRoot, int error);
 
@@ -90,8 +160,14 @@ internal sealed partial class WindowsShareConnector(ILogger<WindowsShareConnecto
     private sealed class WindowsShareConnection(string shareRoot, ILogger logger) : IShareConnection
     {
         private int _disposed;
+        private int _disconnectFailed;
 
         public string ShareRoot { get; } = shareRoot;
+
+        public bool DisconnectFailed => Volatile.Read(ref _disconnectFailed) != 0;
+
+        public Task<bool> HasUseRecordAsync(CancellationToken ct) =>
+            Run(() => UseRecordExists(ShareRoot), ct);
 
         public Task<bool> DirectoryExistsAsync(string path, CancellationToken ct) =>
             Task.Run(() => Directory.Exists(path), ct);
@@ -197,6 +273,7 @@ internal sealed partial class WindowsShareConnector(ILogger<WindowsShareConnecto
                 var error = NativeMethods.WNetCancelConnection2(ShareRoot, 0, force: false);
                 if (error is not NativeMethods.ErrorSuccess and not ErrorNotConnected)
                 {
+                    Volatile.Write(ref _disconnectFailed, 1);
                     LogDisconnectFailed(logger, UntrustedText.Describe(ShareRoot), error);
                 }
             }));

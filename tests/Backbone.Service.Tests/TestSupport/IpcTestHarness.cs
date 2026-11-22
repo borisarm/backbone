@@ -18,8 +18,9 @@ internal sealed class IpcTestHarness : IAsyncDisposable
     private readonly TempDirectory _temp = new();
     private readonly List<TestRpcClient> _clients = [];
 
-    public IpcTestHarness(IpcOptions? options = null, IDataProtector? protector = null)
+    public IpcTestHarness(IpcOptions? options = null, IDataProtector? protector = null, RepositoryPreparationOptions? preparation = null)
     {
+        PreparationOptions = preparation ?? new RepositoryPreparationOptions();
         Options = options ?? new IpcOptions();
         LoggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(b => b.AddProvider(Logs).SetMinimumLevel(LogLevel.Trace));
         Directory.CreateDirectory(_temp.Combine("config")); // la crea el servicio al arrancar (§8.3); los almacenes no crean carpetas
@@ -34,15 +35,26 @@ internal sealed class IpcTestHarness : IAsyncDisposable
         ProtectedFolders = new ProtectedFolderResolver(new ServicePaths(_temp.Path), FileSystem, LoggerFactory.CreateLogger<ProtectedFolderResolver>());
         Runner = new SourceValidationRunner(Time, IoOptions);
         Validator = new JobValidator(FileSystem, ProtectedFolders, Runner, HostResolver, Time, LoggerFactory.CreateLogger<JobValidator>());
-        Status = new ServiceStatusProvider(Jobs, Activity, Time);
+        RepositoryStates = new RepositoryStateTracker();
+        Status = new ServiceStatusProvider(Jobs, Activity, RepositoryStates, Time);
+        var connections = Connections = new ShareConnectionManager(ShareConnector, LoggerFactory.CreateLogger<ShareConnectionManager>());
+        var shareCredentials = ShareCredentials = new ShareCredentialProvider(Credentials, LoggerFactory.CreateLogger<ShareCredentialProvider>());
         ConnectionTester = new ConnectionTester(
-            new ShareConnectionManager(ShareConnector, LoggerFactory.CreateLogger<ShareConnectionManager>()),
+            connections,
             HostResolver,
-            new ShareCredentialProvider(Credentials, LoggerFactory.CreateLogger<ShareCredentialProvider>()),
+            shareCredentials,
             Time,
             new ConnectionTestOptions(),
             LoggerFactory.CreateLogger<ConnectionTester>());
-        Operations = new BackboneOperations(Runtime, Settings, Accounts, Credentials, Jobs, Validator, Activity, Status, ConnectionTester);
+        Repositories = new RepositoryPreparer(
+            shareCredentials,
+            connections,
+            RepositoryStorages,
+            Runtime,
+            Time,
+            PreparationOptions,
+            LoggerFactory.CreateLogger<RepositoryPreparer>());
+        Operations = new BackboneOperations(Runtime, Settings, Accounts, Credentials, Jobs, Validator, Activity, Status, ConnectionTester, Repositories, RepositoryStates);
         Manager = new IpcConnectionManager(Authorizer, Accounts, Settings, Operations, Options, Time, LoggerFactory);
         Events = new IpcEventPublisher(Manager, Options, Time);
         Broadcaster = new StatusBroadcaster(Jobs, Status, Events);
@@ -102,6 +114,21 @@ internal sealed class IpcTestHarness : IAsyncDisposable
     public FakeHostResolver HostResolver { get; } = new();
 
     public ConnectionTester ConnectionTester { get; }
+
+    /// <summary>Repositorios en memoria de los destinos (HU-06): por defecto, destinos vacíos.</summary>
+    public FakeRepositoryStorageFactory RepositoryStorages { get; } = new();
+
+    /// <summary>Plazo de la preparación del repositorio (las pruebas de plazo lo acortan antes de usar el arnés).</summary>
+    public RepositoryPreparationOptions PreparationOptions { get; }
+
+    /// <summary>Gestor de conexiones del servicio (el mismo que usan la prueba de conexión y el preparador).</summary>
+    public ShareConnectionManager Connections { get; }
+
+    public ShareCredentialProvider ShareCredentials { get; }
+
+    public RepositoryPreparer Repositories { get; }
+
+    public RepositoryStateTracker RepositoryStates { get; }
 
     public CallerAuthorizer Authorizer { get; }
 

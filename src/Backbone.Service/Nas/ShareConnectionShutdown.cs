@@ -1,14 +1,18 @@
+using Backbone.Service.Jobs;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Backbone.Service.Nas;
 
 /// <summary>
-/// Parada del servicio (revisión de seguridad de HU-05, BAJA-2): espera, con tope, a que terminen las limpiezas de "Probar
-/// conexión" en segundo plano y cierra a la fuerza las conexiones SMB que sigan abiertas o en curso.
+/// Parada del servicio (revisión de seguridad de HU-05, BAJA-2; §8.2 B-2): cierra el gestor (todo
+/// <see cref="ShareConnectionManager.AcquireAsync"/> posterior falla), espera, con tope, a que terminen las limpiezas de "Probar
+/// conexión", las preparaciones de repositorio de <c>SaveJobAsync</c> (HU-06) y las desconexiones en curso, y cierra a la fuerza
+/// las conexiones SMB que sigan abiertas o en curso. Las preparaciones se cancelan primero (BAJA-N1).
 /// </summary>
 internal sealed partial class ShareConnectionShutdown(
     ConnectionTester tester,
+    RepositoryPreparer repositories,
     ShareConnectionManager connections,
     TimeProvider timeProvider,
     ILogger<ShareConnectionShutdown> logger) : IHostedService
@@ -20,9 +24,15 @@ internal sealed partial class ShareConnectionShutdown(
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        connections.Close();
+
+        // BAJA-N1: las preparaciones en curso se cancelan antes de esperar, para que no sigan con E/S cuando se cierren a la fuerza
+        // las conexiones (sin el registro de uso, la E/S saldría con la cuenta del equipo, §7.5 A-3).
+        repositories.CancelAll();
         try
         {
-            await tester.WhenCleanupsCompleteAsync().WaitAsync(CleanupWait, timeProvider, cancellationToken).ConfigureAwait(false);
+            await Task.WhenAll(tester.WhenCleanupsCompleteAsync(), repositories.WhenPreparationsCompleteAsync(), connections.WhenReleasesCompleteAsync())
+                .WaitAsync(CleanupWait, timeProvider, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
         {
@@ -32,6 +42,6 @@ internal sealed partial class ShareConnectionShutdown(
         await connections.ForceDisconnectAllAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Parada del servicio: quedan limpiezas de pruebas de conexión pendientes; se cierran a la fuerza las conexiones.")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Parada del servicio: quedan limpiezas de pruebas de conexión, preparaciones de repositorio o desconexiones pendientes; se cierran a la fuerza las conexiones.")]
     private static partial void LogCleanupsPending(ILogger logger);
 }

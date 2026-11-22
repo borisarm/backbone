@@ -12,10 +12,16 @@ namespace Backbone.Core.Storage;
 /// <para>
 /// No sigue puntos de reanálisis (<i>junctions</i>, enlaces simbólicos) (M-3): antes de cada operación comprueba la raíz,
 /// cada carpeta intermedia (<c>tmp/</c>, <c>locks/</c>, <c>objects/</c>, <c>objects/xx/</c>, <c>snapshots/</c>…) y el propio
-/// elemento si existe; si alguno es un punto de reanálisis, la operación falla con
+/// elemento si existe; en un destino UNC, también las carpetas entre la raíz del recurso (<c>\\servidor\recurso</c>) y la
+/// del destino. Si alguno es un punto de reanálisis, la operación falla con
 /// <see cref="RepositoryErrorKind.Corrupt"/> sin tocar nada. Así un repositorio manipulado no puede hacer que la limpieza
 /// borre, o que una copia escriba, fuera del repositorio. Enumerar una carpeta que contiene un punto de reanálisis
 /// también falla así.
+/// </para>
+/// <para>
+/// Solo «no encontrado» (<see cref="FileNotFoundException"/>, <see cref="DirectoryNotFoundException"/>) significa que algo
+/// no existe: cualquier otro error (red, <c>ACCESS_DENIED</c>, sesión SMB reiniciada) se propaga, para que un fallo
+/// transitorio no haga parecer vacío o inexistente un destino que tiene contenido (HU-06).
 /// </para>
 /// <para>
 /// Queda una ventana entre la comprobación y la operación (TOCTOU) que solo puede aprovechar quien ya puede escribir en
@@ -33,23 +39,26 @@ public sealed class FileSystemRepositoryStorage : IRepositoryStorage
 {
     private const int BufferSize = 81920;
     private readonly string root;
+    private readonly string[] ancestors;
+    private readonly Func<string, FileAttributes> getAttributes;
 
     /// <summary>Crea el almacenamiento sobre un destino UNC <c>\\servidor\recurso[\ruta]</c>.</summary>
     /// <param name="uncRoot">Destino; debe cumplir <see cref="UncPaths.TryParse"/>.</param>
     /// <exception cref="ArgumentException">No es un destino UNC admitido.</exception>
     public FileSystemRepositoryStorage(string uncRoot)
     {
-        if (!UncPaths.TryParse(uncRoot, out _, out var normalized, out var issue))
+        if (!UncPaths.TryParse(uncRoot, out var shareRoot, out var normalized, out var issue))
         {
             throw new ArgumentException($"El destino del repositorio no es una ruta UNC admitida ({issue}).", nameof(uncRoot));
         }
 
         root = Normalize(normalized);
+        ancestors = AncestorsBetween(Normalize(shareRoot), root);
+        getAttributes = File.GetAttributes;
     }
 
-    private FileSystemRepositoryStorage(string localRoot, bool localTesting)
+    private FileSystemRepositoryStorage(string localRoot, string? boundary, Func<string, FileAttributes>? attributes)
     {
-        _ = localTesting;
         ArgumentException.ThrowIfNullOrWhiteSpace(localRoot);
         if (!Path.IsPathFullyQualified(localRoot))
         {
@@ -57,6 +66,8 @@ public sealed class FileSystemRepositoryStorage : IRepositoryStorage
         }
 
         root = Normalize(localRoot);
+        ancestors = boundary is null ? [] : AncestorsBetween(Normalize(boundary), root);
+        getAttributes = attributes ?? File.GetAttributes;
     }
 
     /// <summary>Ruta absoluta de la raíz.</summary>
@@ -68,7 +79,18 @@ public sealed class FileSystemRepositoryStorage : IRepositoryStorage
     /// constructor UNC.
     /// </summary>
     /// <param name="localRoot">Ruta absoluta.</param>
-    internal static FileSystemRepositoryStorage ForLocalTesting(string localRoot) => new(localRoot, localTesting: true);
+    /// <param name="boundary">
+    /// Equivalente de la raíz del recurso: se comprueban también las carpetas entre ella (excluida) y
+    /// <paramref name="localRoot"/>. <see langword="null"/> para no comprobar ninguna por encima de la raíz.
+    /// </param>
+    /// <param name="getAttributes">Sustituto de <see cref="File.GetAttributes(string)"/> para inyectar fallos.</param>
+    internal static FileSystemRepositoryStorage ForLocalTesting(
+        string localRoot,
+        string? boundary = null,
+        Func<string, FileAttributes>? getAttributes = null) => new(localRoot, boundary, getAttributes);
+
+    /// <summary>Carpetas entre la raíz del recurso (excluida) y la del destino (excluida), de arriba abajo.</summary>
+    internal IReadOnlyList<string> AncestorsToCheck => ancestors;
 
     /// <inheritdoc/>
     public Task<Stream> OpenReadAsync(string path, CancellationToken cancellationToken)
@@ -153,17 +175,23 @@ public sealed class FileSystemRepositoryStorage : IRepositoryStorage
     public Task<bool> DirectoryExistsAsync(string path, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(Directory.Exists(Resolve(path, allowRoot: true)));
+        var fullPath = Resolve(path, allowRoot: true);
+        return Task.FromResult(TryGetAttributes(fullPath, out var attributes) && attributes.HasFlag(FileAttributes.Directory));
     }
 
     /// <inheritdoc/>
     public Task<StorageEntry?> GetFileInfoAsync(string path, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var info = new FileInfo(Resolve(path, allowRoot: false));
-        return Task.FromResult(info.Exists
-            ? new StorageEntry(info.Name, IsDirectory: false, info.Length, info.LastWriteTimeUtc)
-            : null);
+        var fullPath = Resolve(path, allowRoot: false);
+        if (!TryGetAttributes(fullPath, out var attributes) || attributes.HasFlag(FileAttributes.Directory))
+        {
+            return Task.FromResult<StorageEntry?>(null);
+        }
+
+        // Length lanza si la lectura falla, en lugar de devolver un valor por defecto.
+        var info = new FileInfo(fullPath);
+        return Task.FromResult<StorageEntry?>(new StorageEntry(info.Name, IsDirectory: false, info.Length, info.LastWriteTimeUtc));
     }
 
     /// <inheritdoc/>
@@ -171,11 +199,16 @@ public sealed class FileSystemRepositoryStorage : IRepositoryStorage
         string directoryPath,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var directory = new DirectoryInfo(Resolve(directoryPath, allowRoot: true));
-        if (!directory.Exists)
+        var fullPath = Resolve(directoryPath, allowRoot: true);
+
+        // Solo «no encontrado» da una secuencia vacía; cualquier otro error se propaga (HU-06). Un archivo en lugar de la
+        // carpeta tampoco tiene contenido que enumerar.
+        if (!TryGetAttributes(fullPath, out var attributes) || !attributes.HasFlag(FileAttributes.Directory))
         {
             yield break;
         }
+
+        var directory = new DirectoryInfo(fullPath);
 
         var options = new EnumerationOptions
         {
@@ -203,6 +236,33 @@ public sealed class FileSystemRepositoryStorage : IRepositoryStorage
 
     private static string Normalize(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
 
+    private static string[] AncestorsBetween(string boundary, string root)
+    {
+        var relative = Path.GetRelativePath(boundary, root);
+        if (relative == ".")
+        {
+            return [];
+        }
+
+        if (Path.IsPathFullyQualified(relative)
+            || relative == ".."
+            || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("La raíz del repositorio no está dentro del límite indicado.", nameof(boundary));
+        }
+
+        var segments = relative.Split(Path.DirectorySeparatorChar);
+        var result = new string[segments.Length - 1];
+        var current = boundary;
+        for (var i = 0; i < result.Length; i++)
+        {
+            current = Path.Join(current, segments[i]);
+            result[i] = current;
+        }
+
+        return result;
+    }
+
     private static RepositoryException ReparsePoint(string relativePath) =>
         new(
             RepositoryErrorKind.Corrupt,
@@ -212,28 +272,43 @@ public sealed class FileSystemRepositoryStorage : IRepositoryStorage
     /// Comprueba que <paramref name="fullPath"/>, si existe, no es un punto de reanálisis.
     /// </summary>
     /// <returns><see langword="false"/> si no existe (entonces tampoco existe nada por debajo).</returns>
-    private static bool ExistsWithoutReparsePoint(string fullPath, string relativePath)
+    /// <remarks>Cualquier error que no sea «no encontrado» se propaga.</remarks>
+    private bool ExistsWithoutReparsePoint(string fullPath, string relativePath) =>
+        TryGetAttributes(fullPath, out var attributes)
+        && (attributes.HasFlag(FileAttributes.ReparsePoint) ? throw ReparsePoint(relativePath) : true);
+
+    /// <summary>
+    /// Lee los atributos; <see langword="false"/> solo si el elemento o una carpeta de su ruta no existen. Cualquier otro
+    /// error (red, permisos, sesión reiniciada) se propaga.
+    /// </summary>
+    private bool TryGetAttributes(string fullPath, out FileAttributes attributes)
     {
-        FileAttributes attributes;
         try
         {
-            attributes = File.GetAttributes(fullPath);
+            attributes = getAttributes(fullPath);
+            return true;
         }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
+            attributes = default;
             return false;
         }
-
-        return attributes.HasFlag(FileAttributes.ReparsePoint) ? throw ReparsePoint(relativePath) : true;
     }
 
     private string Resolve(string path, bool allowRoot)
     {
         var segments = RepositoryPath.Validate(path, allowRoot);
 
-        // Ningún punto de reanálisis en la raíz, en las carpetas intermedias ni en el propio elemento.
+        // Ningún punto de reanálisis entre la raíz del recurso y la del destino, en la raíz, en las carpetas intermedias ni
+        // en el propio elemento.
+        var exists = true;
+        for (var i = 0; i < ancestors.Length && exists; i++)
+        {
+            exists = ExistsWithoutReparsePoint(ancestors[i], ancestors[i]);
+        }
+
         var current = root;
-        var exists = ExistsWithoutReparsePoint(current, string.Empty);
+        exists = exists && ExistsWithoutReparsePoint(current, string.Empty);
         for (var i = 0; i < segments.Length && exists; i++)
         {
             current = Path.Join(current, segments[i]);

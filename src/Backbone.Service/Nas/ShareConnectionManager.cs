@@ -21,6 +21,11 @@ namespace Backbone.Service.Nas;
 /// contraseña con una clave aleatoria de este proceso, que nunca sale de memoria) y, si ya hay una conexión con ese servidor
 /// con otra credencial, se rechaza con <see cref="BackboneErrorCode.CredentialsRejected"/>
 /// (<c>ERROR_SESSION_CREDENTIAL_CONFLICT</c>) sin llamar al sistema (BAJA-1).</item>
+/// <item><b>Desconexión pendiente</b> (§8.2 B-1): entre la última liberación y el final de <c>WNetCancelConnection2</c> la raíz
+/// queda "cerrando"; un <see cref="AcquireAsync"/> de esa raíz espera a que termine y reconecta. Si no, la cancelación
+/// pendiente borraría el registro de uso de la conexión nueva y su E/S saldría con la cuenta del equipo (§7.5 A-3).</item>
+/// <item><b>Parada</b> (§8.2 B-2): <see cref="Close"/> hace que todo <see cref="AcquireAsync"/> posterior falle; las conexiones
+/// que sigan abiertas o en curso se cierran a la fuerza (<see cref="ForceDisconnectAllAsync"/>).</item>
 /// </list>
 /// </remarks>
 internal sealed partial class ShareConnectionManager(IShareConnector connector, ILogger<ShareConnectionManager> logger) : IDisposable
@@ -30,6 +35,14 @@ internal sealed partial class ShareConnectionManager(IShareConnector connector, 
     private readonly byte[] _fingerprintKey = RandomNumberGenerator.GetBytes(32);
     private readonly Lock _gate = new();
     private readonly Dictionary<string, Entry> _entries = new(StringComparer.OrdinalIgnoreCase);
+
+    // Raíces cuya última liberación aún no ha terminado de desconectar (B-1): la tarea termina al volver WNetCancelConnection2.
+    private readonly Dictionary<string, Task> _closing = new(StringComparer.OrdinalIgnoreCase);
+    private bool _closed;
+
+    // Raíces cuya última desconexión (sin forzar) ha fallado (BAJA-N2): la conexión puede seguir viva en el sistema, sin
+    // dueño. Se reintenta a la fuerza al volver a conectar la raíz o al soltar otra, y siempre en la parada.
+    private readonly HashSet<string> _failedDisconnects = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Raíces con conexión viva o en curso.</summary>
     public IReadOnlyList<string> ActiveShareRoots
@@ -58,28 +71,61 @@ internal sealed partial class ShareConnectionManager(IShareConnector connector, 
         ArgumentNullException.ThrowIfNull(credential);
         var fingerprint = Fingerprint(credential);
         var server = ServerOf(credential.ShareRoot);
-        Entry entry;
-        lock (_gate)
+        Entry? entry = null;
+        var retried = false;
+        while (entry is null)
         {
-            foreach (var other in _entries.Values)
+            Task? closing;
+            TaskCompletionSource? retry = null;
+            lock (_gate)
             {
-                if (string.Equals(other.Server, server, StringComparison.OrdinalIgnoreCase)
-                    && !CryptographicOperations.FixedTimeEquals(other.Fingerprint, fingerprint))
+                if (_closed)
                 {
-                    LogConflict(logger, UntrustedText.Describe(server));
-                    throw new ShareException(BackboneErrorCode.CredentialsRejected, ShareErrors.ErrorSessionCredentialConflict);
+                    throw new ShareException(BackboneErrorCode.Interrupted, 0);
+                }
+
+                foreach (var other in _entries.Values)
+                {
+                    if (string.Equals(other.Server, server, StringComparison.OrdinalIgnoreCase)
+                        && !CryptographicOperations.FixedTimeEquals(other.Fingerprint, fingerprint))
+                    {
+                        LogConflict(logger, UntrustedText.Describe(server));
+                        throw new ShareException(BackboneErrorCode.CredentialsRejected, ShareErrors.ErrorSessionCredentialConflict);
+                    }
+                }
+
+                if (_closing.TryGetValue(credential.ShareRoot, out closing))
+                {
+                    // B-1: hay una desconexión de esta raíz en curso; conectar ahora la dejaría sin conexión al terminar.
+                }
+                else if (!retried && !_entries.ContainsKey(credential.ShareRoot) && _failedDisconnects.Remove(credential.ShareRoot))
+                {
+                    // BAJA-N2: la última desconexión de esta raíz falló y no hay concesiones vivas: se reintenta a la fuerza antes
+                    // de conectar (con la raíz "cerrando", como en B-1, para que nadie conecte entretanto).
+                    retried = true;
+                    retry = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _closing[credential.ShareRoot] = retry.Task;
+                }
+                else if (_entries.TryGetValue(credential.ShareRoot, out var existing))
+                {
+                    entry = existing;
+                    entry.References++;
+                }
+                else
+                {
+                    entry = new Entry(credential.ShareRoot, server, fingerprint, connector.ConnectAsync(credential, CancellationToken.None));
+                    _entries.Add(credential.ShareRoot, entry);
                 }
             }
 
-            if (_entries.TryGetValue(credential.ShareRoot, out var existing))
+            if (retry is not null)
             {
-                entry = existing;
-                entry.References++;
+                await ForceFailedAsync(credential.ShareRoot, retry).ConfigureAwait(false);
             }
-            else
+            else if (closing is not null)
             {
-                entry = new Entry(credential.ShareRoot, server, fingerprint, connector.ConnectAsync(credential, CancellationToken.None));
-                _entries.Add(credential.ShareRoot, entry);
+                await closing.WaitAsync(ct).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+                ct.ThrowIfCancellationRequested();
             }
         }
 
@@ -104,20 +150,79 @@ internal sealed partial class ShareConnectionManager(IShareConnector connector, 
         }
     }
 
-    /// <summary>Cierra a la fuerza las conexiones que sigan abiertas o en curso (parada del servicio).</summary>
+    /// <summary>
+    /// Parada del servicio (B-2): a partir de ahora todo <see cref="AcquireAsync"/> falla con
+    /// <see cref="BackboneErrorCode.Interrupted"/>.
+    /// </summary>
+    public void Close()
+    {
+        lock (_gate)
+        {
+            _closed = true;
+        }
+    }
+
+    /// <summary>Espera a las desconexiones en curso (<c>WNetCancelConnection2</c> de la última liberación de cada raíz).</summary>
+    public async Task WhenReleasesCompleteAsync()
+    {
+        Task[] pending;
+        lock (_gate)
+        {
+            pending = [.. _closing.Values];
+        }
+
+        foreach (var task in pending)
+        {
+            await task.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        }
+    }
+
+    /// <summary>
+    /// Cierra a la fuerza las conexiones que sigan abiertas, en curso o desconectándose (parada del servicio). Las que aún
+    /// se están conectando se cierran cuando terminen de conectar (B-2).
+    /// </summary>
     public async Task ForceDisconnectAllAsync(CancellationToken ct)
     {
-        foreach (var root in ActiveShareRoots)
+        var now = new List<string>();
+        var withLeases = new List<(string Root, int Leases)>();
+        lock (_gate)
         {
-            try
+            foreach (var entry in _entries.Values)
             {
-                await connector.ForceDisconnectAsync(root, ct).ConfigureAwait(false);
-                LogForced(logger, UntrustedText.Describe(root));
+                withLeases.Add((entry.ShareRoot, entry.References));
+                if (entry.Connecting.IsCompleted)
+                {
+                    now.Add(entry.ShareRoot);
+                }
+                else
+                {
+                    var root = entry.ShareRoot;
+                    _ = entry.Connecting.ContinueWith(
+                        _ => ForceDisconnectAsync(root, CancellationToken.None),
+                        CancellationToken.None,
+                        TaskContinuationOptions.None,
+                        TaskScheduler.Default).Unwrap();
+                }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+
+            foreach (var root in _closing.Keys.Concat(_failedDisconnects))
             {
-                LogForceFailed(logger, UntrustedText.Describe(root), ex.GetType().Name, ex.HResult);
+                if (!now.Contains(root, StringComparer.OrdinalIgnoreCase))
+                {
+                    now.Add(root);
+                }
             }
+        }
+
+        // BAJA-N1: cerrar a la fuerza con una concesión viva corta la E/S de quien la tiene; queda constancia.
+        foreach (var (root, leases) in withLeases)
+        {
+            LogForcingWithLeases(logger, UntrustedText.Describe(root), leases);
+        }
+
+        foreach (var root in now)
+        {
+            await ForceDisconnectAsync(root, ct).ConfigureAwait(false);
         }
     }
 
@@ -125,6 +230,7 @@ internal sealed partial class ShareConnectionManager(IShareConnector connector, 
 
     internal async Task ReleaseAsync(Entry entry)
     {
+        TaskCompletionSource closing;
         lock (_gate)
         {
             entry.References--;
@@ -137,16 +243,127 @@ internal sealed partial class ShareConnectionManager(IShareConnector connector, 
             {
                 _entries.Remove(entry.ShareRoot);
             }
+
+            // B-1: hasta que termine la desconexión, la raíz sigue "cerrando" y nadie reconecta.
+            closing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _closing[entry.ShareRoot] = closing.Task;
         }
 
-        if (entry.Connecting.IsCompletedSuccessfully)
+        var disconnectFailed = false;
+        try
         {
-            var connection = await entry.Connecting.ConfigureAwait(false); // ya terminada: no espera
-            await connection.DisposeAsync().ConfigureAwait(false);
+            if (entry.Connecting.IsCompletedSuccessfully)
+            {
+                var connection = await entry.Connecting.ConfigureAwait(false); // ya terminada: no espera
+                disconnectFailed = true; // por si DisposeAsync lanza
+                await connection.DisposeAsync().ConfigureAwait(false);
+                disconnectFailed = connection.DisconnectFailed;
+            }
+            else if (entry.Connecting.IsFaulted)
+            {
+                _ = entry.Connecting.Exception; // observada
+            }
         }
-        else if (entry.Connecting.IsFaulted)
+        finally
         {
-            _ = entry.Connecting.Exception; // observada
+            lock (_gate)
+            {
+                if (_closing.TryGetValue(entry.ShareRoot, out var task) && ReferenceEquals(task, closing.Task))
+                {
+                    _closing.Remove(entry.ShareRoot);
+                }
+
+                if (disconnectFailed)
+                {
+                    // BAJA-N2: la conexión puede seguir viva; se recuerda para reintentar y para la parada.
+                    _failedDisconnects.Add(entry.ShareRoot);
+                    LogDisconnectPending(logger, UntrustedText.Describe(entry.ShareRoot));
+                }
+            }
+
+            closing.SetResult();
+        }
+
+        await RetryFailedDisconnectsAsync(except: entry.ShareRoot).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reintenta a la fuerza las desconexiones fallidas de las demás raíces que no tengan concesiones vivas ni una desconexión
+    /// en curso (BAJA-N2); no hace nada con el gestor cerrado (la parada las cierra todas).
+    /// </summary>
+    private async Task RetryFailedDisconnectsAsync(string except)
+    {
+        List<(string Root, TaskCompletionSource Closing)> retries = [];
+        lock (_gate)
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            foreach (var root in _failedDisconnects.ToArray())
+            {
+                if (string.Equals(root, except, StringComparison.OrdinalIgnoreCase)
+                    || _entries.ContainsKey(root)
+                    || _closing.ContainsKey(root))
+                {
+                    continue;
+                }
+
+                _failedDisconnects.Remove(root);
+                var closing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _closing[root] = closing.Task;
+                retries.Add((root, closing));
+            }
+        }
+
+        foreach (var (root, closing) in retries)
+        {
+            await ForceFailedAsync(root, closing).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Fuerza la desconexión de una raíz ya marcada "cerrando" con <paramref name="closing"/> y termina ese estado.</summary>
+    private async Task ForceFailedAsync(string root, TaskCompletionSource closing)
+    {
+        try
+        {
+            await ForceDisconnectAsync(root, CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                if (_closing.TryGetValue(root, out var task) && ReferenceEquals(task, closing.Task))
+                {
+                    _closing.Remove(root);
+                }
+            }
+
+            closing.SetResult();
+        }
+    }
+
+    private async Task ForceDisconnectAsync(string root, CancellationToken ct)
+    {
+        try
+        {
+            await connector.ForceDisconnectAsync(root, ct).ConfigureAwait(false);
+            lock (_gate)
+            {
+                _failedDisconnects.Remove(root);
+            }
+
+            LogForced(logger, UntrustedText.Describe(root));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            lock (_gate)
+            {
+                _failedDisconnects.Add(root);
+            }
+
+            LogForceFailed(logger, UntrustedText.Describe(root), ex.GetType().Name, ex.HResult);
         }
     }
 
@@ -170,6 +387,12 @@ internal sealed partial class ShareConnectionManager(IShareConnector connector, 
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Ya hay una conexión con el servidor {Server} con otra credencial: se rechaza sin conectar (Windows admite un solo usuario por servidor).")]
     private static partial void LogConflict(ILogger logger, string server);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Parada del servicio: se cierra a la fuerza la conexión con {ShareRoot} con {Leases} concesiones vivas; su E/S en curso fallará.")]
+    private static partial void LogForcingWithLeases(ILogger logger, string shareRoot, int leases);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "La desconexión de {ShareRoot} ha fallado: la conexión puede seguir abierta; se reintentará a la fuerza.")]
+    private static partial void LogDisconnectPending(ILogger logger, string shareRoot);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Conexión con {ShareRoot} cerrada a la fuerza en la parada del servicio.")]
     private static partial void LogForced(ILogger logger, string shareRoot);
