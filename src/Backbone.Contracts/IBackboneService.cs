@@ -66,8 +66,9 @@ public interface IBackboneService
     /// abre como SYSTEM las rutas que indica el cliente. Los orígenes se comprueban con la resolución controlada de §8.3
     /// (ADR-20), que nunca sigue un enlace que no lleve a un volumen local. Errores de origen: <see cref="ValidationIssueCode.SourceNotFound"/>,
     /// <see cref="ValidationIssueCode.SourceNotNtfs"/>, <see cref="ValidationIssueCode.SourceNotLocal"/>,
-    /// <see cref="ValidationIssueCode.SourceNotAllowed"/>, <see cref="ValidationIssueCode.SourceUnreadable"/> y
-    /// <see cref="ValidationIssueCode.SourcePathInvalid"/> (contrato 1.3).
+    /// <see cref="ValidationIssueCode.SourceNotAllowed"/>, <see cref="ValidationIssueCode.SourceUnreadable"/>,
+    /// <see cref="ValidationIssueCode.SourcePathInvalid"/> (contrato 1.3) y
+    /// <see cref="ValidationIssueCode.ProtectedFoldersUnavailable"/> (contrato 1.4).
     /// </remarks>
     /// <param name="job">Trabajo.</param>
     /// <param name="ct">Cancelación.</param>

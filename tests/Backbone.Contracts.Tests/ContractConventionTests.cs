@@ -142,13 +142,23 @@ public sealed class ContractConventionTests
     // ---- Criterio 3 y transporte (§7.1) ----
 
     [Fact]
-    public void Contract_version_is_semantic_1_3()
+    public void Contract_version_is_semantic_1_4()
     {
-        const string expected = "1.3";
+        const string expected = "1.4";
         Assert.Equal(expected, ContractVersion.Value);
         Assert.Equal(ContractVersion.Value, string.Create(CultureInfo.InvariantCulture, $"{ContractVersion.Major}.{ContractVersion.Minor}"));
         Assert.True(ContractVersion.TryParse(ContractVersion.Value, out var major, out var minor));
-        Assert.Equal((1, 3), (major, minor));
+        Assert.Equal((1, 4), (major, minor));
+    }
+
+    [Theory]
+    [InlineData("1.3")]
+    [InlineData("1.2")]
+    public void A_1_4_peer_stays_compatible_with_older_minor_versions(string older)
+    {
+        // Contrato 1.4 solo añade ValidationIssueCode.ProtectedFoldersUnavailable: versión menor, mismo pipe.
+        Assert.True(ContractVersion.IsCompatibleWith(older));
+        Assert.Equal("Backbone.Service.v1", BackboneIpc.PipeName);
     }
 
     [Theory]
@@ -231,7 +241,9 @@ public sealed class ContractConventionTests
         // Contrato 1.3 (ADR-20, §7.5 "Ruta de origen"): origen no comprobable y ruta de origen no normalizada.
         Assert.Equal(28, (int)ValidationIssueCode.SourceUnreadable);
         Assert.Equal(29, (int)ValidationIssueCode.SourcePathInvalid);
-        Assert.Equal(29, Enum.GetValues<ValidationIssueCode>().Max(v => (int)v));
+        // Contrato 1.4 (§8.3, PD desconocida): carpetas protegidas que no se pueden calcular.
+        Assert.Equal(30, (int)ValidationIssueCode.ProtectedFoldersUnavailable);
+        Assert.Equal(30, Enum.GetValues<ValidationIssueCode>().Max(v => (int)v));
     }
 
     [Fact]
