@@ -1,6 +1,7 @@
 using System.Net;
 using Backbone.Contracts;
 using Backbone.Service.Ipc;
+using Backbone.Service.Jobs;
 using Backbone.Service.Nas;
 using Backbone.Service.Os;
 using Backbone.Service.Persistence;
@@ -49,6 +50,21 @@ public sealed class ConnectionTesterSecurityReviewTests : IDisposable
     }
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
+
+    private ShareConnectionShutdown NewShutdown() =>
+        new(
+            _tester,
+            new RepositoryPreparer(
+                new ShareCredentialProvider(_store, _loggerFactory.CreateLogger<ShareCredentialProvider>()),
+                _manager,
+                new FakeRepositoryStorageFactory(),
+                new ServiceRuntimeInfo(_time),
+                _time,
+                new RepositoryPreparationOptions(),
+                _loggerFactory.CreateLogger<RepositoryPreparer>()),
+            _manager,
+            _time,
+            _loggerFactory.CreateLogger<ShareConnectionShutdown>());
 
     private static CredentialInput Ana => new() { UserName = "ana", Password = "Contraseña-QA-HU05-c41d" };
 
@@ -249,7 +265,7 @@ public sealed class ConnectionTesterSecurityReviewTests : IDisposable
         _connector.Share.IgnoresDeleteOnClose = true;
         var gate = _connector.Share.Gate("Delete");
         await AdvanceUntilDoneAsync(_tester.TestAsync(Share, Ana, Ct));
-        var shutdown = new ShareConnectionShutdown(_tester, _manager, _time, _loggerFactory.CreateLogger<ShareConnectionShutdown>());
+        var shutdown = NewShutdown();
 
         var stop = shutdown.StopAsync(Ct);
         for (var i = 0; i < 100 && !stop.IsCompleted; i++)
@@ -270,7 +286,7 @@ public sealed class ConnectionTesterSecurityReviewTests : IDisposable
     public async Task Stopping_the_service_without_pending_work_forces_nothing()
     {
         Assert.True((await _tester.TestAsync(Share, Ana, Ct)).Success);
-        var shutdown = new ShareConnectionShutdown(_tester, _manager, _time, _loggerFactory.CreateLogger<ShareConnectionShutdown>());
+        var shutdown = NewShutdown();
 
         await shutdown.StopAsync(Ct).WaitAsync(TimeSpan.FromSeconds(10), Ct);
 

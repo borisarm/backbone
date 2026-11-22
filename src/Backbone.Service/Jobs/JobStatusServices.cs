@@ -23,10 +23,11 @@ internal sealed class NoJobActivity : IJobActivity
 
 /// <summary>
 /// Construye <see cref="ServiceStatus"/> para <c>GetStatusAsync</c> y <c>StatusChanged</c>. En HU-07 lleva la lista de
-/// trabajos (identificador, nombre, activado, actividad); la salud, la última y la próxima ejecución, la cola, la pausa y el
-/// estado del repositorio los completan las historias del scheduler, el historial y la pausa (HU-09, HU-11, HU-14, HU-16).
+/// trabajos (identificador, nombre, activado, actividad); en HU-06, el estado del repositorio según la última vez que se abrió
+/// (<see cref="RepositoryStateTracker"/>). La salud, la última y la próxima ejecución, la cola y la pausa los completan las
+/// historias del scheduler, el historial y la pausa (HU-09, HU-11, HU-14, HU-16).
 /// </summary>
-internal sealed class ServiceStatusProvider(IJobList jobs, IJobActivity activity, TimeProvider timeProvider)
+internal sealed class ServiceStatusProvider(IJobList jobs, IJobActivity activity, RepositoryStateTracker repositoryStates, TimeProvider timeProvider)
 {
     public ServiceStatus GetStatus() =>
         new()
@@ -41,6 +42,7 @@ internal sealed class ServiceStatusProvider(IJobList jobs, IJobActivity activity
                     Enabled = job.Enabled,
                     Activity = activity.GetActivity(job.Id),
                     Health = HealthState.Ok,
+                    RepositoryState = repositoryStates.Get(job.Id),
                 }),
             ],
             TimestampUtc = timeProvider.GetUtcNow().ToUniversalTime(),

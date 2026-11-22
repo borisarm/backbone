@@ -252,10 +252,15 @@ public sealed class JobIpcTests : IAsyncLifetime
     {
         await _ana.Proxy.SaveJobAsync(NewJob(), Ct);
 
-        var all = _server.Logs.AllText();
-        Assert.Contains(nameof(Contracts.IBackboneService.SaveJobAsync), all, StringComparison.Ordinal);
-        Assert.DoesNotContain(Documents, all, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain(@"\nas\", all, StringComparison.OrdinalIgnoreCase);
+        // Ningún registro lleva la ruta de origen ni la contraseña. El destino sí aparece en los registros operativos (HU-06:
+        // "Repositorio inicializado en ..."), pero nunca en la auditoría del IPC, que no lleva argumentos.
+        var everything = _server.Logs.AllText();
+        Assert.Contains(nameof(Contracts.IBackboneService.SaveJobAsync), everything, StringComparison.Ordinal);
+        Assert.DoesNotContain(Documents, everything, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Contraseña-HU07", everything, StringComparison.Ordinal);
+        var audit = string.Join('\n', _server.Logs.Entries.Where(e => e.Message.StartsWith("Auditoría IPC", StringComparison.Ordinal)).Select(e => e.Message));
+        Assert.Contains(nameof(Contracts.IBackboneService.SaveJobAsync), audit, StringComparison.Ordinal);
+        Assert.DoesNotContain(@"\nas\", audit, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

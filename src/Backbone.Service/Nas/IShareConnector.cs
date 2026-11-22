@@ -43,6 +43,13 @@ internal interface IShareConnection : IAsyncDisposable
     /// <summary>Raíz normalizada del recurso, <c>\\servidor\recurso</c>.</summary>
     string ShareRoot { get; }
 
+    /// <summary>
+    /// Indica si el sistema sigue teniendo el registro de uso (la conexión con credencial explícita) de <see cref="ShareRoot"/>.
+    /// Sin él, la E/S saldría con la cuenta del equipo (§7.5 A-3): p. ej. si una desconexión pendiente lo ha borrado (§8.2 B-1).
+    /// Quien va a escribir lo comprueba antes de la primera E/S.
+    /// </summary>
+    Task<bool> HasUseRecordAsync(CancellationToken ct);
+
     /// <summary>Indica si <paramref name="path"/> existe y es una carpeta; un error cuenta como "no".</summary>
     Task<bool> DirectoryExistsAsync(string path, CancellationToken ct);
 

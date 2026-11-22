@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using Backbone.Contracts;
 using Backbone.Service.Os;
 using Backbone.Service.Persistence;
@@ -81,6 +82,63 @@ internal sealed partial class WindowsShareConnector(ILogger<WindowsShareConnecto
             : string.Create(CultureInfo.InvariantCulture, $"{major}.{minor}.{revision}");
     }
 
+    /// <summary>
+    /// Indica si <paramref name="shareRoot"/> figura entre las conexiones actuales de la sesión de inicio del servicio
+    /// (<c>WNetOpenEnum</c> con <c>RESOURCE_CONNECTED</c>, que también lista las conexiones sin letra de unidad).
+    /// </summary>
+    internal static unsafe bool UseRecordExists(string shareRoot)
+    {
+        var error = NativeMethods.WNetOpenEnum(NativeMethods.ResourceConnected, NativeMethods.ResourceTypeAny, 0, null, out var handle);
+        if (error != NativeMethods.ErrorSuccess)
+        {
+            throw new ShareException(ShareErrors.FromWin32(error, ShareOperation.Connect), error);
+        }
+
+        var size = 16 * 1024u;
+        var buffer = NativeMemory.Alloc(size);
+        try
+        {
+            var wanted = shareRoot.TrimEnd('\\');
+            while (true)
+            {
+                var count = uint.MaxValue;
+                var available = size;
+                error = NativeMethods.WNetEnumResource(handle, ref count, buffer, ref available);
+                if (error == NativeMethods.ErrorNoMoreItems)
+                {
+                    return false;
+                }
+
+                if (error == NativeMethods.ErrorMoreData)
+                {
+                    size = Math.Max(available, size * 2);
+                    buffer = NativeMemory.Realloc(buffer, size);
+                    continue;
+                }
+
+                if (error != NativeMethods.ErrorSuccess)
+                {
+                    throw new ShareException(ShareErrors.FromWin32(error, ShareOperation.Connect), error);
+                }
+
+                var items = (NativeMethods.NetResource*)buffer;
+                for (var i = 0u; i < count; i++)
+                {
+                    if (items[i].RemoteName is not null
+                        && string.Equals(new string(items[i].RemoteName).TrimEnd('\\'), wanted, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        finally
+        {
+            _ = NativeMethods.WNetCloseEnum(handle);
+            NativeMemory.Free(buffer);
+        }
+    }
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "No se pudo cerrar la conexión con el recurso {ShareRoot} (error Win32 {Error}).")]
     private static partial void LogDisconnectFailed(ILogger logger, string shareRoot, int error);
 
@@ -92,6 +150,9 @@ internal sealed partial class WindowsShareConnector(ILogger<WindowsShareConnecto
         private int _disposed;
 
         public string ShareRoot { get; } = shareRoot;
+
+        public Task<bool> HasUseRecordAsync(CancellationToken ct) =>
+            Run(() => UseRecordExists(ShareRoot), ct);
 
         public Task<bool> DirectoryExistsAsync(string path, CancellationToken ct) =>
             Task.Run(() => Directory.Exists(path), ct);
