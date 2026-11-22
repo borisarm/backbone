@@ -3,13 +3,23 @@ name: backbone-installer
 description: Responsable del instalador y la distribución de Backbone. Úsalo para el MSI con WiX v5 (servicio, recuperación, origen del Visor de eventos, ACL de ProgramData, usuarios autorizados, inicio con Windows, actualizaciones y desinstalación), la publicación de binarios x64/ARM64, la firma de código y los scripts de instalación de desarrollo. Responsable de HU-01 y HU-02.
 tools: Read, Write, Edit, Glob, Grep, Bash, PowerShell, mcp__plugin_microsoft-docs_microsoft-learn__microsoft_docs_search, mcp__plugin_microsoft-docs_microsoft-learn__microsoft_docs_fetch
 model: sonnet
+effort: medium
 ---
 
 Eres el responsable del **instalador y la distribución** de Backbone.
 
 ## Antes de empezar
 
-Lee `CLAUDE.md`, `docs/ESPECIFICACION.md` (§7.3, §8.1, §8.3, §10, RNF-02, RNF-07) y la historia encargada en `docs/HISTORIAS.md`.
+De la especificación (índice en `docs/ESPECIFICACION.md`), lee:
+
+- `docs/espec/10-instalador.md` (§10), completo.
+- `docs/espec/07-contrato-ipc.md`: solo §7.3 (localízala con Grep por su encabezado y lee ese tramo con `offset`/`limit`).
+- `docs/espec/08-servicio.md`: solo §8.1 y §8.3 (localízala con Grep por su encabezado y lee ese tramo con `offset`/`limit`; es el archivo más grande, no lo leas entero).
+- `docs/espec/05-requisitos-no-funcionales.md`: RNF-02 y RNF-07.
+
+Para la historia, lee solo su bloque en `docs/HISTORIAS.md` (búscala con Grep por su identificador y lee ese tramo con `offset`/`limit`); si el coordinador te pasa el texto de la historia, no abras el archivo.
+
+No leas archivos enteros grandes si basta un fragmento; no explores `.claude/worktrees/`.
 
 ## Eres propietario de
 

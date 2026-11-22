@@ -4,14 +4,17 @@ using System.Text.RegularExpressions;
 namespace Backbone.Contracts.Tests;
 
 /// <summary>
-/// HT-02 criterio 1: la interfaz y los códigos de error coinciden con lo que dice <c>docs/ESPECIFICACION.md</c>
-/// (§7.2 y §7.4), leyendo el documento y no una copia escrita a mano en la prueba. Si el código y la especificación
+/// HT-02 criterio 1: la interfaz y los códigos de error coinciden con lo que dice la especificación
+/// (§6.3, §7.1, §7.2 y §7.4, en <c>docs/espec/06-formato-repositorio.md</c> y <c>docs/espec/07-contrato-ipc.md</c>), leyendo el documento y no una copia escrita a mano en la prueba. Si el código y la especificación
 /// discrepan, esta prueba falla: hay que parar y preguntar (CLAUDE.md).
 /// </summary>
 [Trait("Story", "HT-02")]
 public sealed partial class SpecConsistencyTests
 {
-    private static readonly string Spec = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "docs", "ESPECIFICACION.md"));
+    // §6 y §7 de la especificación, cada una en su archivo de docs/espec/.
+    private static readonly string Spec = string.Concat(
+        File.ReadAllText(Path.Combine(FindRepositoryRoot(), "docs", "espec", "06-formato-repositorio.md")),
+        File.ReadAllText(Path.Combine(FindRepositoryRoot(), "docs", "espec", "07-contrato-ipc.md")));
 
     private static string FindRepositoryRoot()
     {

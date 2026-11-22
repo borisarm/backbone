@@ -54,7 +54,7 @@ Backbone.Service (servicio de Windows, LocalSystem)
 | `installer/` | Instalador MSI (WiX v5) |
 | `tests/` | Pruebas xUnit unitarias, de arquitectura y de integración |
 
-La app solo depende de `Contracts`: si se cierra, las copias continúan. Las decisiones de arquitectura (ADR-01 a ADR-09) están en el §3 de la [especificación](docs/ESPECIFICACION.md#3-arquitectura).
+La app solo depende de `Contracts`: si se cierra, las copias continúan. Las decisiones de arquitectura (ADR-01 a ADR-09) están en el §3 de la [especificación](docs/espec/03-arquitectura.md).
 
 **Stack:** .NET 10 LTS · WinUI 3 (Windows App SDK) · StreamJsonRpc · Microsoft.Data.Sqlite · xUnit · WiX v5.
 
