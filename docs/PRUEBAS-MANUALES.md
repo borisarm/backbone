@@ -349,7 +349,7 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 
 **Resultado esperado:** pasan y no aparecen como omitidas.
 
-**Estado:** pendiente.
+**Estado:** superada el 2026-11-21 en PowerShell elevado sobre `main` (`970669c`+), con `dotnet test Backbone.slnx --filter "Category=Integration"`: 16 correctas y 4 omitidas, todas del NAS (`WindowsShareConnectorTests`, sin variables `BACKBONE_IT_SMB_*`); ninguna omitida por falta de elevación.
 
 ## PM-HU07-03 · Validación de orígenes con unidades reales: red, extraíble y no NTFS
 
@@ -404,11 +404,9 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 
 ## PM-HU08-01 · OneDrive real, WOF y puntos de reanálisis: en vivo y desde VSS
 
-**Cubre:** HU-08, criterios 3 y 4 (RF-06, R4, ADR-19, ADR-21, §8.2 "Clasificación por etiqueta", "Archivos y carpetas solo en la nube", "Apertura para leer el contenido", "Plazo de las lecturas de los orígenes" y "Token de lectura de los orígenes").
+**Cubre:** HU-08, criterios 3 y 4 (RF-06, R4, ADR-19, ADR-21, §8.2 "Clasificación por etiqueta", "Archivos y carpetas solo en la nube", "Apertura para leer el contenido" y "Token de lectura de los orígenes").
 
-**Por qué es manual:** necesita OneDrive (o otro proveedor de la Cloud Files API) con una cuenta real, la instantánea VSS de un volumen real y el servicio instalado como LocalSystem. Las pruebas automáticas usan simuladores de `ISourceFileSystem` con atributos y etiquetas fijos, y `SourceFileSystem` se prueba con un doble de `ISourceFileApi` (`SourceFileSystemTests`, `SourceFileSystemQaTests`, `SourceReadTimeoutTests`, `SourceReadDeadlineQaTests`, `SourceFileSystemEngineQaTests`, `SourceRelativeOpenTests`, `SourceRelativeOpenFaultTests`, `SourceReadSecurityTests`) y, en real y sin elevar, con archivos normales, *junction*, enlace simbólico, WOF, rutas largas, miles de entradas, archivos bloqueados o sin permiso, raíz que es enlace, sustitución de un archivo o de una carpeta intermedia por un enlace, archivos dispersos y `CancelSynchronousIo` (`SourceFileSystemIntegrationTests`, `SourceFileSystemRealQaTests`, `Category=Integration`). El camino del segundo handle (`NtCreateFile` relativo al propio handle, con `ObjectName` vacío) con un marcador de nube real, las carpetas de nube no pobladas, Dedup y lo que pasa en VSS solo se ejercitan aquí.
-
-**Qué mirar además en el log del servicio (HU-08, servicio):** al arrancar no debe aparecer el error "No se han podido exponer los marcadores de la nube"; si aparece, toda copia termina `Failed` con `Internal`. En Windows 11 26320, sin elevar, la enumeración de un archivo WOF da atributos `0x20` y `EaSize` 0 (sin punto de reanálisis): se lee como normal desde el primer handle. Los avisos `ReadError` por etiqueta desconocida llevan la etiqueta en hexadecimal (`0x…`).
+**Por qué es manual:** necesita OneDrive (o otro proveedor de la Cloud Files API) con una cuenta real, la instantánea VSS de un volumen real y el servicio instalado como LocalSystem. Las pruebas automáticas usan simuladores de `ISourceFileSystem` con atributos y etiquetas fijos.
 
 **Preparación**
 1. En una máquina con OneDrive iniciado y "Archivos a petición" activado, crear en la carpeta de OneDrive `PruebaBackbone\` con:
@@ -416,39 +414,58 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
    - `descargado.bin`: datos aleatorios, sincronizado y abierto una vez (descargado, sin fijar).
    - `fijado.bin`: datos aleatorios con "Mantener siempre en este dispositivo".
    - Una subcarpeta `sub\` con un archivo descargado.
-   - Una subcarpeta `entera\` con tres archivos de 1 MiB, sincronizados y descargados (para los pasos 8 y 9).
 2. Fuera de OneDrive, en el mismo origen o en otro, crear:
    - `wof.bin` comprimido con `compact /c /exe:xpress4k wof.bin`;
    - un *junction* `mklink /J enlace C:\Windows`;
-   - un enlace simbólico a un archivo y otro a una carpeta.
+   - un enlace simbólico a un archivo.
 3. Anotar el SHA-256 (`Get-FileHash`) de `descargado.bin`, `fijado.bin` y `wof.bin`, y el de `nube.bin` antes de liberar espacio.
 
 **Pasos**
 1. Crear un trabajo con origen `%OneDrive%\PruebaBackbone` y otro con la carpeta del paso 2. Ejecutarlos **con VSS** ("Copiar ahora").
 2. Comprobar en el snapshot y en la ejecución:
-   - `descargado.bin`, `fijado.bin`, `sub\…`, `entera\…` y `wof.bin` están, y su `h` es el SHA-256 anotado;
+   - `descargado.bin`, `fijado.bin`, `sub\…` y `wof.bin` están, y su `h` es el SHA-256 anotado;
    - `nube.bin` no está en el primer snapshot y hay un aviso `CloudOnlySkipped`;
-   - `enlace` y los dos enlaces simbólicos tienen aviso `ReparsePointSkipped` y no están (ni nada de lo que hay detrás);
+   - `enlace` y el enlace simbólico tienen aviso `ReparsePointSkipped` y no están;
    - los atributos de `nube.bin` siguen con `RECALL_ON_DATA_ACCESS` (no se ha descargado) y OneDrive no muestra actividad de descarga.
 3. Descargar `nube.bin`, copiar otra vez y comprobar que ahora está con el SHA-256 anotado. Liberar espacio de nuevo y copiar: la entrada se conserva con el mismo `h` (versión del padre) y hay aviso `CloudOnlySkipped`.
 4. Modificar `nube.bin` desde otro equipo o desde la web de OneDrive sin descargarlo en esta máquina, y copiar: no debe aparecer ninguna versión nueva. Comprobar sobre `objects\` que ningún objeto del tamaño de `nube.bin` es todo ceros.
 5. Repetir los pasos 1 a 4 **sin VSS**, deshabilitando el servicio de instantáneas o con un origen en un volumen sin VSS.
-6. Con el servicio en ejecución, comprobar con Process Monitor que el proceso `Backbone.Service` no genera lecturas de datos sobre `nube.bin` ni consultas de directorio (`QueryDirectory`) sobre las carpetas de nube no pobladas del paso 8.
-7. Registrar el resultado de leer `wof.bin` y los marcadores de nube **desde VSS**, para confirmar §8.2 "Apertura para leer el contenido", punto 3: ¿abre el segundo handle (reapertura relativa al primero, sin `FILE_OPEN_REPARSE_POINT`) o falla con `STATUS_IO_REPARSE_TAG_NOT_HANDLED`/`ERROR_CANT_ACCESS_FILE`? Con `ERROR_CANT_ACCESS_FILE`, un marcador de nube descargado debe leerse del primer handle y un WOF debe dar `ReadError` conservando su versión anterior.
-8. **Carpeta de nube no poblada.** Con `entera\` ya copiada una vez, elegir "Liberar espacio" sobre la carpeta `entera` entera y copiar (en vivo y con VSS). Resultado: la carpeta y sus tres archivos siguen en el snapshot con el mismo `h` (versión del padre), hay un aviso `CloudOnlySkipped` sobre la carpeta y ninguna descarga. Si la carpeta no existía en ningún snapshot anterior, no aparece (ni nada de lo que tuviera debajo) y el aviso es el mismo.
-9. **Raíz de un origen en la nube.** Crear un trabajo con un segundo origen que sea `%OneDrive%\PruebaBackbone\entera` (ya liberada, paso 8): aviso `SourceRootUnreadable` y ese origen entero conservado del snapshot anterior; los demás orígenes del trabajo se copian con normalidad. Después, descargar la carpeta entera y comprobar que se copia sin avisos. Repetir con la carpeta raíz de OneDrive poblada (el caso normal): se recorre sin avisos de raíz.
-10. **Descarga a medias.** Pausar la sincronización de OneDrive durante la descarga de un archivo grande (archivo parcialmente descargado) y copiar: el archivo se omite con `CloudOnlySkipped` y conserva su versión anterior; no se guarda una versión con ceros (comparar con el SHA-256 anotado).
-11. **Cambio durante la copia.** Con un archivo grande descargado de OneDrive en el origen, lanzar la copia sin VSS y, mientras se lee, elegir "Liberar espacio" sobre él: la copia termina y el archivo, o bien tiene su contenido real, o bien se omite con aviso (`CloudOnlySkipped` o "cambió durante la copia"); nunca una versión con ceros.
-12. **Proveedor ajeno (opcional).** Si hay un proveedor de sincronización o de ProjFS de terceros (p. ej. el ejemplo Cloud Mirror de Microsoft, o la característica opcional *Client-ProjFS* con un proveedor de ejemplo) cuyo directorio raíz esté dentro de un origen: su contenido se omite con `ReadError` y la etiqueta en hexadecimal en el mensaje (ni se lee ni se cuelga la copia) y se conserva su versión anterior.
-13. **Perfil de usuario.** Con un origen que contenga `%LOCALAPPDATA%\Microsoft\WindowsApps` (o el perfil entero) aparecen avisos `ReadError` con la etiqueta `0x8000001B` (alias de ejecución de aplicaciones). Es lo esperado hasta que se decida R13; apuntar cuántos y si algún aviso corresponde a un archivo del usuario.
-14. **Data Deduplication (solo con un Windows Server).** En un volumen con Deduplicación, optimizar un archivo y copiarlo en vivo y con VSS: en vivo debe copiarse con su SHA-256 real y, desde VSS, o bien lo mismo o bien `ReadError` conservando la versión anterior. Registrar cuál de los dos ocurre; nunca el *stub* (comparar tamaño y SHA-256 con el original).
+6. Con el servicio en ejecución, comprobar con Process Monitor que el proceso `Backbone.Service` no genera lecturas de datos sobre `nube.bin`.
+7. Registrar el resultado de leer los marcadores de nube **desde VSS**, para confirmar §8.2 "Apertura para leer el contenido", punto 3: ¿abre el segundo handle (reapertura relativa al primero, sin `FILE_OPEN_REPARSE_POINT`) o falla con `STATUS_IO_REPARSE_TAG_NOT_HANDLED`/`ERROR_CANT_ACCESS_FILE`?
+   - **`wof.bin`**: en Windows 11 26320 el filtro WOF oculta la etiqueta (`FileAttributeTagInfo` da 0 también con `FILE_OPEN_REPARSE_POINT`), así que el servicio lo trata como archivo **normal** y lo lee del primer handle, sin reapertura ni lista blanca (§8.2). No se espera ningún aviso. Lo que se comprueba es que su `h`, en vivo **y desde VSS**, es el SHA-256 anotado del contenido descomprimido. Si desde VSS no coincide (p. ej. ceros), parar y avisar: el filtro no atiende la instantánea y nada lo detecta por la etiqueta. Anotar también la etiqueta que se ve (con `fsutil reparsepoint query wof.bin` y en el log del servicio, si lo registra) por si otra versión de Windows la expone.
+8. **Enlaces duros hacia la carpeta de datos** (ADR-21, revisión del `SourceFileSystem` de HU-08, I-3): con el servicio instalado y al menos una credencial guardada, como **usuario estándar** (sin elevar), en una carpeta de su perfil: `mklink /H enlace.bin C:\ProgramData\Backbone\credentials\<hash>.bin`. Tiene que **fallar** (acceso denegado). Repetirlo con `New-Item -ItemType HardLink` en PowerShell. Si alguna de las dos funciona, parar y avisar: con `SeBackupPrivilege` el servicio leería ese enlace y lo subiría al NAS.
+9. **`SeBackupPrivilege`** (ADR-21): crear en el origen `privado.bin` y quitarle la herencia dejando solo al usuario con control total (`icacls privado.bin /inheritance:r /grant:r "%USERNAME%:F"`), de modo que SYSTEM no tenga acceso por la DACL. Copiar en vivo y con VSS: `privado.bin` está, con su SHA-256. Cifrar otro archivo con EFS (`cipher /e cifrado.bin`) y copiar: aviso `ReadError` y no está. Con Process Explorer, comprobar que el token del **proceso** `Backbone.Service` tiene `SeBackupPrivilege` desactivado (o ausente) y, si el instalador ya fija los privilegios (`sc qprivs BackboneService`), que no aparecen `SeDebugPrivilege` ni `SeTakeOwnershipPrivilege`.
 
-15. **Enlaces duros hacia la carpeta de datos** (ADR-21, revisión del `SourceFileSystem` de HU-08, I-3): con el servicio instalado y al menos una credencial guardada, como **usuario estándar** (sin elevar), en una carpeta de su perfil: `mklink /H enlace.bin C:\ProgramData\Backbone\credentials\<hash>.bin`. Tiene que **fallar** (acceso denegado). Repetirlo con `New-Item -ItemType HardLink` en PowerShell. Si alguna de las dos funciona, parar y avisar: con `SeBackupPrivilege` el servicio leería ese enlace y lo subiría al NAS.
-16. **`SeBackupPrivilege`** (ADR-21): crear en el origen `privado.bin` y quitarle la herencia dejando solo al usuario con control total (`icacls privado.bin /inheritance:r /grant:r "%USERNAME%:F"`), de modo que SYSTEM no tenga acceso por la DACL. Copiar en vivo y con VSS: `privado.bin` está, con su SHA-256. Cifrar otro archivo con EFS (`cipher /e cifrado.bin`) y copiar: aviso `ReadError` y no está. Con Process Explorer, comprobar que el token del **proceso** `Backbone.Service` tiene `SeBackupPrivilege` desactivado (o ausente) y, si el instalador ya fija los privilegios (`sc qprivs BackboneService`), que no aparecen `SeDebugPrivilege` ni `SeTakeOwnershipPrivilege`.
+**Resultado esperado:** los archivos descargados, los fijados y los WOF se copian con su contenido real; un archivo no descargado nunca se descarga ni se guarda como ceros, en vivo ni desde VSS, y conserva su versión anterior; los enlaces no se siguen; un usuario estándar no puede crear un enlace duro hacia `credentials\`; un archivo cuya DACL excluye a SYSTEM se copia y uno cifrado con EFS da `ReadError`.
 
-**Resultado esperado:** los archivos descargados, los fijados y los WOF se copian con su contenido real; un archivo no descargado nunca se descarga ni se guarda como ceros, en vivo ni desde VSS, y conserva su versión anterior; las carpetas de nube no pobladas no se recorren y conservan lo que tenían; los enlaces no se siguen; las etiquetas desconocidas se omiten con aviso sin colgar la copia; un usuario estándar no puede crear un enlace duro hacia `credentials\`; un archivo cuya DACL excluye a SYSTEM se copia y uno cifrado con EFS da `ReadError`.
+**Estado:** pendiente (requiere `SourceFileSystem` de HU-08, servicio instalado y VSS de HU-15).
 
-**Estado:** pendiente (requiere el servicio instalado con el ejecutor de trabajos de HU-14 y VSS de HU-15). `SourceFileSystem` (commit 4a33da9) ya está disponible; hasta que se conecte al ejecutor no hay forma de lanzar estas copias desde el servicio.
+## PM-HU08-02 · Letra de un origen reasignada a una unidad de red entre la validación y la copia (BAJA-5)
+
+**Cubre:** HU-08, cierre de la parte de servicio (BAJA-5), HU-14 (`ReadPath` = ruta final de la resolución); §8.2 "Apertura relativa" (raíz en vivo), §8.3 "Resolución controlada de los orígenes", puntos 1 y 6, y ADR-20.
+
+**Por qué es manual:** hace falta que la **misma letra** pase de un volumen local a una unidad de red **visible para SYSTEM**, es decir, asignada en la sesión de inicio `0x3e7` que comparten los servicios LocalSystem (§8.2 "Sesión de inicio compartida"), y comprobar en el NAS real que no llega ninguna autenticación ni apertura. Las pruebas automáticas simulan `GetDriveType` y `FileFsDeviceInformation`.
+
+**Preparación** (PowerShell elevado; servicio instalado; NAS de pruebas `192.168.1.163`)
+1. Crear y montar un VHDX NTFS de 1 GiB con la letra `V:` (`New-VHD`, `Mount-VHD`, `Initialize-Disk`, `New-Partition -DriveLetter V`, `Format-Volume -FileSystem NTFS`). Crear `V:\Datos` con unos archivos.
+2. Tener a mano una consola como SYSTEM (`psexec -s -i cmd` de Sysinternals) para asignar la letra en la sesión del servicio.
+3. En el NAS, dejar a la vista el registro de Samba (`/var/log/samba/`, con `log level = 3` o más) y `smbstatus`.
+4. En el equipo, Process Monitor con un filtro `Process Name is Backbone.Service.exe` y `Path begins with V:` o `Path contains 192.168.1.163`.
+
+**Pasos**
+1. Crear y guardar un trabajo con dos orígenes: primero `C:\Users\<usuario>` (o cualquier carpeta grande, para que la copia dure varios minutos) y después `V:\Datos`. Hacer una copia completa: termina bien y `V:\Datos` está en el snapshot.
+2. **Reasignación antes de la ejecución**: quitar la letra al VHDX (`Remove-PartitionAccessPath -DriveLetter V -AccessPath V:\`) y, en la consola de SYSTEM, `net use V: \\192.168.1.163\<recurso> /user:<usuario> <contraseña>`. Lanzar "Copiar ahora". Según §8.3, punto 1, la repetición de la resolución en el `JobRunner` da `SourceNotLocal` por `GetDriveType` sin abrir `V:\`, y la ejecución termina `Failed` con `ValidationFailed`. Anotar el resultado.
+3. Deshacer: `net use V: /delete` en la consola de SYSTEM y volver a asignar `V:` al VHDX. Comprobar que una copia vuelve a terminar bien.
+4. **Reasignación durante la ejecución** (el caso de BAJA-5): lanzar "Copiar ahora" y, **mientras se copia el primer origen** (antes de que empiece `V:\Datos`), hacer la misma reasignación del paso 2. La ejecución termina `CompletedWithWarnings` con el aviso **`SourceRootUnreadable`** para el origen `Datos`, que conserva lo que tenía en el snapshot padre. El primer origen se copia con normalidad. Este paso supone que `SourceFileSystem` abre la raíz de cada origen cuando el motor llega a ella. Si backbone-service la abre al empezar la ejecución, la reasignación tiene que hacerse justo entre la resolución del `JobRunner` y esa apertura (con un punto de interrupción en una compilación de depuración del servicio instalado). Anotar qué variante se ha usado.
+5. Durante los pasos 2 y 4, comprobar:
+   - en Process Monitor, que `Backbone.Service` **no** hace ninguna operación sobre `V:\…` ni hacia `192.168.1.163` después de la reasignación (sí puede aparecer la consulta del tipo de unidad);
+   - en el NAS, que en el registro de Samba no hay ninguna sesión nueva ni apertura de archivo de ese equipo aparte de la del propio `net use`, y en particular ninguna de la cuenta del equipo (`<EQUIPO>$`) ni NTLM anónimo; `smbstatus` no muestra archivos abiertos en el recurso;
+   - en el log del servicio, el motivo (`SourceNotLocal` en el paso 2; en el paso 4, la causa dentro del `message` de `SourceRootUnreadable`).
+6. Limpiar: `net use V: /delete` como SYSTEM, desmontar y borrar el VHDX.
+
+**Resultado esperado:** con la letra reasignada a una unidad de red, el servicio no abre nada en ella ni intenta autenticarse ante el NAS. Antes de la ejecución el resultado es `Failed`/`ValidationFailed` (`SourceNotLocal`). Durante la ejecución es `SourceRootUnreadable`, conservando el origen del padre.
+
+**Estado:** pendiente (requiere el `JobRunner` de HU-14).
 
 ## PM-HU05-01 · Probar la conexión contra el NAS real (OpenMediaVault)
 

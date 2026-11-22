@@ -347,4 +347,13 @@ public enum ValidationIssueCode
     /// siguen siendo <see cref="SourceNotLocal"/>. <c>Field</c> = <c>Sources[i].Path</c>.
     /// </summary>
     SourcePathInvalid = 29,
+
+    /// <summary>
+    /// Contrato 1.4. Error: el servicio no ha podido obtener la ruta final de <c>%ProgramData%</c> en la forma
+    /// <c>VOLUME_NAME_GUID</c> (o la del origen ha venido vacía), así que no puede saber si el origen contiene la carpeta de
+    /// datos ni excluirla. Falla cerrado con todos los orígenes (§8.3 "Carpetas protegidas", <c>PD</c> desconocida). Es
+    /// distinto de <see cref="SourceNotAllowed"/>, que sigue cubriendo las carpetas protegidas y el exceso de carpetas
+    /// apartadas. <c>Field</c> = <c>Sources[i].Path</c>; <c>Value</c> nulo. Un cliente 1.3 lo ve como valor no definido.
+    /// </summary>
+    ProtectedFoldersUnavailable = 30,
 }
