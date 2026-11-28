@@ -28,6 +28,6 @@
 ### 9.3 Estados especiales
 
 - **Servicio no instalado o detenido**: banner rojo persistente con "Iniciar servicio" (lanza `sc start` elevado mediante `runas`).
-- **Sin autorización**: pantalla explicativa con el comando para añadirse como usuario autorizado.
+- **Sin autorización**: pantalla explicativa con la cuenta del usuario actual y cómo añadirla: un administrador abre Backbone con "Ejecutar como administrador" y la añade en Ajustes → Usuarios autorizados. No hay comando aparte (decisión del usuario en HU-19: en un equipo doméstico suele haber un solo usuario, que es quien instala).
 - **Versión de contrato incompatible**: aviso con la versión de cada parte.
 - **Sin trabajos**: estado vacío con botón al asistente de primer uso.
