@@ -17,6 +17,10 @@ internal sealed partial class ConnectionStatusViewModel : ObservableObject, IDis
     private readonly Func<string, string> _getString;
     private readonly string _account;
 
+    /// <summary>Texto genérico si no se pudo lanzar el arranque del servicio; vacío si no hay fallo.</summary>
+    [ObservableProperty]
+    public partial string StartFailedText { get; set; } = string.Empty;
+
     public ConnectionStatusViewModel(IConnectionMonitor? monitor, IServiceStarter? starter, Func<string, string> getString, string? account = null)
     {
         _monitor = monitor;
@@ -98,7 +102,13 @@ internal sealed partial class ConnectionStatusViewModel : ObservableObject, IDis
         IsStartingService = true;
         try
         {
+            StartFailedText = string.Empty;
             await _starter.StartAsync().ConfigureAwait(true);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            System.Diagnostics.Trace.TraceError("No se pudo iniciar el servicio: {0}", ex.GetType().Name);
+            StartFailedText = _getString("Conn_StartFailed");
         }
         finally
         {

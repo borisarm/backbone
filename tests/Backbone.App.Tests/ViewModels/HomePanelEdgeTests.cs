@@ -1,3 +1,4 @@
+#pragma warning disable CA1863 // Pruebas: formatos de recursos de un solo uso.
 using System.Globalization;
 using Backbone.App.Ipc;
 using Backbone.App.Tests.Ipc;
@@ -162,6 +163,19 @@ public sealed class HomePanelEdgeTests
 
         Assert.DoesNotContain("∞", run.SpeedText, StringComparison.Ordinal);
         Assert.DoesNotContain("Infinity", run.SpeedText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    [Trait("Story", "HU-19")]
+    public void Criterion2_InfiniteServiceSpeedFallsBackToMovingAverage()
+    {
+        var time = NewTime();
+        var run = NewRun(time);
+        run.ApplyProgress(Ev(0, 100 * Mb, speed: 0));
+        time.Advance(TimeSpan.FromSeconds(1));
+        run.ApplyProgress(Ev(Mb, 100 * Mb, speed: double.PositiveInfinity));
+
+        Assert.True(run.HasSpeed);
     }
 
     [Fact]
@@ -466,7 +480,9 @@ public sealed class HomePanelEdgeTests
         var (service, _) = FakeBackboneService.Create();
         using var home = new HomeViewModel(service, Str, connection, new ThrowingStarter());
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => home.Connection.StartServiceCommand.ExecuteAsync(null));
+        await home.Connection.StartServiceCommand.ExecuteAsync(null);
+
+        Assert.Equal(Str("Conn_StartFailed"), home.Connection.StartFailedText);
 
         Assert.Equal(1, connection.RetryCalls);
         Assert.False(home.Connection.IsStartingService);
@@ -566,35 +582,6 @@ public sealed class HomePanelEdgeTests
         run.IsCancelling = true;
         Assert.False(run.CanCancel);
         Assert.Equal(Str("Run_Cancelling"), run.CancelText);
-    }
-
-    // --- Recursos sin usar ---
-
-    [Fact]
-    [Trait("Story", "HU-19")]
-    public void Resources_HomeJobKeysUnusedByCodeAreDocumented()
-    {
-        // Documenta el estado: estas dos claves existen en los .resw pero ningún código ni XAML las usa.
-        var src = Path.Combine(FindRepoRoot(), "src", "Backbone.App");
-        var sep = Path.DirectorySeparatorChar;
-        var used = Directory.EnumerateFiles(src, "*.*", SearchOption.AllDirectories)
-            .Where(f => f.EndsWith(".cs", StringComparison.Ordinal) || f.EndsWith(".xaml", StringComparison.Ordinal))
-            .Where(f => !f.Contains($"{sep}obj{sep}", StringComparison.Ordinal) && !f.Contains($"{sep}bin{sep}", StringComparison.Ordinal))
-            .Select(File.ReadAllText)
-            .Any(t => t.Contains("Home_Job_NeverRun", StringComparison.Ordinal) || t.Contains("Home_Job_LastSuccessFormat", StringComparison.Ordinal));
-
-        Assert.False(used, "Si ahora se usan, retirar esta prueba.");
-    }
-
-    private static string FindRepoRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Backbone.slnx")))
-        {
-            dir = dir.Parent;
-        }
-
-        return dir?.FullName ?? throw new InvalidOperationException("No se encontró Backbone.slnx");
     }
 
     private sealed class SettableTime : TimeProvider
