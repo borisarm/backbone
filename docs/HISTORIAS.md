@@ -624,7 +624,7 @@ Las historias de una misma fila pueden desarrollarse en paralelo por agentes dis
 | HU-06 | MVP | 3 | backbone-service | Hecha (servicio y app; criterio 2 "aparecen en Restaurar" pendiente de `GetSnapshotsAsync`; integración contra el NAS y PM-HU06-01 pendientes) |
 | HU-07 | MVP | 5 | backbone-app | Hecha (servicio e interfaz; pruebas manuales PM-HU07-01 a 08 y pruebas elevadas pendientes) |
 | HU-08 | MVP | 3 | backbone-core | Hecha (motor y servicio; traducción en el JobRunner con HU-14; vista previa por IPC (criterio 5, F2) pendiente; PM-HU08-01 y PM-HU08-02 pendientes; pruebas elevadas superadas el 2026-11-22) |
-| HU-09 | MVP | 5 | backbone-service | Pendiente |
+| HU-09 | MVP | 5 | backbone-service | Hecha (servicio y app; el periodo de gracia y la pausa llegan por `IScheduleSettings` hasta que existan los ajustes; correcciones bajas pendientes del servicio: B-1, B-2, I-1, I-2 de la revisión de seguridad y reloj atrasado con el servicio en marcha (prueba en Skip); PM-HU09-01 y PM-HU09-02 pendientes) |
 | HU-10 | MVP | 3 | backbone-app | Pendiente |
 | HU-11 | F2 | 2 | backbone-service | Pendiente |
 | HU-12 | F2 | 3 | backbone-service | Pendiente |
@@ -634,7 +634,7 @@ Las historias de una misma fila pueden desarrollarse en paralelo por agentes dis
 | HU-16 | MVP | 5 | backbone-service | Pendiente |
 | HU-17 | MVP/F2 | 2 | backbone-service | Pendiente |
 | HU-18 | MVP | 5 | backbone-app | Hecha |
-| HU-19 | MVP | 5 | backbone-app | Pendiente |
+| HU-19 | MVP | 5 | backbone-app | Hecha (M-1 de la revisión de seguridad corregido; PM-HU19-01 a 09 pendientes, incluido el UAC real de "Iniciar servicio") |
 | HU-20 | MVP/F2 | 3 | backbone-app | Pendiente |
 | HU-21 | MVP | 5 | backbone-service | Pendiente |
 | HU-22 | MVP | 2 | backbone-service | Pendiente |
