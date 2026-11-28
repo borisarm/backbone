@@ -77,6 +77,18 @@ El ejecutable funciona también como aplicación de consola (`--console`) para d
 - **Pendiente en HU-14**: M-1 (el oráculo de la huella HMAC, arriba): la regla definitiva se implementa en `ShareConnectionManager` antes de que las copias usen el gestor.
 - **Archivo de prueba** (B-3): en "Probar conexión", la ruta final del archivo de prueba se comprueba **sobre su handle ya abierto y antes de escribir** (`GetFinalPathNameByHandle`), y tiene que estar dentro de la raíz conectada. Si no se puede obtener, cuenta como fallo (`AccessDenied`).
 - **Sesión de inicio compartida** (informativo): todos los servicios que corren como LocalSystem comparten la sesión de inicio `0x3e7`, y las conexiones de `WNetAddConnection2` son por sesión de inicio. Por tanto, desconectar una raíz también la quita a otros procesos de SYSTEM que la usaran, y una conexión de otro servicio de SYSTEM con ese servidor provoca 1219 al conectar. Backbone solo desconecta las raíces que ha conectado él (recuento propio), pero no puede saber si otro proceso de SYSTEM las usa a la vez.
+**Programación (HU-09, RF-10, RF-11, RF-15; decisión del coordinador).** El `Scheduler` calcula para cada trabajo su **próximo punto de programación** (instante UTC) y lo publica como `JobStatus.NextRunUtc`:
+
+- **Sin próximo punto** (`NextRunUtc = null`): trabajos `Manual` o desactivados.
+- **Diaria**: el primer instante, estrictamente posterior al último punto consumido (o a "ahora" si no hay ninguno), cuya hora local (zona de `TimeProvider.LocalTimeZone`) coincide con una de `TimesOfDay` en uno de los `Days`. Horario de verano: una hora local **inexistente** (salto hacia delante, p. ej. 02:30 entre 02:00 y 03:00) se ejecuta en el primer instante válido tras el salto (03:00); una hora **ambigua** (retroceso) se ejecuta **una sola vez**, en su primera aparición.
+- **Intervalo**: `último punto consumido + IntervalHours`, contado en UTC (no le afecta el horario de verano). Sin punto consumido (trabajo nuevo, o cambio de tipo o de `IntervalHours`), `ahora + IntervalHours`. Para tener una copia antes, está "Copiar ahora".
+- **Las ejecuciones manuales no mueven** la programación.
+- **Punto consumido**: un punto de programación se consume al encolarlo, al descartarlo por estar ya en cola o en curso ese mismo trabajo (no se duplica), o al saltarlo por recuperación desactivada. El último consumido de cada trabajo se guarda en `data\schedule.json` (almacén con las reglas de ADR-14, escritura atómica; un archivo dañado o rechazado se trata como vacío) para distinguir tras un reinicio "ya se hizo" de "se perdió". Las entradas de trabajos eliminados se borran.
+- **Bucle**: un único temporizador de `TimeProvider` que despierta en el próximo punto más cercano y, como mucho, **cada minuto**, y compara con el reloj; así se detectan la suspensión, la reanudación y los cambios de hora del sistema sin depender de eventos. Cambiar o guardar un trabajo (`JobStore` notifica) o `MissedRunGracePeriod` recalcula al momento, sin reiniciar el servicio.
+- **Puntual o perdido**: si un punto vence y se detecta con un retraso de menos de **2 minutos**, se encola en el acto (`RunTrigger.Scheduled`). Si se detecta más tarde (servicio detenido, equipo apagado o suspendido) o al arrancar el servicio, es una **ejecución perdida** (RF-11): con `CatchUpMissedRuns`, se encola **una sola** ejecución por trabajo, por muchos puntos que se hayan perdido, al cabo de `MissedRunGracePeriod` contado desde que se detecta (arranque o reanudación); sin `CatchUpMissedRuns`, se consumen sin ejecutar y se pasa al siguiente. Un trabajo sin entrada en `schedule.json` (nuevo, o primer arranque) no tiene puntos perdidos: se calcula desde "ahora".
+- **Cola** (RF-15): las ejecuciones programadas entran en la misma cola FIFO de un solo ejecutor que "Copiar ahora" (`RunQueue`), en orden de llegada; si dos trabajos vencen a la vez, en el orden de `jobs.json`.
+- **Pausa** (F2, `settings.json`): mientras está activa no se encola nada programado; los puntos vencidos se tratan como perdidos al reanudar la pausa.
+
 **Lectura de los orígenes (`ISourceFileSystem`, revisión de seguridad de HU-13, MEDIA-2).** El motor solo accede a los orígenes mediante `ISourceFileSystem` (Core); la implementación del servicio (`SourceFileSystem`, HU-08/HU-15) cumple este contrato en sus tres operaciones:
 
 - **`EnumerateAsync`, `OpenReadAsync` y `GetFileInfoAsync` abren por handle, relativo a la carpeta padre y sin seguir puntos de reanálisis** ("Apertura relativa", abajo; ADR-18): `NtCreateFile` con `RootDirectory` = handle de la carpeta padre, `ObjectName` = un solo componente y `FILE_OPEN_REPARSE_POINT | FILE_OPEN_FOR_BACKUP_INTENT` (los equivalentes de `FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS`), en carpetas y en archivos, con el token de lectura de ADR-21 ("Token de lectura de los orígenes", abajo). Ya no se usa `CreateFile` con la ruta completa.
@@ -212,7 +224,7 @@ El comportamiento real en VSS de WOF, Dedup y los marcadores de nube se comprueb
 %ProgramData%\Backbone\
 ├── config\jobs.json, settings.json
 ├── credentials\<hash-del-recurso>.bin
-├── data\history.db
+├── data\history.db, schedule.json
 └── logs\backbone-YYYYMMDD.log
 ```
 
