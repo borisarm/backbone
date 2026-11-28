@@ -31,7 +31,7 @@ Un agente **solo modifica las rutas de las que es propietario** (y las pruebas d
 dotnet build Backbone.slnx -c Debug
 dotnet test Backbone.slnx --filter "Category!=Integration&Category!=Perf"
 dotnet test Backbone.slnx --filter "Category=Integration"     # requiere PowerShell elevado
-dotnet run --project src/Backbone.Service -- --console        # servicio como consola, sin instalar
+dotnet run --project src/Backbone.Service -- --console        # servicio como consola, sin instalar (requiere PowerShell elevado)
 dotnet run --project src/Backbone.App -p:Platform=x64
 ```
 
