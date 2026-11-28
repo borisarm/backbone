@@ -34,7 +34,8 @@ internal sealed class ServiceStatusProvider(
     IJobActivity activity,
     RepositoryStateTracker repositoryStates,
     TimeProvider timeProvider,
-    IRunStatusSource? runs = null)
+    IRunStatusSource? runs = null,
+    INextRunSource? schedule = null)
 {
     public ServiceStatus GetStatus()
     {
@@ -50,6 +51,7 @@ internal sealed class ServiceStatusProvider(
                 Health = HealthOf(last),
                 LastRun = last,
                 LastSuccessUtc = runs?.LastSuccessUtc(job.Id),
+                NextRunUtc = job.Enabled ? schedule?.NextRunUtc(job.Id) : null,
                 RepositoryState = repositoryStates.Get(job.Id),
             };
         }).ToList();
@@ -77,7 +79,9 @@ internal sealed class ServiceStatusProvider(
 /// <c>DeleteJobAsync</c> lo emiten). Escucha <see cref="IJobList.Changed"/>, que se lanza después de persistir y antes de que
 /// la llamada responda.
 /// </summary>
-internal sealed class StatusBroadcaster(IJobList jobs, ServiceStatusProvider status, IIpcEventPublisher events, IRunStatusSource? runs = null) : IHostedService, IDisposable
+internal sealed class StatusBroadcaster(
+    IJobList jobs, ServiceStatusProvider status, IIpcEventPublisher events, IRunStatusSource? runs = null, INextRunSource? schedule = null)
+    : IHostedService, IDisposable
 {
     private int _subscribed;
 
@@ -105,6 +109,11 @@ internal sealed class StatusBroadcaster(IJobList jobs, ServiceStatusProvider sta
             {
                 runs.Changed += OnJobsChanged;
             }
+
+            if (schedule is not null)
+            {
+                schedule.Changed += OnJobsChanged;
+            }
         }
     }
 
@@ -116,6 +125,11 @@ internal sealed class StatusBroadcaster(IJobList jobs, ServiceStatusProvider sta
             if (runs is not null)
             {
                 runs.Changed -= OnJobsChanged;
+            }
+
+            if (schedule is not null)
+            {
+                schedule.Changed -= OnJobsChanged;
             }
         }
     }

@@ -27,7 +27,7 @@ namespace Backbone.Service.Jobs;
 /// <see cref="IRunCompletionHandler"/>; hasta entonces, la última ejecución de cada trabajo solo vive en memoria.</item>
 /// </list>
 /// </remarks>
-internal sealed partial class RunQueue : IJobActivity, IRunStatusSource, IHostedService, IDisposable
+internal sealed partial class RunQueue : IJobActivity, IRunStatusSource, IRunEnqueuer, IHostedService, IDisposable
 {
     private readonly IJobList _jobs;
     private readonly JobRunner _runner;
