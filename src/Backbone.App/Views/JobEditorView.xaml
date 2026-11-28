@@ -131,6 +131,84 @@
         </StackPanel>
       </StackPanel>
 
+      <!-- Programación (HU-09, RF-10, RF-11) -->
+      <StackPanel Spacing="8">
+        <TextBlock x:Uid="Editor_ScheduleHeader" Style="{StaticResource BodyStrongTextBlockStyle}"
+                   AutomationProperties.HeadingLevel="Level2" />
+        <RadioButtons x:Uid="Editor_ScheduleKind" SelectedIndex="{x:Bind ViewModel.ScheduleKindIndex, Mode=TwoWay}"
+                      SelectionChanged="OnScheduleKindChanged">
+          <RadioButton x:Uid="Sched_Manual" />
+          <RadioButton x:Uid="Sched_Daily" />
+          <RadioButton x:Uid="Sched_Interval" />
+        </RadioButtons>
+
+        <!-- Diaria: horas y días de la semana. -->
+        <StackPanel Spacing="8" Visibility="{x:Bind ViewModel.IsDaily, Mode=OneWay}">
+          <TextBlock x:Uid="Editor_TimesHeader" AutomationProperties.HeadingLevel="Level3" />
+          <ItemsRepeater ItemsSource="{x:Bind ViewModel.Times, Mode=OneWay}" TabFocusNavigation="Local">
+            <ItemsRepeater.Layout>
+              <StackLayout Spacing="4" />
+            </ItemsRepeater.Layout>
+            <ItemsRepeater.ItemTemplate>
+              <DataTemplate x:DataType="vm:ScheduleTimeItem">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <TimePicker x:Uid="Editor_Time" Time="{x:Bind Time, Mode=TwoWay}" MinuteIncrement="5"
+                              SelectedTimeChanged="OnScheduleTimeChanged" />
+                  <Button x:Uid="Editor_RemoveTime" Tag="{x:Bind}" Click="OnRemoveTimeClick">
+                    <FontIcon Glyph="&#xE74D;" FontFamily="{ThemeResource SymbolThemeFontFamily}" />
+                  </Button>
+                </StackPanel>
+              </DataTemplate>
+            </ItemsRepeater.ItemTemplate>
+          </ItemsRepeater>
+          <Button x:Uid="Editor_AddTime" Command="{x:Bind ViewModel.AddTimeToListCommand}">
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <FontIcon Glyph="&#xE710;" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="14" />
+              <TextBlock x:Uid="Editor_AddTimeText" />
+            </StackPanel>
+          </Button>
+          <TextBlock Text="{x:Bind ViewModel.TimesError, Mode=OneWay}"
+                     Visibility="{x:Bind ViewModel.HasTimesError, Mode=OneWay}"
+                     Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                     TextWrapping="WrapWholeWords" AutomationProperties.LiveSetting="Polite" />
+          <TextBlock Text="{x:Bind ViewModel.DuplicateTimesNote, Mode=OneWay}"
+                     Visibility="{x:Bind ViewModel.HasDuplicateTimesNote, Mode=OneWay}"
+                     TextWrapping="WrapWholeWords" AutomationProperties.LiveSetting="Polite" />
+
+          <TextBlock x:Uid="Editor_DaysHeader" AutomationProperties.HeadingLevel="Level3" />
+          <ItemsRepeater ItemsSource="{x:Bind ViewModel.DayChoices, Mode=OneWay}" TabFocusNavigation="Local">
+            <ItemsRepeater.Layout>
+              <UniformGridLayout MinItemWidth="130" MinColumnSpacing="8" />
+            </ItemsRepeater.Layout>
+            <ItemsRepeater.ItemTemplate>
+              <DataTemplate x:DataType="vm:DayChoiceViewModel">
+                <CheckBox Content="{x:Bind Name}" IsChecked="{x:Bind IsSelected, Mode=TwoWay}"
+                          Click="OnScheduleChanged" />
+              </DataTemplate>
+            </ItemsRepeater.ItemTemplate>
+          </ItemsRepeater>
+          <TextBlock Text="{x:Bind ViewModel.DaysError, Mode=OneWay}"
+                     Visibility="{x:Bind ViewModel.HasDaysError, Mode=OneWay}"
+                     Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                     TextWrapping="WrapWholeWords" AutomationProperties.LiveSetting="Polite" />
+        </StackPanel>
+
+        <!-- Intervalo: cada N horas. -->
+        <StackPanel Spacing="4" Visibility="{x:Bind ViewModel.IsInterval, Mode=OneWay}">
+          <NumberBox x:Uid="Editor_IntervalHours" Value="{x:Bind ViewModel.IntervalHours, Mode=TwoWay}"
+                     Minimum="{x:Bind vm:JobEditorViewModel.MinIntervalHours}" Maximum="{x:Bind vm:JobEditorViewModel.MaxIntervalHours}"
+                     SpinButtonPlacementMode="Inline" SmallChange="1" LargeChange="6" MaxWidth="200" HorizontalAlignment="Left"
+                     LostFocus="OnScheduleChanged" />
+          <TextBlock Text="{x:Bind ViewModel.IntervalError, Mode=OneWay}"
+                     Visibility="{x:Bind ViewModel.HasIntervalError, Mode=OneWay}"
+                     Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                     TextWrapping="WrapWholeWords" AutomationProperties.LiveSetting="Polite" />
+        </StackPanel>
+
+        <CheckBox x:Uid="Editor_CatchUp" IsChecked="{x:Bind ViewModel.CatchUpMissedRuns, Mode=TwoWay}"
+                  Visibility="{x:Bind ViewModel.IsScheduled, Mode=OneWay}" />
+      </StackPanel>
+
       <!-- Avisos y errores generales -->
       <ItemsRepeater ItemsSource="{x:Bind ViewModel.Warnings, Mode=OneWay}">
         <ItemsRepeater.ItemTemplate>

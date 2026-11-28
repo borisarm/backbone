@@ -179,4 +179,26 @@
   <data name="Run_Duration_LessThanMinute" xml:space="preserve"><value>menos de 1 min</value></data>
   <data name="Run_Duration_Minutes" xml:space="preserve"><value>{0} min</value></data>
   <data name="Run_Duration_HoursMinutes" xml:space="preserve"><value>{0} h {1} min</value></data>
+  <data name="Editor_ScheduleHeader.Text" xml:space="preserve"><value>Programación</value></data>
+  <data name="Editor_ScheduleKind.Header" xml:space="preserve"><value>Cuándo se copia</value></data>
+  <data name="Sched_Manual.Content" xml:space="preserve"><value>Manual (solo con «Copiar ahora»)</value></data>
+  <data name="Sched_Daily.Content" xml:space="preserve"><value>Diaria</value></data>
+  <data name="Sched_Interval.Content" xml:space="preserve"><value>Cada cierto número de horas</value></data>
+  <data name="Editor_TimesHeader.Text" xml:space="preserve"><value>Horas del día</value></data>
+  <data name="Editor_Time.Header" xml:space="preserve"><value>Hora de la copia</value></data>
+  <data name="Editor_RemoveTime.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>Quitar hora</value></data>
+  <data name="Editor_RemoveTime.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>Quitar hora</value></data>
+  <data name="Editor_AddTime.AccessKey" xml:space="preserve"><value>H</value></data>
+  <data name="Editor_AddTimeText.Text" xml:space="preserve"><value>Añadir hora</value></data>
+  <data name="Editor_DaysHeader.Text" xml:space="preserve"><value>Días de la semana</value></data>
+  <data name="Editor_IntervalHours.Header" xml:space="preserve"><value>Horas entre copias</value></data>
+  <data name="Editor_CatchUp.Content" xml:space="preserve"><value>Recuperar copias perdidas (si el equipo estaba apagado a la hora prevista)</value></data>
+  <data name="Sched_DuplicateTimes" xml:space="preserve"><value>Hay horas repetidas: se guardará una sola vez cada una.</value></data>
+  <data name="Sched_Day_Monday" xml:space="preserve"><value>Lunes</value></data>
+  <data name="Sched_Day_Tuesday" xml:space="preserve"><value>Martes</value></data>
+  <data name="Sched_Day_Wednesday" xml:space="preserve"><value>Miércoles</value></data>
+  <data name="Sched_Day_Thursday" xml:space="preserve"><value>Jueves</value></data>
+  <data name="Sched_Day_Friday" xml:space="preserve"><value>Viernes</value></data>
+  <data name="Sched_Day_Saturday" xml:space="preserve"><value>Sábado</value></data>
+  <data name="Sched_Day_Sunday" xml:space="preserve"><value>Domingo</value></data>
 </root>
