@@ -144,4 +144,55 @@ public sealed class ScheduleStoreTests : IDisposable
         await Assert.ThrowsAsync<DirectoryNotFoundException>(() => NewStore().SaveAsync(new Dictionary<Guid, DateTimeOffset>(), Ct));
         Assert.False(Directory.Exists(_temp.Combine("data")));
     }
+
+    [Fact]
+    public async Task Duplicate_ids_keep_the_last_entry_and_offsets_are_normalised_to_utc()
+    {
+        var id = Guid.NewGuid();
+        await File.WriteAllTextAsync(
+            FilePath,
+            $$"""{ "schemaVersion": 1, "unknown": 7, "jobs": [ { "jobId": "{{id}}", "lastConsumedUtc": "2026-11-19T01:00:00Z" }, { "jobId": "{{id}}", "lastConsumedUtc": "2026-11-20T03:00:00+02:00" } ] }""",
+            Ct);
+
+        var read = await NewStore().LoadAsync(Ct);
+
+        var value = Assert.Single(read).Value;
+        Assert.Equal(new DateTimeOffset(2026, 11, 20, 1, 0, 0, TimeSpan.Zero), value);
+        Assert.Equal(TimeSpan.Zero, value.Offset);
+    }
+
+    [Fact]
+    public async Task A_write_that_fails_leaves_the_previous_content_intact_and_no_temporaries()
+    {
+        var store = NewStore();
+        var id = Guid.NewGuid();
+        await store.SaveAsync(new Dictionary<Guid, DateTimeOffset> { [id] = DateTimeOffset.UnixEpoch }, Ct);
+        var before = await File.ReadAllBytesAsync(FilePath, Ct);
+
+        using (new FileStream(FilePath, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            await Assert.ThrowsAnyAsync<IOException>(() =>
+                store.SaveAsync(new Dictionary<Guid, DateTimeOffset> { [Guid.NewGuid()] = DateTimeOffset.UnixEpoch.AddDays(1) }, Ct));
+        }
+
+        Assert.Equal(before, await File.ReadAllBytesAsync(FilePath, Ct));
+        Assert.Equal([FilePath], Directory.EnumerateFileSystemEntries(_temp.Combine("data")));
+        Assert.Equal(DateTimeOffset.UnixEpoch, (await store.LoadAsync(Ct))[id]);
+    }
+
+    [Fact]
+    public async Task A_save_cancelled_before_it_starts_does_not_touch_the_file()
+    {
+        var store = NewStore();
+        await store.SaveAsync(new Dictionary<Guid, DateTimeOffset> { [Guid.NewGuid()] = DateTimeOffset.UnixEpoch }, Ct);
+        var before = await File.ReadAllBytesAsync(FilePath, Ct);
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            store.SaveAsync(new Dictionary<Guid, DateTimeOffset> { [Guid.NewGuid()] = DateTimeOffset.UnixEpoch.AddDays(1) }, cts.Token));
+
+        Assert.Equal(before, await File.ReadAllBytesAsync(FilePath, Ct));
+        Assert.Equal([FilePath], Directory.EnumerateFileSystemEntries(_temp.Combine("data")));
+    }
 }

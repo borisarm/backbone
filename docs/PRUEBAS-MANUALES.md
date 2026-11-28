@@ -688,3 +688,45 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 - Pulsar "Copiar ahora" con el trabajo ya en marcha muestra un aviso informativo, no un error.
 - Bandeja: "Copiar todo ahora" lanza los trabajos activados; con alguno ya en marcha no aparece error.
 - Narrador lee "Copiar ahora"/"Cancelar" dentro de la tarjeta del trabajo; tabulación lógica; alto contraste y escalado al 200 % sin recortes.
+
+## PM-HU09-01 · Programar un trabajo con el servicio real: arranque solo, próxima ejecución en Inicio y ejecución perdida
+
+**Cubre:** HU-09, criterios 2, 3, 4 y 5 (RF-10, RF-11, RF-15) con el reloj, el servicio y la app reales.
+
+**Por qué es manual:** las pruebas automáticas usan `FakeTimeProvider`; esto comprueba el temporizador real, la suspensión del equipo y la app conectada.
+
+**Preparación:** servicio en consola (`dotnet run --project src/Backbone.Service -- --console`) o instalado, y la app abierta. Un trabajo A con origen pequeño y destino válido; se pueden crear más.
+
+1. **Arranca solo** (criterio 2): editar A como Diaria a la hora actual + 3 min, todos los días. Guardar. En Inicio, la tarjeta de A muestra "Próxima ejecución" con esa hora en hora local. Sin tocar nada, a la hora indicada A pasa a "En cola"/"En ejecución" y termina (disparador Programada en el historial). Después, Inicio muestra la hora de mañana.
+2. **Cambiar sin reiniciar** (criterio 5): con el servicio en marcha, cambiar A a Diaria hoy + 10 min: la próxima ejecución cambia en Inicio en cuanto se guarda, sin reiniciar el servicio. Cambiar a Intervalo cada 2 h: muestra ahora + 2 h. Cambiar a Manual: la próxima ejecución desaparece ("Manual").
+3. **Servicio detenido pasada la hora** (criterio 3): A Diaria a hora actual + 3 min con "Recuperar ejecuciones perdidas" activada. Detener el servicio, esperar a que pase la hora, arrancarlo y anotar la hora de arranque. La copia empieza **5 minutos después del arranque** (±1 min), una sola vez, con disparador Recuperada. La próxima ejecución mostrada es la de mañana. Repetir con la opción desactivada: no se ejecuta nada y Inicio muestra la de mañana.
+4. **Detenido varios días** (varios puntos perdidos): con A Diaria, parar el servicio, adelantar el reloj de Windows 3 días (o dejar el servicio parado, si se puede) y arrancarlo: una sola copia recuperada, no tres.
+5. **Suspender el equipo pasada la hora** (criterio 3): A Diaria a hora actual + 5 min. Suspender el portátil/equipo (Inicio, Suspender), esperar 10 min, reanudar. A los ~5 min de la reanudación (no antes de 4) empieza una copia recuperada; el servicio no se reinicia (el PID no cambia). Si el equipo se reanuda en menos de 2 min desde la hora, la copia empieza de inmediato como Programada.
+6. **Cambio de hora del sistema**: con A Diaria, retroceder el reloj 2 h en Configuración de Windows: A no se ejecuta una segunda vez; Inicio sigue mostrando una próxima ejecución coherente (no a más de un día). Con A por Intervalo 4 h, retroceder el reloj 2 días: la próxima ejecución debe quedar a menos de 4 h de la hora actual (si queda a 2 días, es el defecto conocido de `Scheduler` con el reloj atrás; anotarlo). Restaurar la hora automática.
+7. **Dos trabajos a la misma hora** (criterio 4): A y B Diarias a la misma hora (+3 min), con orígenes que tarden unos minutos. A la hora, el primero (orden de la lista de Trabajos) pasa a "En ejecución" y el otro a "En cola" (nunca los dos a la vez); al terminar el primero empieza el segundo. En el historial, las horas de inicio del segundo son posteriores al fin del primero. Pulsar "Copiar ahora" en un tercer trabajo C mientras tanto: entra detrás en la cola.
+8. **Mismo trabajo ya en marcha**: con A en ejecución larga y su hora programada llegando (Intervalo de 1 h con origen grande), el punto se descarta sin error ni segunda copia.
+9. **Horario de verano** (si se puede): cambiar la zona horaria de Windows a una con cambio inminente (p. ej. fijar la fecha al día anterior al último domingo de marzo, con la sincronización desactivada) y comprobar que una Diaria a las 02:30 muestra 03:00 el día del salto.
+
+**Resultado esperado:** ninguna copia duplicada, ninguna perdida sin explicación, retrasos de recuperación de 5 min desde el arranque o la reanudación, y Inicio siempre coherente con lo que el servicio hará.
+
+**Estado:** pendiente. Anotar la hora real de inicio de las copias recuperadas (pasos 3 y 5) y el resultado del paso 6.
+
+## PM-HU09-02 · Editor de programación: Diaria, Intervalo, validación, teclado, Narrador y escalado
+
+**Cubre:** HU-09, criterio 1 (RF-10), parte de la app (`JobEditorViewModel.Schedule`).
+
+**Por qué es manual:** la apariencia, la navegación por teclado, Narrador y el escalado no se automatizan.
+
+1. Abrir "Nuevo trabajo": la programación empieza en Manual, sin horas y con todos los días marcados. Elegir Diaria: se propone una hora (02:00) y se muestran horas y días; elegir Manual de nuevo oculta los controles pero no pierde las horas.
+2. **Varias horas**: añadir 02:00, 13:30 y 22:15; cada "Añadir hora" propone una hora libre y no repite. Quitar una. Intentar añadir una hora ya presente: no se duplica (se avisa de forma legible).
+3. **Días vacíos**: desmarcar todos los días y guardar. No se guarda; aparece un error **junto al campo de días** (en línea, no un diálogo) con el texto del servicio. Marcar un día: el error desaparece.
+4. **Sin horas**: quitar todas las horas y guardar: error en línea bajo las horas; añadir una: desaparece.
+5. **Intervalo**: elegir Intervalo; probar 0, 25 y un campo vacío (error en línea: el rango válido es 1 a 24 h); 1 y 24 se aceptan. Guardar con 6 y reabrir: conserva 6.
+6. **Reabrir y conservar**: guardar una Diaria con 02:00 y 14:00, lunes a viernes y recuperación desactivada; cerrar el editor, reabrir el trabajo y también reiniciar la app: todo igual. En Inicio, la próxima ejecución corresponde (el primer día laborable con la hora más próxima).
+7. **Teclado**: recorrer el editor solo con Tab/Mayús+Tab y Espacio/Intro: el orden es lógico (tipo, horas, añadir/quitar, días, intervalo, recuperación); foco siempre visible; los errores en línea se alcanzan sin ratón.
+8. **Narrador**: cada control se anuncia con nombre y estado ("Lunes, casilla, marcada", "Hora, 02:00"); al aparecer un error en línea Narrador lo lee; el cambio de tipo (Manual/Diaria/Intervalo) anuncia los controles nuevos.
+9. **Escalado al 200 %** y alto contraste (claro y oscuro): nada se recorta ni se solapa; las horas y los días se ajustan en varias líneas. Repetir en en-US y es-ES (todos los textos traducidos, sin claves sin resolver).
+
+**Resultado esperado:** el editor guarda y recupera exactamente lo elegido, los errores del servicio se ven junto a su campo y el editor es utilizable con teclado y Narrador.
+
+**Estado:** pendiente.
