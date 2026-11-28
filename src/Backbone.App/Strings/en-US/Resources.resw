@@ -130,4 +130,53 @@
   <data name="Home_Job_NeverRun" xml:space="preserve"><value>No successful backup yet</value></data>
   <data name="Repo_ReadOnly.Title" xml:space="preserve"><value>Read-only destination</value></data>
   <data name="Repo_ReadOnly.Message" xml:space="preserve"><value>A newer version of Backbone created this destination. No backups will be made to it until you update Backbone.</value></data>
+  <data name="Conn_Connecting.Title" xml:space="preserve"><value>Connecting to the service</value></data>
+  <data name="Conn_Reconnecting.Title" xml:space="preserve"><value>Reconnecting to the service</value></data>
+  <data name="Conn_Reconnecting.Message" xml:space="preserve"><value>The connection was lost. Backbone keeps trying; backups in progress are not interrupted.</value></data>
+  <data name="Conn_ServiceStopped.Title" xml:space="preserve"><value>The Backbone service is not running</value></data>
+  <data name="Conn_ServiceStopped.Message" xml:space="preserve"><value>No backups will run while it is stopped. Start it to continue.</value></data>
+  <data name="Conn_StartService.Content" xml:space="preserve"><value>Start service</value></data>
+  <data name="Conn_StartService.AccessKey" xml:space="preserve"><value>S</value></data>
+  <data name="Conn_Incompatible.Title" xml:space="preserve"><value>Incompatible service version</value></data>
+  <data name="Conn_Incompatible_Format" xml:space="preserve"><value>The service uses contract version {0} and this app uses {1}. Update Backbone so they match.</value></data>
+  <data name="Conn_Unauthorized_Title.Text" xml:space="preserve"><value>You are not authorized to use Backbone</value></data>
+  <data name="Conn_Unauthorized_Body.Text" xml:space="preserve"><value>The service only accepts administrators of this computer who are listed as authorized users.</value></data>
+  <data name="Conn_Unauthorized_Instructions" xml:space="preserve"><value>An administrator must open Backbone with "Run as administrator", go to Settings, Authorized users, and add the account {0}. This window will then connect by itself.</value></data>
+  <data name="Home_Job_Disabled" xml:space="preserve"><value>Disabled</value></data>
+  <data name="Home_Job_Error" xml:space="preserve"><value>Last backup failed</value></data>
+  <data name="Home_Job_Warning" xml:space="preserve"><value>With warnings</value></data>
+  <data name="Home_Job_Outdated" xml:space="preserve"><value>No recent backup</value></data>
+  <data name="Home_Job_Ok" xml:space="preserve"><value>Up to date</value></data>
+  <data name="Home_Job_NoRuns" xml:space="preserve"><value>Last run: none yet</value></data>
+  <data name="Home_Job_LastRunFormat" xml:space="preserve"><value>Last run: {0} ({1})</value></data>
+  <data name="Home_Job_NextRunFormat" xml:space="preserve"><value>Next run: {0}</value></data>
+  <data name="Home_Job_Manual" xml:space="preserve"><value>Manual</value></data>
+  <data name="Home_Result_Queued" xml:space="preserve"><value>queued</value></data>
+  <data name="Home_Result_Running" xml:space="preserve"><value>in progress</value></data>
+  <data name="Home_Result_Completed" xml:space="preserve"><value>succeeded</value></data>
+  <data name="Home_Result_CompletedWithWarnings" xml:space="preserve"><value>with warnings</value></data>
+  <data name="Home_Result_Failed" xml:space="preserve"><value>failed</value></data>
+  <data name="Home_Result_Cancelled" xml:space="preserve"><value>cancelled</value></data>
+  <data name="Home_Result_Skipped" xml:space="preserve"><value>skipped</value></data>
+  <data name="Home_Overall_Error" xml:space="preserve"><value>Some backups have errors</value></data>
+  <data name="Home_Overall_Warning" xml:space="preserve"><value>There are warnings to review</value></data>
+  <data name="Home_Overall_Copying" xml:space="preserve"><value>Backing up</value></data>
+  <data name="Home_Overall_Ok" xml:space="preserve"><value>Everything is fine</value></data>
+  <data name="Home_Overall_JobsFormat" xml:space="preserve"><value>{0} job(s).</value></data>
+  <data name="Home_Overall_RunningFormat" xml:space="preserve"><value>{0} running.</value></data>
+  <data name="Home_Overall_FailedFormat" xml:space="preserve"><value>{0} with errors.</value></data>
+  <data name="Home_Overall_WarnedFormat" xml:space="preserve"><value>{0} with warnings or no recent backup.</value></data>
+  <data name="Home_Overall_Paused" xml:space="preserve"><value>Paused.</value></data>
+  <data name="Home_RunNowFor" xml:space="preserve"><value>Back up now: {0}</value></data>
+  <data name="Home_CancelFor" xml:space="preserve"><value>Cancel: {0}</value></data>
+  <data name="Home_ProgressFor" xml:space="preserve"><value>Backup progress: {0}</value></data>
+  <data name="Run_FilesOfFormat" xml:space="preserve"><value>{0} of {1} files</value></data>
+  <data name="Run_FilesFormat" xml:space="preserve"><value>{0} files</value></data>
+  <data name="Run_BytesOfFormat" xml:space="preserve"><value>{0} of {1}</value></data>
+  <data name="Run_SpeedFormat" xml:space="preserve"><value>Speed: {0}/s</value></data>
+  <data name="Run_RemainingFormat" xml:space="preserve"><value>Time remaining: {0}</value></data>
+  <data name="Run_CurrentFileFormat" xml:space="preserve"><value>Current file: {0}</value></data>
+  <data name="Run_Duration_LessThanMinute" xml:space="preserve"><value>less than 1 min</value></data>
+  <data name="Run_Duration_Minutes" xml:space="preserve"><value>{0} min</value></data>
+  <data name="Run_Duration_HoursMinutes" xml:space="preserve"><value>{0} h {1} min</value></data>
 </root>

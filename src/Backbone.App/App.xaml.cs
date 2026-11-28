@@ -54,6 +54,9 @@ public partial class App : Application
         // Composición (§9.1): el cliente IPC compartido es el IBackboneService de todos los view models.
         _services = new ServiceCollection()
             .AddSingleton<IBackboneService>(_client)
+            .AddSingleton<IConnectionMonitor>(_client)
+            .AddSingleton<IServiceStarter, ElevatedServiceStarter>()
+            .AddSingleton(TimeProvider.System)
             .AddSingleton<Func<string, string>>(strings.GetString)
             .AddSingleton<IFolderPicker>(new WindowFolderPicker(_window))
             .AddSingleton<HomeViewModel>()
