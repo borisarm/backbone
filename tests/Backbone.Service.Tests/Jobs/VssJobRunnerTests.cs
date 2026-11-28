@@ -323,4 +323,76 @@ public sealed class VssJobRunnerTests : IAsyncLifetime
         Assert.Equal(2, _rig.Snapshotter.Sets.Count);
         await RunRig.WaitUntilAsync(() => _rig.Snapshotter.ActiveSets == 0);
     }
+
+    // ---- Ampliación de QA ----
+
+    [Fact]
+    public async Task A_volume_without_VSS_support_mixed_with_one_that_has_it_reads_everything_live_with_one_warning_and_event_4000()
+    {
+        _rig.Inspector.AddFolder(@"E:\Usb");
+        _rig.Sources.Source.AddFile(@"E:\Usb\u.txt", "usb");
+        _rig.Snapshotter.UnsupportedVolumes.Add(VolumeOf('E'));
+        var job = await _rig.AddJobAsync(sources: [("Datos", @"C:\Datos"), ("Usb", @"E:\Usb")]);
+
+        var run = await RunAsync(job);
+
+        Assert.Equal((RunState.CompletedWithWarnings, 2L, false, 1), (run.State, run.Stats.Files, run.UsedVss, run.WarningCount));
+        Assert.Equal([@"C:\Datos", @"E:\Usb"], Assert.Single(_rig.Sources.Created).Select(s => s.ReadPath));
+        Assert.Empty(_rig.Snapshotter.Sets);
+        Assert.Single(_rig.EventLog.Entries, e => e.EventId == BackboneEventIds.VssUnavailable);
+        var detail = await RepositoryCheck.ReadSnapshotHeaderAsync(_rig.Memory(), run.SnapshotId!);
+        Assert.False(detail.UsedVss);
+    }
+
+    [Fact]
+    public async Task A_readable_source_next_to_an_unreadable_one_uses_VSS_only_for_the_readable_volume()
+    {
+        _rig.Inspector.AddStatus(@"D:\Falta", LocalFolderStatus.NotFound);
+        var job = await _rig.AddJobAsync(sources: [("Datos", @"C:\Datos"), ("Falta", @"D:\Falta")]);
+
+        var run = await RunAsync(job);
+
+        Assert.True(run.UsedVss);
+        Assert.Equal([VolumeOf('C')], Assert.Single(_rig.Snapshotter.Requests));
+        Assert.Single(Assert.Single(_rig.Snapshotter.Sets).Snapshots);
+        await RunRig.WaitUntilAsync(() => _rig.Snapshotter.ActiveSets == 0);
+    }
+
+    [Fact]
+    public async Task A_cancelled_run_has_no_snapshot_and_its_VSS_snapshot_is_gone()
+    {
+        var job = await _rig.AddJobAsync();
+        var (entered, release) = _rig.HoldAtFirstFile();
+        _rig.Runs.Enqueue(job.Id, RunTrigger.Manual);
+        await entered.WaitAsync(TimeSpan.FromSeconds(20), Ct);
+        _rig.Runs.Cancel(job.Id);
+
+        var run = await _rig.NextCompletedAsync();
+
+        Assert.Equal((RunState.Cancelled, (string?)null), (run.State, run.SnapshotId));
+        Assert.Equal(0, _rig.Snapshotter.ActiveSets);
+        release.TrySetResult();
+    }
+
+    [Fact]
+    public async Task A_snapshot_deletion_that_never_returns_does_not_block_the_run_nor_the_connection()
+    {
+        using var never = new CancellationTokenSource();
+        _rig.Snapshotter.OnDispose = () => Task.Delay(Timeout.Infinite, never.Token);
+        var job = await _rig.AddJobAsync();
+        _rig.Runs.Enqueue(job.Id, RunTrigger.Manual);
+
+        var completion = _rig.NextCompletedAsync(30);
+        for (var i = 0; i < 400 && !completion.IsCompleted; i++)
+        {
+            await Task.Delay(10, CancellationToken.None);
+            _rig.Time.Advance(TimeSpan.FromSeconds(1));
+        }
+
+        var run = await completion;
+        Assert.Equal(RunState.Completed, run.State);
+        await RunRig.WaitUntilAsync(() => _rig.Connector.OpenConnections == 0);
+        Assert.Equal(1, Assert.Single(_rig.Snapshotter.Sets).Disposals);
+        await never.CancelAsync();
+    }
 }

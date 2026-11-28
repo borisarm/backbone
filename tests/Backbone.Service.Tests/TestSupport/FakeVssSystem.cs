@@ -34,6 +34,12 @@ internal sealed class FakeVssSystem : IVssBackupFactory
     /// <summary>Método → <c>HRESULT</c> con el que falla.</summary>
     public Dictionary<string, int> FailOn { get; } = [];
 
+    /// <summary>Volúmenes (<c>\?\Volume{guid}\</c>) que VSS no admite (FAT, USB): <c>AddToSnapshotSet</c> falla con VSS_E_VOLUME_NOT_SUPPORTED.</summary>
+    public HashSet<string> UnsupportedVolumes { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Se llama en <c>DeleteSnapshots</c> con el token de la eliminación no disponible: sirve para colgarla.</summary>
+    public Action? OnDelete { get; set; }
+
     /// <summary>Se llama justo antes de confirmar el conjunto (<c>DoSnapshotSet</c>).</summary>
     public Action? BeforeDoSnapshotSet { get; set; }
 
@@ -119,6 +125,11 @@ internal sealed class FakeVssSystem : IVssBackupFactory
         {
             system.Record($"AddToSnapshotSet({volume})");
             system.FailIf(nameof(AddToSnapshotSet));
+            if (system.UnsupportedVolumes.Contains(volume))
+            {
+                throw new VssException(NativeMethods.Vss.VssEVolumeNotSupported, nameof(AddToSnapshotSet));
+            }
+
             var id = Guid.NewGuid();
             _pending.Add((id, volume));
             return id;
@@ -177,6 +188,7 @@ internal sealed class FakeVssSystem : IVssBackupFactory
         {
             system.Record($"DeleteSnapshots({(isSet ? "set" : "snapshot")})");
             system.Touched.Enqueue(id);
+            system.OnDelete?.Invoke();
             system.FailIf(nameof(DeleteSnapshots));
             lock (system._gate)
             {

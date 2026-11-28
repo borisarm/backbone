@@ -18,6 +18,11 @@ internal sealed class FakeSnapshotSet(IReadOnlyList<VolumeSnapshot> snapshots, F
     public ValueTask DisposeAsync()
     {
         Interlocked.Increment(ref _disposals);
+        if (owner.OnDispose is { } hook)
+        {
+            return new ValueTask(hook());
+        }
+
         return owner.DisposeError is { } error ? ValueTask.FromException(error) : ValueTask.CompletedTask;
     }
 }
@@ -43,6 +48,12 @@ internal sealed class FakeVolumeSnapshotter : IVolumeSnapshotter
 
     /// <summary>Si no es nulo, el desecho del conjunto lo lanza (después de anotarlo).</summary>
     public Exception? DisposeError { get; set; }
+
+    /// <summary>Si no es nulo, el desecho del conjunto espera a esta tarea (p. ej. una eliminación que no vuelve).</summary>
+    public Func<Task>? OnDispose { get; set; }
+
+    /// <summary>Volúmenes que VSS no admite: pedir alguno falla como <see cref="VolumeSnapshotException"/> y no se crea nada.</summary>
+    public HashSet<string> UnsupportedVolumes { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Se llama al crear, antes de entregar el conjunto: sirve para esperar o cancelar en ese punto.</summary>
     public Func<CancellationToken, Task>? OnCreate { get; set; }
@@ -80,6 +91,11 @@ internal sealed class FakeVolumeSnapshotter : IVolumeSnapshotter
         if (CreateError is { } error)
         {
             throw error;
+        }
+
+        if (volumes.FirstOrDefault(UnsupportedVolumes.Contains) is { } unsupported)
+        {
+            throw new VolumeSnapshotException($"VSS could not prepare the shadow copy set: AddToSnapshotSet failed (HRESULT 0x8004230C) for {unsupported}.");
         }
 
         var requested = OmitLastVolume ? volumes.Take(volumes.Count - 1) : volumes;
