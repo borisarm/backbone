@@ -46,6 +46,8 @@ internal sealed partial class JobEditorViewModel : ObservableObject, IDisposable
         {
             Sources.Add(new SourceItemViewModel(source.Path, source.Alias));
         }
+
+        LoadSchedule(_original.Schedule);
     }
 
     /// <summary>Cancela cualquier llamada en curso y libera sus recursos.</summary>
@@ -152,6 +154,7 @@ internal sealed partial class JobEditorViewModel : ObservableObject, IDisposable
         Name = Name.Trim(),
         Destination = Destination.Trim(),
         Sources = [.. Sources.Select(s => new JobSource { Path = s.Path, Alias = s.Alias.Trim() })],
+        Schedule = BuildSchedule(),
     };
 
     [RelayCommand(CanExecute = nameof(IsIdle))]
@@ -406,6 +409,7 @@ internal sealed partial class JobEditorViewModel : ObservableObject, IDisposable
         Warnings.Clear();
         OnPropertyChanged(nameof(HasWarnings));
         ShowDataFolderNote = false;
+        ClearScheduleMessages();
         foreach (var source in Sources)
         {
             source.ClearMessages();
@@ -430,6 +434,10 @@ internal sealed partial class JobEditorViewModel : ObservableObject, IDisposable
             else if (issue.Field == "Destination")
             {
                 DestinationError = Join(DestinationError, text);
+            }
+            else if (TryApplyScheduleIssue(issue.Field, text))
+            {
+                // Mostrado junto al campo de la programación.
             }
             else if (TryGetSource(issue.Field, out var source, out var isPath))
             {
