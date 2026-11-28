@@ -130,4 +130,53 @@
   <data name="Home_Job_NeverRun" xml:space="preserve"><value>Aún sin copia correcta</value></data>
   <data name="Repo_ReadOnly.Title" xml:space="preserve"><value>Destino de solo lectura</value></data>
   <data name="Repo_ReadOnly.Message" xml:space="preserve"><value>Una versión más nueva de Backbone creó este destino. No se harán copias en él hasta que actualices Backbone.</value></data>
+  <data name="Conn_Connecting.Title" xml:space="preserve"><value>Conectando con el servicio</value></data>
+  <data name="Conn_Reconnecting.Title" xml:space="preserve"><value>Reconectando con el servicio</value></data>
+  <data name="Conn_Reconnecting.Message" xml:space="preserve"><value>Se perdió la conexión. Backbone lo sigue intentando; las copias en curso no se interrumpen.</value></data>
+  <data name="Conn_ServiceStopped.Title" xml:space="preserve"><value>El servicio de Backbone no está en marcha</value></data>
+  <data name="Conn_ServiceStopped.Message" xml:space="preserve"><value>Mientras esté detenido no se harán copias. Inícialo para continuar.</value></data>
+  <data name="Conn_StartService.Content" xml:space="preserve"><value>Iniciar servicio</value></data>
+  <data name="Conn_StartService.AccessKey" xml:space="preserve"><value>I</value></data>
+  <data name="Conn_Incompatible.Title" xml:space="preserve"><value>Versión incompatible del servicio</value></data>
+  <data name="Conn_Incompatible_Format" xml:space="preserve"><value>El servicio usa la versión {0} del contrato y esta aplicación usa la {1}. Actualiza Backbone para que coincidan.</value></data>
+  <data name="Conn_Unauthorized_Title.Text" xml:space="preserve"><value>No tienes autorización para usar Backbone</value></data>
+  <data name="Conn_Unauthorized_Body.Text" xml:space="preserve"><value>El servicio solo atiende a los administradores del equipo que figuran como usuarios autorizados.</value></data>
+  <data name="Conn_Unauthorized_Instructions" xml:space="preserve"><value>Un administrador debe abrir Backbone con «Ejecutar como administrador», ir a Ajustes, Usuarios autorizados, y añadir la cuenta {0}. Después esta ventana se conectará sola.</value></data>
+  <data name="Home_Job_Disabled" xml:space="preserve"><value>Desactivado</value></data>
+  <data name="Home_Job_Error" xml:space="preserve"><value>Con error en la última copia</value></data>
+  <data name="Home_Job_Warning" xml:space="preserve"><value>Con avisos</value></data>
+  <data name="Home_Job_Outdated" xml:space="preserve"><value>Sin copia reciente</value></data>
+  <data name="Home_Job_Ok" xml:space="preserve"><value>Al día</value></data>
+  <data name="Home_Job_NoRuns" xml:space="preserve"><value>Última ejecución: ninguna todavía</value></data>
+  <data name="Home_Job_LastRunFormat" xml:space="preserve"><value>Última ejecución: {0} ({1})</value></data>
+  <data name="Home_Job_NextRunFormat" xml:space="preserve"><value>Próxima ejecución: {0}</value></data>
+  <data name="Home_Job_Manual" xml:space="preserve"><value>Manual</value></data>
+  <data name="Home_Result_Queued" xml:space="preserve"><value>en cola</value></data>
+  <data name="Home_Result_Running" xml:space="preserve"><value>en curso</value></data>
+  <data name="Home_Result_Completed" xml:space="preserve"><value>correcta</value></data>
+  <data name="Home_Result_CompletedWithWarnings" xml:space="preserve"><value>con avisos</value></data>
+  <data name="Home_Result_Failed" xml:space="preserve"><value>fallida</value></data>
+  <data name="Home_Result_Cancelled" xml:space="preserve"><value>cancelada</value></data>
+  <data name="Home_Result_Skipped" xml:space="preserve"><value>omitida</value></data>
+  <data name="Home_Overall_Error" xml:space="preserve"><value>Hay copias con error</value></data>
+  <data name="Home_Overall_Warning" xml:space="preserve"><value>Hay avisos que revisar</value></data>
+  <data name="Home_Overall_Copying" xml:space="preserve"><value>Copiando</value></data>
+  <data name="Home_Overall_Ok" xml:space="preserve"><value>Todo en orden</value></data>
+  <data name="Home_Overall_JobsFormat" xml:space="preserve"><value>{0} trabajo(s).</value></data>
+  <data name="Home_Overall_RunningFormat" xml:space="preserve"><value>{0} en marcha.</value></data>
+  <data name="Home_Overall_FailedFormat" xml:space="preserve"><value>{0} con error.</value></data>
+  <data name="Home_Overall_WarnedFormat" xml:space="preserve"><value>{0} con avisos o sin copia reciente.</value></data>
+  <data name="Home_Overall_Paused" xml:space="preserve"><value>En pausa.</value></data>
+  <data name="Home_RunNowFor" xml:space="preserve"><value>Copiar ahora: {0}</value></data>
+  <data name="Home_CancelFor" xml:space="preserve"><value>Cancelar: {0}</value></data>
+  <data name="Home_ProgressFor" xml:space="preserve"><value>Progreso de la copia: {0}</value></data>
+  <data name="Run_FilesOfFormat" xml:space="preserve"><value>{0} de {1} archivos</value></data>
+  <data name="Run_FilesFormat" xml:space="preserve"><value>{0} archivos</value></data>
+  <data name="Run_BytesOfFormat" xml:space="preserve"><value>{0} de {1}</value></data>
+  <data name="Run_SpeedFormat" xml:space="preserve"><value>Velocidad: {0}/s</value></data>
+  <data name="Run_RemainingFormat" xml:space="preserve"><value>Tiempo restante: {0}</value></data>
+  <data name="Run_CurrentFileFormat" xml:space="preserve"><value>Archivo actual: {0}</value></data>
+  <data name="Run_Duration_LessThanMinute" xml:space="preserve"><value>menos de 1 min</value></data>
+  <data name="Run_Duration_Minutes" xml:space="preserve"><value>{0} min</value></data>
+  <data name="Run_Duration_HoursMinutes" xml:space="preserve"><value>{0} h {1} min</value></data>
 </root>

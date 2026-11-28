@@ -32,7 +32,7 @@ internal sealed class BackboneClientOptions
 /// los eventos emitidos mientras no había conexión no se recuperan.</item>
 /// </list>
 /// </remarks>
-internal sealed class BackboneClient : IBackboneService, IAsyncDisposable
+internal sealed class BackboneClient : IBackboneService, IConnectionMonitor, IAsyncDisposable
 {
     private readonly IBackboneConnector _connector;
     private readonly TimeProvider _timeProvider;

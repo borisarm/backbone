@@ -9,6 +9,28 @@
     <StackPanel Spacing="12" MaxWidth="760" HorizontalAlignment="Left">
       <TextBlock x:Uid="Home_Title" Style="{StaticResource TitleTextBlockStyle}" AutomationProperties.HeadingLevel="Level1" />
 
+      <!-- Estados especiales de la conexión (§9.1, §9.3). Cada banner anuncia al abrirse. -->
+      <InfoBar x:Uid="Conn_Connecting" Severity="Informational" IsClosable="False"
+               IsOpen="{x:Bind ViewModel.Connection.ShowConnecting, Mode=OneWay}" />
+      <InfoBar x:Uid="Conn_Reconnecting" Severity="Warning" IsClosable="False"
+               IsOpen="{x:Bind ViewModel.Connection.ShowReconnecting, Mode=OneWay}" />
+      <InfoBar x:Uid="Conn_ServiceStopped" Severity="Error" IsClosable="False"
+               IsOpen="{x:Bind ViewModel.Connection.ShowServiceStopped, Mode=OneWay}">
+        <InfoBar.ActionButton>
+          <Button x:Uid="Conn_StartService" Command="{x:Bind ViewModel.Connection.StartServiceCommand}" />
+        </InfoBar.ActionButton>
+      </InfoBar>
+      <InfoBar x:Uid="Conn_Incompatible" Severity="Error" IsClosable="False"
+               Message="{x:Bind ViewModel.Connection.IncompatibleText, Mode=OneWay}"
+               IsOpen="{x:Bind ViewModel.Connection.ShowIncompatible, Mode=OneWay}" />
+      <StackPanel Spacing="8" Visibility="{x:Bind ViewModel.Connection.ShowUnauthorized, Mode=OneWay}">
+        <TextBlock x:Uid="Conn_Unauthorized_Title" Style="{StaticResource SubtitleTextBlockStyle}"
+                   AutomationProperties.HeadingLevel="Level2" />
+        <TextBlock x:Uid="Conn_Unauthorized_Body" TextWrapping="WrapWholeWords" />
+        <TextBlock Text="{x:Bind ViewModel.Connection.UnauthorizedInstructions, Mode=OneWay}" TextWrapping="WrapWholeWords"
+                   IsTextSelectionEnabled="True" />
+      </StackPanel>
+
       <InfoBar Severity="Error" IsClosable="False" IsOpen="{x:Bind ViewModel.HasError, Mode=OneWay}"
                Message="{x:Bind ViewModel.Error, Mode=OneWay}" />
 
@@ -19,7 +41,29 @@
                 Command="{x:Bind ViewModel.CreateJobCommand}" />
       </StackPanel>
 
-      <ItemsRepeater ItemsSource="{x:Bind ViewModel.Cards, Mode=OneWay}">
+      <!-- Estado general (§9.2). -->
+      <Border Padding="16" CornerRadius="{ThemeResource ControlCornerRadius}"
+              Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+              BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1"
+              Visibility="{x:Bind ViewModel.ShowOverall, Mode=OneWay}">
+        <Grid ColumnSpacing="12">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+          </Grid.ColumnDefinitions>
+          <FontIcon Glyph="{x:Bind ViewModel.OverallGlyph, Mode=OneWay}" FontSize="28" VerticalAlignment="Center"
+                    AutomationProperties.AccessibilityView="Raw" />
+          <StackPanel Grid.Column="1" Spacing="2">
+            <TextBlock Text="{x:Bind ViewModel.OverallTitle, Mode=OneWay}" Style="{StaticResource SubtitleTextBlockStyle}"
+                       AutomationProperties.HeadingLevel="Level2" AutomationProperties.LiveSetting="Polite" />
+            <TextBlock Text="{x:Bind ViewModel.OverallDetail, Mode=OneWay}" TextWrapping="WrapWholeWords"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <ItemsRepeater ItemsSource="{x:Bind ViewModel.Cards, Mode=OneWay}"
+                     Visibility="{x:Bind ViewModel.Connection.ShowContent, Mode=OneWay}">
         <ItemsRepeater.Layout>
           <StackLayout Spacing="8" />
         </ItemsRepeater.Layout>
@@ -28,7 +72,7 @@
             <Border Padding="16" CornerRadius="{ThemeResource ControlCornerRadius}"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1"
-                    AutomationProperties.Name="{x:Bind Name}">
+                    AutomationProperties.Name="{x:Bind AutomationName, Mode=OneWay}">
               <StackPanel Spacing="2">
                 <Grid ColumnSpacing="12">
                   <Grid.ColumnDefinitions>
@@ -36,19 +80,43 @@
                     <ColumnDefinition Width="Auto" />
                   </Grid.ColumnDefinitions>
                   <StackPanel Spacing="2">
-                    <TextBlock Text="{x:Bind Name}" Style="{StaticResource BodyStrongTextBlockStyle}" />
-                    <TextBlock Text="{x:Bind Summary}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                    <TextBlock Text="{x:Bind Run.ProgressText, Mode=OneWay}" TextTrimming="CharacterEllipsis"
-                               Visibility="{x:Bind Run.HasProgress, Mode=OneWay}"
+                    <TextBlock Text="{x:Bind Name, Mode=OneWay}" Style="{StaticResource BodyStrongTextBlockStyle}"
+                               AutomationProperties.HeadingLevel="Level3" />
+                    <!-- Región viva: el Narrador anuncia los cambios de estado, no cada medida de progreso. -->
+                    <TextBlock Text="{x:Bind StateText, Mode=OneWay}" AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock Text="{x:Bind LastRunText, Mode=OneWay}" TextWrapping="WrapWholeWords"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <TextBlock Text="{x:Bind NextRunText, Mode=OneWay}" TextWrapping="WrapWholeWords"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                   </StackPanel>
                   <Button Grid.Column="1" x:Uid="Run_RunNow" Command="{x:Bind Run.RunNowCommand}"
+                          AutomationProperties.Name="{x:Bind RunNowAutomationName, Mode=OneWay}"
                           IsEnabled="{x:Bind Run.CanRunNow, Mode=OneWay}"
                           Visibility="{x:Bind Run.ShowRunNow, Mode=OneWay}" VerticalAlignment="Center" />
                   <Button Grid.Column="1" Content="{x:Bind Run.CancelText, Mode=OneWay}" Command="{x:Bind Run.CancelCommand}"
+                          AutomationProperties.Name="{x:Bind CancelAutomationName, Mode=OneWay}"
                           IsEnabled="{x:Bind Run.CanCancel, Mode=OneWay}"
                           Visibility="{x:Bind Run.ShowCancel, Mode=OneWay}" VerticalAlignment="Center" />
                 </Grid>
+
+                <!-- Progreso en vivo (RF-51). -->
+                <StackPanel Spacing="4" Margin="0,8,0,0" Visibility="{x:Bind Run.HasProgress, Mode=OneWay}">
+                  <TextBlock Text="{x:Bind Run.PhaseText, Mode=OneWay}" AutomationProperties.LiveSetting="Polite" />
+                  <ProgressBar Minimum="0" Maximum="100" Value="{x:Bind Run.Percent, Mode=OneWay}"
+                               IsIndeterminate="{x:Bind Run.IsIndeterminate, Mode=OneWay}"
+                               AutomationProperties.Name="{x:Bind ProgressAutomationName, Mode=OneWay}" />
+                  <StackPanel Spacing="2" Visibility="{x:Bind Run.HasDetails, Mode=OneWay}">
+                    <TextBlock Text="{x:Bind Run.FilesText, Mode=OneWay}" />
+                    <TextBlock Text="{x:Bind Run.BytesText, Mode=OneWay}" />
+                    <TextBlock Text="{x:Bind Run.SpeedText, Mode=OneWay}" Visibility="{x:Bind Run.HasSpeed, Mode=OneWay}" />
+                    <TextBlock Text="{x:Bind Run.RemainingText, Mode=OneWay}" Visibility="{x:Bind Run.HasRemaining, Mode=OneWay}" />
+                    <TextBlock Text="{x:Bind Run.CurrentPathText, Mode=OneWay}" TextTrimming="CharacterEllipsis"
+                               Visibility="{x:Bind Run.HasCurrentPath, Mode=OneWay}"
+                               ToolTipService.ToolTip="{x:Bind Run.CurrentPathText, Mode=OneWay}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                  </StackPanel>
+                </StackPanel>
+
                 <InfoBar Severity="Informational" IsClosable="False" Margin="0,8,0,0"
                          IsOpen="{x:Bind Run.HasNotice, Mode=OneWay}" Message="{x:Bind Run.Notice, Mode=OneWay}"
                          Visibility="{x:Bind Run.HasNotice, Mode=OneWay}" />
@@ -56,7 +124,7 @@
                          IsOpen="{x:Bind Run.HasError, Mode=OneWay}" Message="{x:Bind Run.Error, Mode=OneWay}"
                          Visibility="{x:Bind Run.HasError, Mode=OneWay}" />
                 <InfoBar Severity="Warning" IsClosable="False" IsOpen="True" Margin="0,8,0,0"
-                         x:Uid="Repo_ReadOnly" Visibility="{x:Bind IsReadOnly}" />
+                         x:Uid="Repo_ReadOnly" Visibility="{x:Bind IsReadOnly, Mode=OneWay}" />
               </StackPanel>
             </Border>
           </DataTemplate>
