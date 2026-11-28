@@ -132,7 +132,20 @@ internal static class BackboneHost
             sp.GetRequiredService<IJobActivity>(),
             sp.GetRequiredService<RepositoryStateTracker>(),
             sp.GetRequiredService<TimeProvider>(),
-            sp.GetRequiredService<IRunStatusSource>()));
+            sp.GetRequiredService<IRunStatusSource>(),
+            sp.GetRequiredService<INextRunSource>()));
+
+        // Programación (HU-09, §8.2): data\schedule.json con el último punto consumido de cada trabajo y el Scheduler, que
+        // encola en RunQueue. Los ajustes (periodo de gracia, pausa) son los de por defecto hasta que existan los ajustes y la pausa.
+        services.AddSingleton(sp => new ScheduleStore(
+            sp.GetRequiredService<ServicePaths>().ScheduleFile,
+            sp.GetRequiredService<TrustedFile>(),
+            sp.GetRequiredService<ILogger<ScheduleStore>>()));
+        services.TryAddSingleton<ScheduleSettings>();
+        services.TryAddSingleton<IScheduleSettings>(sp => sp.GetRequiredService<ScheduleSettings>());
+        services.AddSingleton<IRunEnqueuer>(sp => sp.GetRequiredService<RunQueue>());
+        services.AddSingleton<Scheduler>();
+        services.AddSingleton<INextRunSource>(sp => sp.GetRequiredService<Scheduler>());
 
         // Conexión al NAS (HU-05, §8.2 ShareConnector).
         services.TryAddSingleton<IShareConnector, WindowsShareConnector>();
@@ -150,6 +163,9 @@ internal static class BackboneHost
         services.AddSingleton<RunEventBroadcaster>();
         services.AddHostedService(sp => sp.GetRequiredService<RunEventBroadcaster>());
         services.AddHostedService(sp => sp.GetRequiredService<RunQueue>());
+
+        // Después de RunQueue (se para antes que ella: deja de encolar antes de que la cola descarte lo pendiente).
+        services.AddHostedService(sp => sp.GetRequiredService<Scheduler>());
 
         // IPC.
         services.AddSingleton<ServiceRuntimeInfo>();
@@ -170,7 +186,8 @@ internal static class BackboneHost
             sp.GetRequiredService<IJobList>(),
             sp.GetRequiredService<ServiceStatusProvider>(),
             sp.GetRequiredService<IIpcEventPublisher>(),
-            sp.GetRequiredService<IRunStatusSource>()));
+            sp.GetRequiredService<IRunStatusSource>(),
+            sp.GetRequiredService<INextRunSource>()));
         services.AddHostedService(sp => sp.GetRequiredService<StatusBroadcaster>());
         services.AddHostedService(sp => sp.GetRequiredService<IpcServer>());
         return services;
