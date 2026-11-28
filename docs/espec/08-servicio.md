@@ -28,7 +28,7 @@ El ejecutable funciona también como aplicación de consola (`--console`) para d
 | `ShareConnectionManager` | Punto único de conexión al NAS (HU-05, decisión del coordinador; ver "Conexiones al NAS", abajo). |
 | `LocalFileSystemInspector` | `ILocalFileSystemInspector`: resolución controlada de los orígenes (ADR-20, §8.3) y búsqueda de las carpetas apartadas. La usan la validación de trabajos, el `JobRunner` al empezar cada ejecución y el cálculo de las carpetas protegidas. Abre en los mismos hilos dedicados y con el mismo token que `SourceFileSystem` (ADR-21). |
 | `SourceFileSystem` | Implementa `ISourceFileSystem` de Core (lectura de los orígenes, también desde la instantánea VSS) por handle, relativo a la carpeta padre y sin seguir puntos de reanálisis, en hilos dedicados con el token de ADR-21 (ver abajo). |
-| `VssSnapshotter` | Crea y elimina instantáneas VSS (WMI `Win32_ShadowCopy` o API COM de VSS); traduce rutas del origen a la ruta del dispositivo de la instantánea. Garantiza la eliminación con `finally` y limpia al arrancar instantáneas huérfanas creadas por Backbone. |
+| `VssSnapshotter` | Crea y elimina instantáneas VSS con la API COM `IVssBackupComponents` (contexto `VSS_CTX_BACKUP`, no persistente; `VSS_BT_COPY`, que no altera el historial de los escritores), **un único conjunto por ejecución** con todos los volúmenes de los orígenes (mismo instante), en un hilo dedicado con COM multihilo y el token del proceso (nunca el de un cliente ni el de lectura de ADR-21); traduce rutas del origen a la ruta del dispositivo de la instantánea. Antes de `DoSnapshotSet` registra conjunto, instantáneas y volúmenes en `datass-snapshots.json` (ADR-14); si no puede, no crea nada y la copia sigue en vivo. Garantiza la eliminación con `finally`. Al arrancar, en segundo plano, elimina **solo** las instantáneas del registro que no sean de la instancia actual y cuyo conjunto y volumen coincidan con lo registrado; nunca enumera ni toca otras; un registro dañado o rechazado cuenta como vacío (no borra nada) (HU-15). |
 | `PowerManager` | `SetThreadExecutionState`; estado de batería; eventos de suspensión y reanudación (`SystemEvents` / `RegisterPowerSettingNotification`). |
 | `NetworkMonitor` | Cambios de red y coste de la conexión (Network List Manager / `NetworkInformation`). |
 | `EventLogWriter` | Escribe en el registro Aplicación con el origen `Backbone`. |
@@ -227,7 +227,7 @@ El comportamiento real en VSS de WOF, Dedup y los marcadores de nube se comprueb
 %ProgramData%\Backbone\
 ├── config\jobs.json, settings.json
 ├── credentials\<hash-del-recurso>.bin
-├── data\history.db, schedule.json
+├── data\history.db, schedule.json, vss-snapshots.json
 └── logs\backbone-YYYYMMDD.log
 ```
 
@@ -320,7 +320,7 @@ Crear la raíz con Administradores como propietario exige que el proceso pueda a
    - **Credencial**: tiene que haber una guardada para la raíz del recurso del destino. Si no la hay (p. ej. se borró después de guardar el trabajo), la ejecución termina `Failed` con `CredentialRequired` **sin intentar conectar**, porque nunca se usa la cuenta del equipo (§7.5 A-3). La ejecución usa la credencial guardada que lee en este paso.
 3. Conectar con el recurso (`ShareConnectionManager`, §8.2); inicializar o validar el repositorio (RF-63).
 4. Adquirir bloqueo `shared`.
-5. Crear instantáneas VSS de los volúmenes de origen (RF-22).
+5. Crear instantáneas VSS de los volúmenes de origen (RF-22), un único conjunto, con `ReadPath` calculado desde la ruta final en forma GUID de la resolución del paso 2. Si VSS falla o el conjunto sale incompleto, todo se lee en vivo, se añade el aviso `VssUnavailable` (la ejecución termina `CompletedWithWarnings`) y se escribe el evento 4000; una cancelación no cuenta como fallo de VSS.
 6. Recorrer orígenes aplicando exclusiones (incluida la exclusión obligatoria de las carpetas protegidas, §8.3); comparar con el snapshot padre (RF-23, §6.3 "Snapshot padre"); subir objetos nuevos (§6.4).
 7. Escribir el snapshot.
 8. Aplicar retención (F2).
