@@ -34,6 +34,7 @@ internal sealed partial class IpcServer : IHostedService, IAsyncDisposable
     private readonly CancellationTokenSource _stopping = new();
     private NamedPipeServerStream? _listener;
     private Task _acceptLoop = Task.CompletedTask;
+    private int _disposed;
 
     public IpcServer(
         IpcConnectionManager connections,
@@ -73,21 +74,52 @@ internal sealed partial class IpcServer : IHostedService, IAsyncDisposable
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Para el servidor. Idempotente y segura sin <see cref="StartAsync"/> previo (arranque fallido: el host no llama a
+    /// StopAsync, pero sí libera) y tras <see cref="DisposeAsync"/>.
+    /// </summary>
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
         _authorizedUsers.Changed -= OnAuthorizedUsersChanged;
-        await _stopping.CancelAsync().ConfigureAwait(false);
+        await CancelStoppingAsync().ConfigureAwait(false);
         await _acceptLoop.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
         await _connections.DisposeAsync().ConfigureAwait(false);
         await DisposeListenerAsync().ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Libera el servidor. Idempotente: el host puede liberarlo dos veces (<c>RunAsync</c> y el contenedor) y puede hacerlo
+    /// sin que <see cref="StartAsync"/> haya llegado a ejecutarse o tras haber fallado.
+    /// </summary>
     public async ValueTask DisposeAsync()
     {
-        await _stopping.CancelAsync().ConfigureAwait(false);
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        _authorizedUsers.Changed -= OnAuthorizedUsersChanged;
+        await CancelStoppingAsync().ConfigureAwait(false);
         await _acceptLoop.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
         await DisposeListenerAsync().ConfigureAwait(false);
         _stopping.Dispose();
+    }
+
+    private async Task CancelStoppingAsync()
+    {
+        try
+        {
+            await _stopping.CancelAsync().ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Liberado en paralelo: ya no hay nada que cancelar.
+        }
     }
 
     private async Task AcceptLoopAsync(CancellationToken ct)
