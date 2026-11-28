@@ -10,7 +10,14 @@ var options = new BackboneHostOptions
     ConsoleMode = args.Contains("--console", StringComparer.OrdinalIgnoreCase),
 };
 
-using var host = BackboneHost.CreateBuilder(options).Build();
+// Sin elevar no se puede crear la carpeta de datos: se avisa antes de construir el host (en modo servicio no cambia nada).
+if (!ConsoleElevationCheck.CanStart(options.ConsoleMode, ConsoleElevationCheck.IsProcessElevated, Console.Error))
+{
+    return ConsoleElevationCheck.ExitCode;
+}
+
+// Sin "using": RunAsync libera el host al terminar (también si el arranque falla).
+var host = BackboneHost.CreateBuilder(options).Build();
 try
 {
     await host.RunAsync().ConfigureAwait(false);
