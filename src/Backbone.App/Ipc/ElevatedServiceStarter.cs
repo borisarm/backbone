@@ -6,14 +6,26 @@ namespace Backbone.App.Ipc;
 /// <summary>Lanza <c>sc start BackboneService</c> elevado mediante <c>runas</c> (UAC) (§9.3).</summary>
 internal sealed class ElevatedServiceStarter : IServiceStarter
 {
-    public async Task<bool> StartAsync(CancellationToken ct = default)
+    /// <summary>
+    /// Construye el arranque de <c>sc.exe</c> con ruta absoluta del directorio del sistema, para que un <c>sc.exe</c> plantado en
+    /// el directorio actual, el PATH o App Paths no se eleve con un UAC de aspecto legítimo.
+    /// </summary>
+    /// <returns>La información de arranque.</returns>
+    internal static ProcessStartInfo CreateStartInfo()
     {
-        var info = new ProcessStartInfo("sc.exe", "start " + ServiceProcessVerifier.DefaultServiceName)
+        var systemDirectory = Environment.SystemDirectory;
+        return new ProcessStartInfo(Path.Combine(systemDirectory, "sc.exe"), "start " + ServiceProcessVerifier.DefaultServiceName)
         {
             UseShellExecute = true,
             Verb = "runas",
             WindowStyle = ProcessWindowStyle.Hidden,
+            WorkingDirectory = systemDirectory,
         };
+    }
+
+    public async Task<bool> StartAsync(CancellationToken ct = default)
+    {
+        var info = CreateStartInfo();
         try
         {
             using var process = Process.Start(info);

@@ -266,7 +266,7 @@ internal sealed partial class HomeViewModel : ObservableObject, IDisposable
                 Cards.Move(Cards.IndexOf(existing), i);
             }
 
-            existing.Name = job.JobName;
+            existing.Name = UntrustedText.Describe(job.JobName);
             existing.StateText = DescribeState(job);
             existing.LastRunText = DescribeLastRun(job);
             existing.NextRunText = DescribeNextRun(job);

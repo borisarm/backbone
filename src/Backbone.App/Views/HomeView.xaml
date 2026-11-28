@@ -16,6 +16,7 @@
                IsOpen="{x:Bind ViewModel.Connection.ShowReconnecting, Mode=OneWay}" />
       <InfoBar x:Uid="Conn_ServiceStopped" Severity="Error" IsClosable="False"
                IsOpen="{x:Bind ViewModel.Connection.ShowServiceStopped, Mode=OneWay}">
+        <TextBlock Text="{x:Bind ViewModel.Connection.StartFailedText, Mode=OneWay}" TextWrapping="Wrap" />
         <InfoBar.ActionButton>
           <Button x:Uid="Conn_StartService" Command="{x:Bind ViewModel.Connection.StartServiceCommand}" />
         </InfoBar.ActionButton>

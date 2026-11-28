@@ -126,8 +126,6 @@
   <data name="Run_Phase_Finishing" xml:space="preserve"><value>Finalizando</value></data>
   <data name="Home_Job_Running" xml:space="preserve"><value>Copiando ahora</value></data>
   <data name="Home_Job_Queued" xml:space="preserve"><value>En cola</value></data>
-  <data name="Home_Job_LastSuccessFormat" xml:space="preserve"><value>Última copia correcta: {0}</value></data>
-  <data name="Home_Job_NeverRun" xml:space="preserve"><value>Aún sin copia correcta</value></data>
   <data name="Repo_ReadOnly.Title" xml:space="preserve"><value>Destino de solo lectura</value></data>
   <data name="Repo_ReadOnly.Message" xml:space="preserve"><value>Una versión más nueva de Backbone creó este destino. No se harán copias en él hasta que actualices Backbone.</value></data>
   <data name="Conn_Connecting.Title" xml:space="preserve"><value>Conectando con el servicio</value></data>
@@ -135,6 +133,7 @@
   <data name="Conn_Reconnecting.Message" xml:space="preserve"><value>Se perdió la conexión. Backbone lo sigue intentando; las copias en curso no se interrumpen.</value></data>
   <data name="Conn_ServiceStopped.Title" xml:space="preserve"><value>El servicio de Backbone no está en marcha</value></data>
   <data name="Conn_ServiceStopped.Message" xml:space="preserve"><value>Mientras esté detenido no se harán copias. Inícialo para continuar.</value></data>
+  <data name="Conn_StartFailed" xml:space="preserve"><value>No se pudo iniciar el servicio. Inténtalo de nuevo o inícialo desde Servicios de Windows.</value></data>
   <data name="Conn_StartService.Content" xml:space="preserve"><value>Iniciar servicio</value></data>
   <data name="Conn_StartService.AccessKey" xml:space="preserve"><value>I</value></data>
   <data name="Conn_Incompatible.Title" xml:space="preserve"><value>Versión incompatible del servicio</value></data>

@@ -126,8 +126,6 @@
   <data name="Run_Phase_Finishing" xml:space="preserve"><value>Finishing</value></data>
   <data name="Home_Job_Running" xml:space="preserve"><value>Backing up now</value></data>
   <data name="Home_Job_Queued" xml:space="preserve"><value>Queued</value></data>
-  <data name="Home_Job_LastSuccessFormat" xml:space="preserve"><value>Last successful backup: {0}</value></data>
-  <data name="Home_Job_NeverRun" xml:space="preserve"><value>No successful backup yet</value></data>
   <data name="Repo_ReadOnly.Title" xml:space="preserve"><value>Read-only destination</value></data>
   <data name="Repo_ReadOnly.Message" xml:space="preserve"><value>A newer version of Backbone created this destination. No backups will be made to it until you update Backbone.</value></data>
   <data name="Conn_Connecting.Title" xml:space="preserve"><value>Connecting to the service</value></data>
@@ -135,6 +133,7 @@
   <data name="Conn_Reconnecting.Message" xml:space="preserve"><value>The connection was lost. Backbone keeps trying; backups in progress are not interrupted.</value></data>
   <data name="Conn_ServiceStopped.Title" xml:space="preserve"><value>The Backbone service is not running</value></data>
   <data name="Conn_ServiceStopped.Message" xml:space="preserve"><value>No backups will run while it is stopped. Start it to continue.</value></data>
+  <data name="Conn_StartFailed" xml:space="preserve"><value>The service could not be started. Try again or start it from Windows Services.</value></data>
   <data name="Conn_StartService.Content" xml:space="preserve"><value>Start service</value></data>
   <data name="Conn_StartService.AccessKey" xml:space="preserve"><value>S</value></data>
   <data name="Conn_Incompatible.Title" xml:space="preserve"><value>Incompatible service version</value></data>

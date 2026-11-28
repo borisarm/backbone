@@ -13,7 +13,7 @@ namespace Backbone.App.ViewModels;
 internal sealed record JobListItem(JobDefinition Job, string Summary, JobRunState Run, bool IsReadOnly = false)
 {
     /// <summary>Nombre del trabajo.</summary>
-    public string Name => Job.Name;
+    public string Name => UntrustedText.Describe(Job.Name);
 }
 
 /// <summary>Página Trabajos (§9.2): lista de trabajos y editor.</summary>

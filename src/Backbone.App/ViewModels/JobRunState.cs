@@ -199,7 +199,7 @@ internal sealed partial class JobRunState : ObservableObject
             : JobEditorViewModel.FormatBytes(e.BytesProcessed);
 
         // El servicio manda velocidad y estimado cuando puede; si no, se calculan aquí con una media móvil.
-        double? speed = e.BytesPerSecond > 0 ? e.BytesPerSecond : _rate.BytesPerSecond;
+        double? speed = e.BytesPerSecond is { } reported && double.IsFinite(reported) && reported > 0 ? reported : _rate.BytesPerSecond;
         SpeedText = speed is { } s && s > 0 && double.IsFinite(s)
             ? string.Format(culture, _getString("Run_SpeedFormat"), JobEditorViewModel.FormatBytes((long)s))
             : string.Empty;
