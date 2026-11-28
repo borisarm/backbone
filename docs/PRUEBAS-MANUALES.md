@@ -597,6 +597,83 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 
 **Estado:** pendiente. Cuando se ejecute, anotar los tiempos del paso 2 y 7 y qué pasó en los pasos 5, 8 y 11.
 
+## PM-HU19-01 · Panel de inicio: tarjetas, progreso en vivo y estados especiales (app + servicio reales)
+
+**Cubre:** HU-19, criterios 1 a 3 (RF-51, §9.2, §9.3) con la app WinUI real y el servicio instalado.
+
+**Por qué es manual:** la cadencia visual del progreso, la barra indeterminada→determinada, el UAC real de `sc start`, los ~8 s de "Reconectando" y la disposición de los banners no se pueden comprobar sin interfaz. Las pruebas automáticas (`HomePanelTests`, `HomePanelEdgeTests`) cubren los modelos de vista con el servicio simulado.
+
+**Preparación:** servicio instalado y en marcha; NAS `192.168.1.163` con una credencial guardada; dos trabajos: A programado (diario) con un origen de varios GiB y B con programación "Manual"; abrir la app en Inicio.
+
+### PM-HU19-02 · Tarjetas: estado, última y próxima ejecución, botón (criterio 1)
+1. Con A y B sin copias previas: cada tarjeta muestra su estado, "Última ejecución: ninguna todavía", la próxima ejecución (A con fecha y hora locales; B con "Manual") y el botón "Copiar ahora".
+2. Desactivar B en Trabajos: su tarjeta pasa a "Desactivado" y la próxima ejecución es "—" (no "Manual").
+3. Lanzar y terminar una copia de A: la tarjeta muestra la fecha local de la última ejecución con su resultado ("completada"/"con avisos"/"con error") y el estado "Al día".
+4. Editar el nombre de A mientras Inicio está abierto: la tarjeta se actualiza sin cambiar de sitio ni parpadear.
+
+**Esperado:** los textos coinciden con el estado real; las fechas están en hora local; ninguna tarjeta se recrea.
+
+### PM-HU19-03 · Progreso en vivo (criterio 2)
+1. Pulsar "Copiar ahora" en A. Con el cronómetro en mano, observar durante 30 s la tarjeta.
+2. Al principio se ve la fase ("Conectando con el NAS", "Analizando…") con la barra **indeterminada** y sin contadores.
+3. Al empezar a copiar, la barra pasa a **determinada** y aparecen: archivos procesados (y total), bytes procesados "X de Y", velocidad "Velocidad: N MB/s", tiempo restante y "Archivo actual: …".
+4. Los contadores, la velocidad y el archivo actual cambian **varias veces por segundo** (al menos una vez por segundo); el porcentaje solo avanza.
+5. Pulsar "Cancelar": el botón pasa a "Cancelando…" (deshabilitado) y en menos de 5 s la tarjeta vuelve a "Copiar ahora" sin restos de progreso.
+6. Copiar un origen con un archivo con caracteres de control o de dirección en el nombre (p. ej. un nombre con U+202E creado con PowerShell): "Archivo actual" lo muestra escapado (`‮`), sin invertir el texto.
+7. Cerrar la app a mitad de copia y volver a abrirla (o desde la bandeja): la tarjeta recupera el progreso de inmediato.
+
+**Esperado:** actualización fluida sin saltos de foco; el tiempo estimado desaparece si no se conoce el total; sin textos "NaN" ni "∞".
+
+### PM-HU19-04 · Servicio detenido y "Iniciar servicio" (criterio 3)
+1. En una consola elevada: `sc stop BackboneService`. En la app, la tarjeta de conexión muestra "Reconectando" unos ~8 s con las últimas tarjetas visibles.
+2. Pasado ese tiempo aparece el **banner rojo** persistente "servicio detenido" con el botón "Iniciar servicio"; las tarjetas desaparecen y no aparece el estado "sin trabajos".
+3. Pulsar "Iniciar servicio" y **aceptar** el UAC: el servicio arranca y en 1-2 s el banner desaparece y las tarjetas vuelven con datos actuales (no esperar al siguiente reintento de la cadencia).
+4. Repetir `sc stop` y pulsar "Iniciar servicio", pero **rechazar** el UAC: no hay error ni cierre de la app; el botón vuelve a estar habilitado, el banner sigue y la app reintenta la conexión de inmediato.
+5. Pulsar el botón dos veces seguidas mientras el UAC está abierto: solo se abre un aviso de UAC.
+6. Con la copia de A en curso, `sc stop`: al volver el servicio, la tarjeta no queda "Copiando" fantasma.
+
+**Esperado:** secuencia Conectado → Reconectando → servicio detenido → Conectando → Conectado sin pantallas intermedias confusas.
+
+### PM-HU19-05 · Sin autorización y contrato incompatible (criterio 3)
+1. Iniciar la app con un usuario estándar que **no** está en la lista de autorizados del servicio: pantalla explicativa con el nombre de su cuenta (`DOMINIO\usuario`) y las instrucciones para autorizarla; ni tarjetas ni banner de servicio detenido.
+2. Autorizar la cuenta como indica el texto; la app conecta sin reiniciarla (o tras "reintentar").
+3. Con un servicio de **contrato mayor distinto** (p. ej. instalar una compilación de pruebas con `ContractVersion` mayor, o un cliente de pruebas con otra versión): aviso que muestra la versión del servicio y la de la app; ninguna tarjeta; ningún error técnico en pantalla.
+
+**Esperado:** cada estado muestra una única presentación, con texto claro y en el idioma de la interfaz.
+
+### PM-HU19-06 · Sin trabajos (criterio 3)
+1. Borrar todos los trabajos (o instalar limpio): Inicio muestra el estado vacío con el botón "Crear trabajo".
+2. Pulsar "Crear trabajo": se abre Trabajos con el editor de un trabajo nuevo.
+3. Con el servicio detenido y sin trabajos: se ve el banner rojo, **no** el estado vacío.
+
+**Esperado:** el estado vacío solo aparece conectado y con la lista cargada.
+
+### PM-HU19-07 · Solo teclado y foco estable (criterio 4)
+1. Sin ratón: Tab recorre en orden lógico las tarjetas y sus botones "Copiar ahora"/"Cancelar" (y "Iniciar servicio" / "Crear trabajo" cuando toca); el foco visible se ve en todos. Intro/Espacio activan el botón.
+2. Poner el foco en "Cancelar" de A con una copia en curso y dejar pasar 30 s de progreso y de eventos de estado (lanzar B desde la bandeja): el foco **no se mueve** ni salta al principio de la lista.
+3. Al terminar la copia, el foco sigue siendo coherente (pasa a "Copiar ahora" de la misma tarjeta, no se pierde en la ventana).
+
+**Esperado:** operable por completo con teclado; el foco no se pierde con los eventos.
+
+### PM-HU19-08 · Narrador (criterio 4)
+1. Activar Narrador (Win+Ctrl+Intro) y recorrer Inicio: cada tarjeta se lee como una frase ("Fotos. Al día. Última ejecución… Próxima ejecución…"); los botones se leen "Copiar ahora, Fotos" y "Cancelar, Fotos"; la barra de progreso se lee con el nombre del trabajo.
+2. Durante una copia, Narrador anuncia los cambios de **estado y de fase** ("Copiando ahora", "Escribiendo el snapshot"), pero **no** repite los contadores, la velocidad ni el archivo actual en cada actualización.
+3. Servicio detenido: el banner rojo se anuncia al aparecer; "Reconectando" se anuncia una sola vez.
+
+**Esperado:** sin anuncios repetidos varias veces por segundo; todos los controles tienen nombre.
+
+### PM-HU19-09 · Alto contraste, temas y escalado (criterio 4)
+1. Alternar tema claro y oscuro con la app abierta durante una copia: texto, barra de progreso y banners legibles (contraste suficiente); el banner rojo sigue destacando.
+2. Activar un tema de alto contraste (Alt izq + Mayús izq + Impr Pant): todos los textos, bordes de tarjeta y foco usan colores del sistema; la barra de progreso es distinguible.
+3. Escalado de pantalla al 200 % y ventana al tamaño mínimo: ni las tarjetas, ni la línea de "Archivo actual" (ruta larga), ni los banners se recortan ni obligan a desplazar horizontalmente; las rutas largas se recortan con puntos suspensivos.
+4. Idioma en-US (cambiar el idioma de Windows y reiniciar la app): ningún texto de Inicio en español; ninguna clave sin traducir.
+
+**Esperado:** legible y completo en todos los temas y escalados.
+
+**Nota para el desarrollador:** `Home_Job_NeverRun` y `Home_Job_LastSuccessFormat` existen en los `.resw` pero ningún código ni XAML los usa (la prueba `Resources_HomeJobKeysUnusedByCodeAreDocumented` lo documenta). Usarlos o retirarlos.
+
+**Estado:** pendiente. Cuando se ejecute, anotar la versión de la app, el tiempo real de "Reconectando" (paso 1 de PM-HU19-04) y la frecuencia de refresco observada (PM-HU19-03).
+
 ## HU-06: aviso de destino de solo lectura (app)
 
 - Con un destino creado por una versión más nueva (repo.json con formato superior), guardar el trabajo: la tarjeta de Inicio y la fila de Trabajos muestran un InfoBar de advertencia "Destino de solo lectura" legible en claro, oscuro y alto contraste, y con Narrador.
