@@ -47,6 +47,7 @@ internal sealed class RunRig : IAsyncDisposable
         Validation = canceller is null
             ? new SourceValidationRunner(Time, ioOptions ?? new SourceIoOptions(), abandoned: Abandoned)
             : new SourceValidationRunner(Time, ioOptions ?? new SourceIoOptions(), canceller, abandoned: Abandoned);
+        Sources.Source.PathTranslator = Snapshotter.ToLive;
         Connections = new ShareConnectionManager(Connector, _loggerFactory.CreateLogger<ShareConnectionManager>());
         Runner = new JobRunner(
             new ShareCredentialProvider(wrapCredentials?.Invoke(Credentials) ?? Credentials, _loggerFactory.CreateLogger<ShareCredentialProvider>()),
@@ -56,6 +57,8 @@ internal sealed class RunRig : IAsyncDisposable
             new ProtectedFolderResolver(new ServicePaths(_temp.Path), Inspector, _loggerFactory.CreateLogger<ProtectedFolderResolver>()),
             Validation,
             Sources,
+            Snapshotter,
+            EventLog,
             States,
             new ServiceRuntimeInfo(Time),
             Time,
@@ -92,6 +95,9 @@ internal sealed class RunRig : IAsyncDisposable
     public SourceValidationRunner Validation { get; }
 
     public FakeSourceFileSystemFactory Sources { get; } = new();
+
+    /// <summary>VSS simulado (HU-15): por defecto crea las instantáneas; su lectura se sirve de los mismos archivos que la copia en vivo.</summary>
+    public FakeVolumeSnapshotter Snapshotter { get; } = new();
 
     public RepositoryStateTracker States { get; } = new();
 

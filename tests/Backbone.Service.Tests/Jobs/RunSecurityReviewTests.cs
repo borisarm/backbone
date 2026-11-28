@@ -159,6 +159,7 @@ public sealed class RunSecurityReviewTests : IAsyncLifetime
     {
         using var api = new FakeSourceFileApi();
         api.AddFile("a.txt", [1, 2, 3]);
+        _rig.Snapshotter.CreateError = new VolumeSnapshotException("VSS no disponible"); // la lectura de la prueba es en vivo
         _rig.Inspector.AddStatus(FakeSourceFileApi.ReadPath, LocalFolderStatus.NotFound);
         var job = await _rig.AddJobAsync(sources: [("Datos", RunRig.DataFolder), ("Src", FakeSourceFileApi.ReadPath)]);
 

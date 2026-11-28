@@ -56,7 +56,7 @@ internal sealed class PipeServerHarness : IAsyncDisposable
         var validationRunner = new SourceValidationRunner(TimeProvider.System, new SourceIoOptions());
         Runs = new RunQueue(
             Jobs,
-            new JobRunner(shareCredentials, connections, new UncRepositoryStorageFactory(), fileSystem, protectedFolders, validationRunner, new FakeSourceFileSystemFactory(), repositoryStates, runtime, TimeProvider.System, new JobRunnerOptions(), LoggerFactory.CreateLogger<JobRunner>()),
+            new JobRunner(shareCredentials, connections, new UncRepositoryStorageFactory(), fileSystem, protectedFolders, validationRunner, new FakeSourceFileSystemFactory(), new FakeVolumeSnapshotter(), EventLog, repositoryStates, runtime, TimeProvider.System, new JobRunnerOptions(), LoggerFactory.CreateLogger<JobRunner>()),
             TimeProvider.System,
             [],
             LoggerFactory.CreateLogger<RunQueue>());

@@ -890,4 +890,96 @@ internal static partial class NativeMethods
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static partial bool RevertToSelf();
     }
+
+    /// <summary>
+    /// VSS (HU-15, RF-22): <c>IVssBackupComponents</c> se obtiene con <c>CreateVssBackupComponentsInternal</c> (<c>vssapi.dll</c>) y
+    /// se llama por su tabla de métodos (<see cref="VssBackupComponents"/>), porque no tiene proyección .NET. Firmas, valores y
+    /// orden de la tabla comprobados contra <c>vsbackup.h</c> y <c>vss.h</c> del SDK de Windows 10.0.26100 y Microsoft Learn
+    /// (IVssBackupComponents, IVssAsync, VSS_SNAPSHOT_PROP, VSS_SNAPSHOT_CONTEXT).
+    /// </summary>
+    internal static partial class Vss
+    {
+        /// <summary><c>COINIT_MULTITHREADED</c>.</summary>
+        internal const uint CoInitMultithreaded = 0x0;
+
+        /// <summary><c>CoInitializeEx</c>: <c>S_OK</c> (0), <c>S_FALSE</c> (1, ya inicializado) o un error.</summary>
+        [LibraryImport("ole32.dll")]
+        internal static partial int CoInitializeEx(nint reserved, uint coInit);
+
+        [LibraryImport("ole32.dll")]
+        internal static partial void CoUninitialize();
+
+        /// <summary>
+        /// <c>CreateVssBackupComponentsInternal(IVssBackupComponents**)</c> (<c>STDAPICALLTYPE</c>): devuelve el <c>HRESULT</c>.
+        /// El objeto solo sirve para una copia o una consulta y hay que soltarlo con <c>Release</c>.
+        /// </summary>
+        [LibraryImport("vssapi.dll")]
+        internal static partial int CreateVssBackupComponentsInternal(out nint backupComponents);
+
+        /// <summary><c>VssFreeSnapshotPropertiesInternal</c>: libera las cadenas de un <see cref="SnapshotProp"/>.</summary>
+        [LibraryImport("vssapi.dll")]
+        internal static partial void VssFreeSnapshotPropertiesInternal(ref SnapshotProp prop);
+
+        /// <summary><c>VSS_SNAPSHOT_PROP</c> (<c>#pragma pack(push, 8)</c>; 128 bytes en x64).</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct SnapshotProp
+        {
+            public Guid SnapshotId;
+            public Guid SnapshotSetId;
+            public int SnapshotsCount;
+            public nint SnapshotDeviceObject;
+            public nint OriginalVolumeName;
+            public nint OriginatingMachine;
+            public nint ServiceMachine;
+            public nint ExposedName;
+            public nint ExposedPath;
+            public Guid ProviderId;
+            public int SnapshotAttributes;
+            public long CreationTimestamp;
+            public int Status;
+        }
+
+        /// <summary><c>VSS_OBJECT_PROP</c>: el tipo y la unión (aquí, solo la arma de las instantáneas, la mayor).</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct ObjectProp
+        {
+            public int Type;
+            public SnapshotProp Snapshot;
+        }
+
+        // ---- VSS_OBJECT_TYPE ----
+        internal const int ObjectNone = 1;
+        internal const int ObjectSnapshotSet = 2;
+        internal const int ObjectSnapshot = 3;
+
+        // ---- VSS_SNAPSHOT_CONTEXT ----
+        /// <summary><c>VSS_CTX_BACKUP</c>: no persistente, se libera sola, con escritores.</summary>
+        internal const int ContextBackup = 0;
+
+        /// <summary>
+        /// <c>VSS_CTX_NAS_ROLLBACK</c> (<c>PERSISTENT | NO_AUTO_RELEASE | NO_WRITERS</c> = 0x19): persistente y sin escritores
+        /// (solo lo usan las pruebas de integración para fabricar una instantánea huérfana).
+        /// </summary>
+        internal const int ContextNasRollback = 0x19;
+
+        /// <summary><c>VSS_CTX_ALL</c>: valen todas las instantáneas existentes para consultar y borrar.</summary>
+        internal const int ContextAll = -1;
+
+        /// <summary><c>VSS_BT_COPY</c>: copia que no altera el historial de copias de los escritores.</summary>
+        internal const int BackupTypeCopy = 5;
+
+        // ---- HRESULT ----
+        internal const int ENotImpl = unchecked((int)0x80004001);
+        internal const int EAccessDenied = unchecked((int)0x80070005);
+        internal const int RpcETooLate = unchecked((int)0x80010119);
+        internal const int VssEBadState = unchecked((int)0x80042301);
+        internal const int VssEUnexpected = unchecked((int)0x80042302);
+        internal const int VssEProviderVeto = unchecked((int)0x80042306);
+        internal const int VssEObjectNotFound = unchecked((int)0x80042308);
+        internal const int VssSAsyncPending = 0x00042309;
+        internal const int VssSAsyncFinished = 0x0004230A;
+        internal const int VssSAsyncCancelled = 0x0004230B;
+        internal const int VssEVolumeNotSupported = unchecked((int)0x8004230C);
+        internal const int VssEVolumeNotSupportedByProvider = unchecked((int)0x8004230E);
+    }
 }

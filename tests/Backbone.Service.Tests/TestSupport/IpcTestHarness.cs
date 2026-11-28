@@ -36,6 +36,7 @@ internal sealed class IpcTestHarness : IAsyncDisposable
         Runner = new SourceValidationRunner(Time, IoOptions);
         Validator = new JobValidator(FileSystem, ProtectedFolders, Runner, HostResolver, Time, LoggerFactory.CreateLogger<JobValidator>());
         RepositoryStates = new RepositoryStateTracker();
+        SourceFactory.Source.PathTranslator = Snapshotter.ToLive;
         var logger = LoggerFactory.CreateLogger<JobRunner>();
         var connections = Connections = new ShareConnectionManager(ShareConnector, LoggerFactory.CreateLogger<ShareConnectionManager>());
         var shareCredentials = ShareCredentials = new ShareCredentialProvider(Credentials, LoggerFactory.CreateLogger<ShareCredentialProvider>());
@@ -54,7 +55,7 @@ internal sealed class IpcTestHarness : IAsyncDisposable
             Time,
             PreparationOptions,
             LoggerFactory.CreateLogger<RepositoryPreparer>());
-        JobRunner = new JobRunner(shareCredentials, connections, RepositoryStorages, FileSystem, ProtectedFolders, Runner, SourceFactory, RepositoryStates, Runtime, Time, new JobRunnerOptions(), logger);
+        JobRunner = new JobRunner(shareCredentials, connections, RepositoryStorages, FileSystem, ProtectedFolders, Runner, SourceFactory, Snapshotter, new FakeEventLogWriter(), RepositoryStates, Runtime, Time, new JobRunnerOptions(), logger);
         Runs = new RunQueue(Jobs, JobRunner, Time, [], LoggerFactory.CreateLogger<RunQueue>());
         Activity.Fallback = Runs;
         Status = new ServiceStatusProvider(Jobs, Activity, RepositoryStates, Time, Runs);
@@ -75,6 +76,8 @@ internal sealed class IpcTestHarness : IAsyncDisposable
 
     /// <summary>Lectura de los orígenes de las ejecuciones (HU-14).</summary>
     public FakeSourceFileSystemFactory SourceFactory { get; } = new();
+
+    public FakeVolumeSnapshotter Snapshotter { get; } = new();
 
     public JobRunner JobRunner { get; }
 

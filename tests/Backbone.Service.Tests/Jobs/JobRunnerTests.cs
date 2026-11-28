@@ -63,6 +63,9 @@ public sealed class JobRunnerTests : IAsyncLifetime
     [Fact]
     public async Task A_live_copy_reads_from_the_final_path_of_the_resolution_never_from_the_configured_one()
     {
+        // Sin VSS (HU-15 criterio 4): la copia en vivo lee de la ruta final. Con VSS, VssJobRunnerTests.
+        _rig.Snapshotter.CreateError = new VolumeSnapshotException("VSS no disponible");
+
         // Un junction legítimo: C:\Datos\enlace lleva a D:\Real\Datos, un volumen local (ADR-20).
         _rig.Inspector.AddFolder(@"C:\Datos\enlace", finalPath: @"D:\Real\Datos");
         _rig.Sources.Source.AddFile(@"D:\Real\Datos\dentro.txt", "contenido");
@@ -70,7 +73,7 @@ public sealed class JobRunnerTests : IAsyncLifetime
 
         var run = await RunAsync(job);
 
-        Assert.Equal((RunState.Completed, 1L), (run.State, run.Stats.Files));
+        Assert.Equal((RunState.CompletedWithWarnings, 1L), (run.State, run.Stats.Files));
         var source = Assert.Single(Assert.Single(_rig.Sources.Created));
         Assert.Equal(("Enlace", @"C:\Datos\enlace", @"D:\Real\Datos"), (source.Alias, source.Path, source.ReadPath));
         Assert.DoesNotContain(@"C:\Datos\enlace", _rig.Sources.Source.Enumerated);
@@ -80,6 +83,7 @@ public sealed class JobRunnerTests : IAsyncLifetime
     [Fact]
     public async Task A_volume_without_a_drive_letter_is_read_through_its_volume_guid_path()
     {
+        _rig.Snapshotter.CreateError = new VolumeSnapshotException("VSS no disponible"); // en vivo; con VSS, VssJobRunnerTests
         const string Guid = @"\\?\Volume{11111111-2222-3333-4444-555555555555}\Datos";
         _rig.Inspector.AddFolder(@"C:\Datos\montado", finalPath: @"Volume{11111111-2222-3333-4444-555555555555}\Datos", guidPath: Guid);
         _rig.Sources.Source.AddFile(Guid + @"\a.txt", "a");
@@ -87,7 +91,7 @@ public sealed class JobRunnerTests : IAsyncLifetime
 
         var run = await RunAsync(job);
 
-        Assert.Equal(RunState.Completed, run.State);
+        Assert.Equal(RunState.CompletedWithWarnings, run.State);
         Assert.Equal(Guid, Assert.Single(Assert.Single(_rig.Sources.Created)).ReadPath);
     }
 

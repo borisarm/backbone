@@ -24,6 +24,13 @@ internal sealed class FakeSourceFileSystem : IRunSourceFileSystem
     /// <summary>Veces que se ha desechado (una por ejecución).</summary>
     public int Disposals => Volatile.Read(ref _disposals);
 
+    /// <summary>
+    /// Traduce la ruta pedida a la que tiene el archivo registrado (HU-15): con instantáneas VSS el <c>JobRunner</c> pide rutas
+    /// de la instantánea, y este doble las sirve desde los mismos archivos que se registran "en vivo". <see cref="Enumerated"/>
+    /// y <see cref="Opened"/> guardan la ruta tal como se pidió (la de la instantánea).
+    /// </summary>
+    public Func<string, string>? PathTranslator { get; set; }
+
     /// <summary>Se llama al abrir cada archivo, con su ruta y el token de la ejecución (para cancelar o esperar).</summary>
     public Func<string, CancellationToken, Task>? OnOpenRead { get; set; }
 
@@ -61,6 +68,7 @@ internal sealed class FakeSourceFileSystem : IRunSourceFileSystem
         await Task.Yield();
         cancellationToken.ThrowIfCancellationRequested();
         Enumerated.Enqueue(directoryPath);
+        directoryPath = Translate(directoryPath);
         List<SourceEntry> children;
         lock (_gate)
         {
@@ -94,6 +102,8 @@ internal sealed class FakeSourceFileSystem : IRunSourceFileSystem
             await hook(filePath, cancellationToken).ConfigureAwait(false);
         }
 
+        filePath = Translate(filePath);
+
         cancellationToken.ThrowIfCancellationRequested();
         byte[] content;
         lock (_gate)
@@ -107,6 +117,7 @@ internal sealed class FakeSourceFileSystem : IRunSourceFileSystem
     public Task<SourceEntry?> GetFileInfoAsync(string filePath, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        filePath = Translate(filePath);
         lock (_gate)
         {
             return Task.FromResult<SourceEntry?>(_files.TryGetValue(filePath, out var content)
@@ -116,6 +127,8 @@ internal sealed class FakeSourceFileSystem : IRunSourceFileSystem
     }
 
     public void Dispose() => Interlocked.Increment(ref _disposals);
+
+    private string Translate(string path) => PathTranslator?.Invoke(path) ?? path;
 
     private static bool IsChild(string path, string prefix) =>
         path.StartsWith(prefix, StringComparison.Ordinal) && path.IndexOf('\\', prefix.Length) < 0;
@@ -151,6 +164,9 @@ internal sealed class FakeSourceFileSystemFactory(FakeSourceFileSystem? source =
     /// <summary>Posiciones de los orígenes marcados como no resueltos (M-B) con los que se ha creado la lectura de cada ejecución.</summary>
     public ConcurrentQueue<int[]> UnreadableSources { get; } = new();
 
+    /// <summary>Dispositivos de instantánea (<c>snapshotDevices</c>) con los que se ha creado la lectura de cada ejecución.</summary>
+    public ConcurrentQueue<string[]> Devices { get; } = new();
+
     /// <summary>Si no es nulo, <see cref="Create"/> lanza esta excepción (p. ej. hilos abandonados, R12).</summary>
     public Exception? CreateError { get; set; }
 
@@ -162,6 +178,7 @@ internal sealed class FakeSourceFileSystemFactory(FakeSourceFileSystem? source =
         }
 
         Created.Enqueue(sources);
+        Devices.Enqueue([.. snapshotDevices ?? []]);
         UnreadableSources.Enqueue([.. unreadableSources ?? []]);
         return Source;
     }

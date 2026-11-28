@@ -41,6 +41,12 @@ internal static class BackboneEventIds
     /// cancelación. Las copias y validaciones fallan con <c>Internal</c> hasta reiniciar el servicio (§8.2, R12).
     /// </summary>
     public const int SourceReadingStopped = 1005;
+
+    /// <summary>
+    /// Advertencia: VSS no está disponible (no ha podido crear las instantáneas); la copia continúa en vivo y termina con
+    /// avisos (RF-22, §8.4 paso 5). El mensaje lleva el trabajo y el código de error de VSS.
+    /// </summary>
+    public const int VssUnavailable = 4000;
 }
 
 /// <summary>

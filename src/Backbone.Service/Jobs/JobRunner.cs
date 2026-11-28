@@ -46,11 +46,17 @@ internal sealed record JobRunnerOptions
 /// autoriza escribir (RNF-14): un repositorio de formato superior termina <see cref="BackboneErrorCode.RepositoryIncompatible"/>
 /// sin escribir.</item>
 /// <item><b>Paso 4</b>: bloqueo compartido.</item>
-/// <item><b>Paso 5</b> (VSS, HU-15): marcado en <see cref="BuildBackupSources"/>; hoy la copia es siempre en vivo.</item>
+/// <item><b>Paso 5</b> (VSS, HU-15, RF-22): un único conjunto de instantáneas, una por volumen de origen
+/// (<see cref="IVolumeSnapshotter"/>). A cada origen se le pasa como <see cref="BackupSource.ReadPath"/> la ruta de su instantánea
+/// calculada a partir de la <b>ruta final</b> de la resolución controlada (<see cref="VssPaths"/>), y la lista de
+/// dispositivos creados para <b>esta</b> ejecución a <see cref="ISourceFileSystemFactory"/> (B-2). Si VSS falla, la copia sigue
+/// en vivo, termina <see cref="RunState.CompletedWithWarnings"/> (<see cref="RunIssueCode.VssUnavailable"/>) y se registra el
+/// evento 4000; una cancelación no es un fallo de VSS.</item>
 /// <item><b>Pasos 6 y 7</b>: <see cref="BackupEngine"/> recorre, sube y publica el snapshot.</item>
 /// <item><b>Paso 8</b> (retención, F2) y <b>paso 10</b> (historial y Visor de eventos, HU-21 y HU-22): fuera de este tipo; el
 /// paso 10 tiene el punto de extensión <see cref="IRunCompletionHandler"/> en <see cref="RunQueue"/>.</item>
-/// <item><b>Paso 9</b>: en <c>finally</c>, también al cancelar o fallar: bloqueo, lectura de orígenes y conexión.</item>
+/// <item><b>Paso 9</b>: en <c>finally</c>, también al cancelar o fallar: bloqueo, lectura de orígenes, instantáneas VSS y
+/// conexión.</item>
 /// </list>
 /// Una cancelación (<see cref="OperationCanceledException"/> con el token cancelado) termina <see cref="RunState.Cancelled"/>
 /// sin snapshot; cualquier otro fallo, <see cref="RunState.Failed"/> con <see cref="RunRecord.ErrorCode"/> según la tabla de
@@ -65,6 +71,8 @@ internal sealed partial class JobRunner
     private readonly ProtectedFolderResolver _protectedFolders;
     private readonly SourceValidationRunner _validation;
     private readonly ISourceFileSystemFactory _sourceFactory;
+    private readonly IVolumeSnapshotter _snapshotter;
+    private readonly IEventLogWriter _eventLog;
     private readonly RepositoryStateTracker _repositoryStates;
     private readonly ServiceRuntimeInfo _runtime;
     private readonly TimeProvider _timeProvider;
@@ -79,6 +87,8 @@ internal sealed partial class JobRunner
         ProtectedFolderResolver protectedFolders,
         SourceValidationRunner validation,
         ISourceFileSystemFactory sourceFactory,
+        IVolumeSnapshotter snapshotter,
+        IEventLogWriter eventLog,
         RepositoryStateTracker repositoryStates,
         ServiceRuntimeInfo runtime,
         TimeProvider timeProvider,
@@ -92,6 +102,8 @@ internal sealed partial class JobRunner
         _protectedFolders = protectedFolders;
         _validation = validation;
         _sourceFactory = sourceFactory;
+        _snapshotter = snapshotter;
+        _eventLog = eventLog;
         _repositoryStates = repositoryStates;
         _runtime = runtime;
         _timeProvider = timeProvider;
@@ -148,12 +160,12 @@ internal sealed partial class JobRunner
         Enum.TryParse<RunIssueCode>(code, ignoreCase: false, out var parsed) && Enum.IsDefined(parsed) ? parsed : RunIssueCode.Other;
 
     /// <summary>
-    /// Orígenes que recibe el motor (paso 5 de §8.4, HU-15). <b>En vivo</b>, <see cref="BackupSource.ReadPath"/> es la ruta final
-    /// de la resolución controlada; con VSS, HU-15 traducirá esa misma ruta final a la de la instantánea aquí (§8.2 "Raíz del
-    /// origen en VSS").
+    /// Orígenes que recibe el motor (paso 5 de §8.4, HU-15). <paramref name="readPaths"/> son las rutas desde las que se lee:
+    /// <b>en vivo</b>, la ruta final de la resolución controlada; con VSS, esa misma ruta final traducida a la de la instantánea
+    /// (§8.2 "Raíz del origen en VSS").
     /// </summary>
-    private static List<BackupSource> BuildBackupSources(IReadOnlyList<ResolvedSource> sources) =>
-        [.. sources.Select(s => new BackupSource(s.Alias, s.ConfiguredPath, s.ReadPath) { MandatoryExclusions = s.MandatoryExclusions })];
+    private static List<BackupSource> BuildBackupSources(IReadOnlyList<ResolvedSource> sources, IReadOnlyList<string> readPaths) =>
+        [.. sources.Select((s, i) => new BackupSource(s.Alias, s.ConfiguredPath, readPaths[i]) { MandatoryExclusions = s.MandatoryExclusions })];
 
     /// <summary>Posiciones de los orígenes que el paso 2 no pudo resolver: la lectura no abre su raíz nunca (M-B).</summary>
     private static int[] UnreadablePositions(IReadOnlyList<ResolvedSource> sources) =>
@@ -161,9 +173,11 @@ internal sealed partial class JobRunner
 
     /// <summary>
     /// Un origen ya resuelto en el paso 2. Si <paramref name="Unreadable"/>, <paramref name="ReadPath"/> es la ruta
-    /// <b>configurada</b> (la resolución falló) y la lectura no la abre nunca.
+    /// <b>configurada</b> (la resolución falló) y la lectura no la abre nunca. <paramref name="GuidPath"/> es la ruta final en
+    /// la forma <c>\\?\Volume{guid}\…</c> de la misma resolución: de ella salen el volumen que se copia con VSS y la ruta
+    /// relativa dentro de la instantánea.
     /// </summary>
-    private sealed record ResolvedSource(string Alias, string ConfiguredPath, string ReadPath, IReadOnlyList<string> MandatoryExclusions, bool Unreadable = false);
+    private sealed record ResolvedSource(string Alias, string ConfiguredPath, string ReadPath, IReadOnlyList<string> MandatoryExclusions, bool Unreadable = false, string GuidPath = "");
 
     /// <summary>Resultado de la resolución de un origen en el hilo de lectura.</summary>
     private sealed record SourceResolution(ResolvedSource? Source, string? Rejection);
@@ -177,6 +191,7 @@ internal sealed partial class JobRunner
 
         private ShareLease? _lease;
         private IRunSourceFileSystem? _sourceFileSystem;
+        private IVolumeSnapshotSet? _snapshots;
         private RepositoryLock? _lock;
         private bool _cancellationLogged;
 
@@ -217,9 +232,12 @@ internal sealed partial class JobRunner
             // Paso 4.
             _lock = await repository.AcquireLockAsync(RepositoryLockType.Shared, owner: null, ct).ConfigureAwait(false);
 
-            // Pasos 5 a 7. Paso 5 (VSS): HU-15 crea aquí las instantáneas y traduce los ReadPath; hasta entonces, en vivo.
-            var backupSources = BuildBackupSources(sources);
-            _sourceFileSystem = owner._sourceFactory.Create(backupSources, snapshotDevices: null, unreadableSources: UnreadablePositions(sources));
+            // Paso 5: instantáneas VSS (RF-22). Si no se pueden crear, la copia sigue en vivo con un aviso.
+            var plan = await PlanSourcesAsync(sources, ct).ConfigureAwait(false);
+
+            // Pasos 6 y 7.
+            var backupSources = BuildBackupSources(sources, plan.ReadPaths);
+            _sourceFileSystem = owner._sourceFactory.Create(backupSources, snapshotDevices: plan.Devices, unreadableSources: UnreadablePositions(sources));
             _phase = RunPhase.Copying;
             _copyStartedTimestamp = owner._timeProvider.GetTimestamp();
             Report(RunPhase.Copying, 0, 0, null);
@@ -231,8 +249,9 @@ internal sealed partial class JobRunner
                 Host = owner._runtime.MachineName,
                 Sources = backupSources,
                 Exclusions = Job.Exclusions,
-                UsedVss = false,
+                UsedVss = plan.UsedVss,
                 StartedUtc = startedUtc.UtcDateTime,
+                AdditionalWarnings = plan.Warnings,
             };
             var result = await new BackupEngine(owner._timeProvider)
                 .RunAsync(repository, _lock, _sourceFileSystem, backup, new SyncProgress(OnCopyProgress), ct)
@@ -348,7 +367,7 @@ internal sealed partial class JobRunner
 
             // A la copia en vivo, la ruta FINAL de la resolución (o la del volumen si no tiene letra), nunca la configurada.
             var readPath = IsDriveLetterPath(folder.FinalPath) ? folder.FinalPath : folder.GuidPath;
-            return new SourceResolution(new ResolvedSource(source.Alias, path, readPath, protection.MandatoryExclusions), null);
+            return new SourceResolution(new ResolvedSource(source.Alias, path, readPath, protection.MandatoryExclusions, GuidPath: folder.GuidPath), null);
         }
 
         /// <summary>
@@ -372,6 +391,119 @@ internal sealed partial class JobRunner
 
         private static bool IsDriveLetterPath(string path) =>
             path.Length >= 3 && char.IsAsciiLetter(path[0]) && path[1] == ':' && path[2] == '\\';
+
+        // ---- Paso 5: instantáneas VSS ----
+
+        /// <summary>Lo que el paso 5 decide: desde dónde se lee cada origen y qué avisos lleva ya la ejecución.</summary>
+        private sealed record SourcePlan(
+            IReadOnlyList<string> ReadPaths,
+            IReadOnlyCollection<string> Devices,
+            bool UsedVss,
+            IReadOnlyList<SnapshotWarning> Warnings);
+
+        /// <summary>
+        /// Crea <b>un único conjunto</b> de instantáneas con un volumen por cada uno de los orígenes legibles (los de un mismo
+        /// volumen comparten instantánea) y traduce el <c>ReadPath</c> de cada uno. Cualquier fallo de VSS (también un conjunto
+        /// incompleto o una ruta que no se puede traducir) deja todos los orígenes en vivo, con el aviso
+        /// <see cref="RunIssueCode.VssUnavailable"/> y el evento 4000. La cancelación sí se propaga: no es un fallo de VSS.
+        /// </summary>
+        private async Task<SourcePlan> PlanSourcesAsync(IReadOnlyList<ResolvedSource> sources, CancellationToken ct)
+        {
+            var live = sources.Select(s => s.ReadPath).ToList();
+            var volumes = new List<string>();
+            var splits = new (string Volume, string Relative)[sources.Count];
+            var wanted = new bool[sources.Count];
+            for (var i = 0; i < sources.Count; i++)
+            {
+                // Un origen que el paso 2 no pudo resolver no se lee nunca: no necesita instantánea.
+                if (sources[i].Unreadable)
+                {
+                    continue;
+                }
+
+                if (!VssPaths.TrySplit(sources[i].GuidPath, out var volume, out var relative))
+                {
+                    return await VssUnavailableAsync(live, "a source path cannot be mapped to a volume", ct).ConfigureAwait(false);
+                }
+
+                wanted[i] = true;
+                splits[i] = (volume, relative);
+                if (!volumes.Contains(volume, StringComparer.OrdinalIgnoreCase))
+                {
+                    volumes.Add(volume);
+                }
+            }
+
+            if (volumes.Count == 0)
+            {
+                return new SourcePlan(live, [], UsedVss: false, []);
+            }
+
+            IVolumeSnapshotSet set;
+            try
+            {
+                set = await owner._snapshotter.CreateAsync(volumes, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                return await VssUnavailableAsync(live, ex is VolumeSnapshotException ? ex.Message : $"unexpected error ({ex.GetType().Name})", ct).ConfigureAwait(false);
+            }
+
+            // Desde aquí la instantánea es de esta ejecución: el paso 9 la elimina aunque algo falle o se cancele.
+            _snapshots = set;
+            var readPaths = new List<string>(live);
+            for (var i = 0; i < sources.Count; i++)
+            {
+                if (!wanted[i])
+                {
+                    continue;
+                }
+
+                var snapshot = set.Snapshots.FirstOrDefault(s => string.Equals(s.Volume, splits[i].Volume, StringComparison.OrdinalIgnoreCase));
+                if (snapshot is null)
+                {
+                    // Un conjunto incompleto no se mezcla con lectura en vivo: todo en vivo, y lo creado se elimina ahora.
+                    return await VssUnavailableAsync(live, "the shadow copy set is incomplete", ct).ConfigureAwait(false);
+                }
+
+                readPaths[i] = VssPaths.Combine(snapshot.DevicePath, splits[i].Relative);
+            }
+
+            return new SourcePlan(readPaths, [.. set.Snapshots.Select(s => s.DeviceName)], UsedVss: true, []);
+        }
+
+        /// <summary>RF-22: sin VSS la copia sigue en vivo, con el aviso <c>VssUnavailable</c> y el evento 4000.</summary>
+        private async Task<SourcePlan> VssUnavailableAsync(List<string> live, string reason, CancellationToken ct)
+        {
+            if (_snapshots is { } partial)
+            {
+                _snapshots = null;
+                try
+                {
+                    await partial.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    LogReleaseFailed(owner._logger, "the VSS snapshots", ex.GetType().Name, ex.HResult);
+                }
+            }
+
+            ct.ThrowIfCancellationRequested();
+            LogVssUnavailable(owner._logger, request.RunId, Job.Id, reason);
+            owner._eventLog.Write(
+                EventLogLevel.Warning,
+                BackboneEventIds.VssUnavailable,
+                $"VSS is not available for the job '{UntrustedText.Describe(Job.Name)}' ({reason}). The copy continues from the live volumes and files open in other programs may be skipped.");
+            return new SourcePlan(
+                live,
+                [],
+                UsedVss: false,
+                [new SnapshotWarning(string.Empty, nameof(RunIssueCode.VssUnavailable), "VSS is not available; the sources were read live and files open in other programs may have been skipped.")]);
+        }
 
         // ---- Paso 3: conexión y repositorio ----
 
@@ -536,6 +668,7 @@ internal sealed partial class JobRunner
             var record = Record(result.State) with
             {
                 SnapshotId = result.Snapshot.Id,
+                UsedVss = result.Snapshot.UsedVss,
                 Stats = new RunStats
                 {
                     Files = stats.Files,
@@ -642,6 +775,21 @@ internal sealed partial class JobRunner
                 }
             }
 
+            if (_snapshots is { } snapshots)
+            {
+                _snapshots = null;
+                try
+                {
+                    // Después de cerrar la lectura (sus handles están en la instantánea). Si no vuelve a tiempo, la eliminación
+                    // sigue en el hilo de VSS, queda en data\vss-snapshots.json y la limpia el siguiente arranque si hiciera falta.
+                    await Observe(snapshots.DisposeAsync().AsTask()).WaitAsync(owner._options.CleanupStepTimeout, owner._timeProvider).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    LogReleaseFailed(owner._logger, "the VSS snapshots", ex.GetType().Name, ex.HResult);
+                }
+            }
+
             if (_lease is { } lease)
             {
                 _lease = null;
@@ -689,6 +837,9 @@ internal sealed partial class JobRunner
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "No se pudo comprobar el origen {Alias} ({Detail}); se trata como raíz ilegible y se conserva lo del snapshot anterior.")]
     private static partial void LogSourceUnreadable(ILogger logger, string alias, string detail);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Ejecución {RunId} del trabajo {JobId}: VSS no está disponible ({Reason}); la copia sigue en vivo.")]
+    private static partial void LogVssUnavailable(ILogger logger, long runId, Guid jobId, string reason);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "No se pudo conectar con el destino {Destination}: {Code} (Win32 {NativeError}).")]
     private static partial void LogConnectFailed(ILogger logger, string destination, BackboneErrorCode code, int nativeError);

@@ -76,6 +76,14 @@ internal static class RepositoryCheck
     }
 
     /// <summary>Manifiestos publicados.</summary>
+    /// <summary>Cabecera de un snapshot publicado (avisos guardados, <c>usedVss</c>…).</summary>
+    public static async Task<SnapshotHeader> ReadSnapshotHeaderAsync(InMemoryRepositoryStorage storage, string snapshotId)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var repository = await BackupRepository.OpenAsync(storage, TimeProvider.System, ct);
+        return await repository.ReadSnapshotHeaderAsync(snapshotId, ct);
+    }
+
     public static IReadOnlyList<string> Snapshots(InMemoryRepositoryStorage storage) =>
         [.. storage.FilePaths.Where(p => p.StartsWith(RepositoryLayout.SnapshotsDirectory + "/", StringComparison.Ordinal))];
 }

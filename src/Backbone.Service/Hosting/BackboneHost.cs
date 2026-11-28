@@ -119,6 +119,23 @@ internal static class BackboneHost
         services.AddSingleton<JobValidator>();
         services.AddSingleton<RepositoryStateTracker>();
 
+        // Instantáneas VSS (HU-15, RF-22, §8.2 VssSnapshotter): API COM de VSS y registro data\vss-snapshots.json de lo que
+        // Backbone crea, que es lo único que la limpieza del arranque elimina.
+        services.TryAddSingleton(new VssOptions());
+        services.TryAddSingleton<IVssBackupFactory, VssBackupFactory>();
+        services.AddSingleton(sp => new VssSnapshotRegistry(
+            sp.GetRequiredService<ServicePaths>().VssSnapshotsFile,
+            sp.GetRequiredService<TrustedFile>(),
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<ILogger<VssSnapshotRegistry>>()));
+        services.TryAddSingleton<IVolumeSnapshotter>(sp => new VssSnapshotter(
+            sp.GetRequiredService<IVssBackupFactory>(),
+            sp.GetRequiredService<VssSnapshotRegistry>(),
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<VssOptions>(),
+            sp.GetRequiredService<ILogger<VssSnapshotter>>()));
+        services.AddHostedService<VssStartupCleanup>();
+
         // Ejecuciones (HU-14, §8.4): la cola de una sola ejecución a la vez (que es también la actividad y el estado de las
         // ejecuciones) y el JobRunner. El scheduler (HU-09) llamará a RunQueue.Enqueue; el historial y el Visor de eventos
         // (HU-21, HU-22) se registran como IRunCompletionHandler.

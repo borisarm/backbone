@@ -730,3 +730,29 @@ Casos que no se pueden automatizar dentro de la batería local. Cada caso indica
 **Resultado esperado:** el editor guarda y recupera exactamente lo elegido, los errores del servicio se ven junto a su campo y el editor es utilizable con teclado y Narrador.
 
 **Estado:** pendiente.
+
+## PM-HU15-01 · VSS con el servicio instalado y los privilegios de §10: archivo abierto, parada y huérfanas
+
+**Cubre:** HU-15, criterios 1 a 4 (RF-22, R1) con el servicio instalado como LocalSystem con **solo** `SeBackupPrivilege`, `SeImpersonatePrivilege` y `SeChangeNotifyPrivilege` (§10), un programa real que tiene el archivo abierto en exclusiva, y los cortes que no se automatizan.
+
+**Por qué es manual:** las pruebas de integración elevadas (`VssIntegrationTests`) usan el token del administrador que las lanza, no el token restringido del servicio instalado, y no pueden matar el servicio ni abrir Outlook. Si **VSS necesitara otro privilegio** que los tres de §10 (error `0x80070005` en el evento 4000 con el servicio instalado y no en consola elevada), se para: la lista se cambia antes en §10 y en el instalador.
+
+**Preparación** (servicio instalado; PowerShell elevado para las órdenes de VSS)
+1. Un trabajo con el origen `C:\Datos\vss` (carpeta propia) hacia un recurso SMB de pruebas (NAS `192.168.1.163`), con credencial guardada.
+2. Dejar a mano `vssadmin list shadows` (o `Get-CimInstance Win32_ShadowCopy`) y `Get-Content $env:ProgramData\Backbone\data\vss-snapshots.json`.
+3. Comprobar los privilegios del proceso: `Get-Service BackboneService` y, con Process Explorer o `whoami /priv` en una sesión de SYSTEM (`psexec -s`), que el proceso del servicio solo conserva los tres privilegios.
+
+**Pasos**
+1. **Archivo abierto en exclusiva** (criterio 1): crear `C:\Datos\vss\bloqueado.pst` de unos MiB y mantenerlo abierto sin compartir (`$f = [IO.File]::Open('C:\Datos\vss\bloqueado.pst','Open','ReadWrite','None')` en una consola que se deja abierta; o abrir un PST real en Outlook). Comprobar que `Copy-Item` falla por "usado por otro proceso". Lanzar "Copiar ahora": termina `Completed` (**no** `CompletedWithWarnings`), el snapshot lista `vss\bloqueado.pst` con el tamaño real y, al restaurarlo (o descargarlo del NAS), su `sha256` es el del archivo en el instante de la copia. En el detalle de la ejecución consta "VSS: sí". Durante la copia, `vssadmin list shadows` muestra una instantánea del volumen; **al terminar no queda ninguna** de Backbone.
+2. **El token restringido basta** (nota de HU-15): el paso 1 funciona con el servicio instalado. Si en su lugar termina `CompletedWithWarnings` con el evento 4000 y `0x80070005`, anotar el mensaje exacto y **parar**: el servicio necesita otro privilegio (cambiar §10 antes).
+3. **Cancelar** (criterio 2): repetir con un origen grande, pulsar "Cancelar" a mitad: `Cancelled` en menos de 5 s y `vssadmin list shadows` sin instantáneas de Backbone en pocos segundos; `vss-snapshots.json` sin conjuntos.
+4. **Parar el servicio** (criterio 2): `Stop-Service BackboneService` con una copia en curso: se detiene en menos de 20 s, sin instantáneas de Backbone y con `vss-snapshots.json` vacío.
+5. **Matar el servicio** (criterio 3): con una copia en curso, `Stop-Process -Name Backbone.Service -Force` (o `taskkill /f`). Anotar si `vssadmin list shadows` conserva la instantánea (no debería: es no persistente y VSS la libera al desaparecer el solicitante). Si la conserva, `vss-snapshots.json` la tiene registrada. Arrancar el servicio: en el log aparece "instantáneas VSS huérfanas … eliminadas" y no queda ninguna ni entrada en el registro.
+6. **Solo las de Backbone** (criterio 3): antes del paso 5, crear una instantánea ajena persistente: `(Get-WmiObject -List Win32_ShadowCopy).Create('C:\','ClientAccessible')`. Tras arrancar el servicio sigue estando (`vssadmin list shadows`); borrarla a mano después (`vssadmin delete shadows /shadow={id}`).
+7. **Orígenes en dos volúmenes** (criterio 5), con otro volumen NTFS local `D:`: un trabajo con `C:\Datos\vss` y `D:\Datos`. Durante la copia, `vssadmin list shadows` muestra **dos** instantáneas con el **mismo** "Set ID" y la misma hora de creación.
+8. **VSS no disponible** (criterio 4): `Stop-Service VSS; Set-Service VSS -StartupType Disabled`; "Copiar ahora": termina `CompletedWithWarnings`, con un aviso `VssUnavailable` ("VSS no disponible") y el evento **4000** (Advertencia, origen Backbone) en el Visor de eventos; el archivo bloqueado del paso 1 aparece como `FileLocked` y el resto se copia. Restaurar `Set-Service VSS -StartupType Manual`.
+9. **Seguridad**: la carpeta de datos nunca se copia, tampoco desde la instantánea: un origen `C:\ProgramData` (o `C:\`) termina sin `Backbone\credentials` en el snapshot. El log del servicio no contiene la contraseña del NAS.
+
+**Resultado esperado:** un archivo abierto en exclusiva se copia desde la instantánea; la instantánea desaparece en todos los casos (fin, fallo, cancelación, parada, muerte del proceso); solo se eliminan las de Backbone; sin VSS la copia continúa en vivo con aviso y evento 4000; el token con los tres privilegios de §10 basta.
+
+**Estado:** pendiente. Cuando se ejecute, anotar si el paso 5 dejó instantánea y si el paso 2 hizo falta cambiar algo en §10.

@@ -57,7 +57,7 @@ public sealed class RunNowAndCancelTests : IAsyncLifetime
         Assert.Equal((6L, 0L), (run.Stats.Files, run.Stats.Skipped));
         Assert.True(run.CompletedUtc >= run.StartedUtc);
         Assert.Null(run.ErrorCode);
-        Assert.False(run.UsedVss);
+        Assert.True(run.UsedVss); // HU-15: se lee de la instantánea (el doble de VSS crea una por defecto)
 
         Assert.Equal(run.SnapshotId + ".json", Assert.Single(RepositoryCheck.Snapshots(_rig.Memory())).Split('/')[1]);
         await RepositoryCheck.AssertConsistentAsync(_rig.Memory());

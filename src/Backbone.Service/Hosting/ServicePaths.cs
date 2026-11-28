@@ -22,6 +22,9 @@ internal sealed class ServicePaths(string root)
     /// <summary><c>data\schedule.json</c>: último punto de programación consumido de cada trabajo (§8.2, HU-09).</summary>
     public string ScheduleFile => Path.Combine(DataDirectory, "schedule.json");
 
+    /// <summary><c>data\vss-snapshots.json</c>: instantáneas VSS que Backbone ha creado y aún no ha eliminado (§8.2, HU-15).</summary>
+    public string VssSnapshotsFile => Path.Combine(DataDirectory, "vss-snapshots.json");
+
     /// <summary><c>credentials\</c>: un archivo cifrado por recurso (§8.3, HU-04).</summary>
     public string CredentialsDirectory => Path.Combine(Root, "credentials");
 }
